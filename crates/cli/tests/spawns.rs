@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 const BIN_ENV: &str = concat!("CARGO_BIN", "_EXE_");
 const SPAWN: &str = concat!("Command", "::new");
 
+// Tests that start a program other than a workspace binary; each opens no library.
+const OTHER_PROGRAMS: &[&str] = &["api/tests/dependencies.rs"];
+
 fn workspace_crates() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -32,6 +35,10 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn is_sandbox(path: &Path) -> bool {
     path.ends_with("tests/sandbox/mod.rs")
+}
+
+fn starts_another_program(path: &Path) -> bool {
+    OTHER_PROGRAMS.iter().any(|p| path.ends_with(p))
 }
 
 fn is_test_source(crates: &Path, path: &Path) -> bool {
@@ -58,8 +65,10 @@ fn only_the_sandbox_helpers_start_a_binary() {
         }
         let text = std::fs::read_to_string(file).unwrap();
         for (n, line) in text.lines().enumerate() {
-            let spawns =
-                line.contains(BIN_ENV) || (is_test_source(&crates, file) && line.contains(SPAWN));
+            let spawns = line.contains(BIN_ENV)
+                || (is_test_source(&crates, file)
+                    && !starts_another_program(file)
+                    && line.contains(SPAWN));
             if spawns {
                 offenders.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
             }
