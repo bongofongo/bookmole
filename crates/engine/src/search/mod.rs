@@ -26,6 +26,30 @@ use crate::providers::{
 /// Each provider's whole budget per search or lookup, rate-limit waits included; not configurable.
 pub(crate) const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(crate) fn provider_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + PROVIDER_TIMEOUT
+}
+
+/// Every provider call goes through here, so none can ask a provider that has said to wait.
+pub(crate) async fn ask_provider<T>(
+    p: &dyn MetadataProvider,
+    deadline: tokio::time::Instant,
+    call: impl std::future::Future<Output = Result<T>>,
+) -> std::result::Result<T, Diagnostic> {
+    let id = p.id();
+    if let Some(left) = p.manners().and_then(Manners::closed_for) {
+        return Err(Diagnostic::provider_rate_limited(id, left));
+    }
+    match tokio::time::timeout_at(deadline, call).await {
+        Ok(Ok(found)) => Ok(found),
+        Ok(Err(e)) => Err(match p.manners().and_then(Manners::closed_for) {
+            Some(left) => Diagnostic::provider_rate_limited(id, left),
+            None => Diagnostic::provider_failed(id, &e),
+        }),
+        Err(_) => Err(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
+    }
+}
+
 pub(crate) fn free_text(req: &SearchRequest) -> Option<&str> {
     let only_text = req.title.is_none()
         && req.author.is_none()
@@ -123,14 +147,9 @@ pub(crate) async fn federated_search_claimed(
 ) -> Result<(Vec<(RankedResult, FieldClaims)>, Vec<Diagnostic>)> {
     let fetches = providers.iter().map(|p| async {
         let id = p.id();
-        match tokio::time::timeout(PROVIDER_TIMEOUT, p.search(req)).await {
-            Ok(Ok(books)) => (id, None, Some(books)),
-            Ok(Err(e)) => (id, Some(Diagnostic::provider_failed(id, &e)), None),
-            Err(_) => (
-                id,
-                Some(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
-                None,
-            ),
+        match ask_provider(p.as_ref(), provider_deadline(), p.search(req)).await {
+            Ok(books) => (id, None, Some(books)),
+            Err(d) => (id, Some(d), None),
         }
     });
     let responses = futures::future::join_all(fetches).await;
@@ -187,20 +206,9 @@ pub(crate) async fn lookup_isbn_all(
     providers: &[Box<dyn MetadataProvider>],
     isbn: &str,
 ) -> (Vec<ProviderBook>, Vec<Diagnostic>) {
-    let asks = providers.iter().map(|p| async {
-        let id = p.id();
-        if let Some(left) = p.manners().and_then(Manners::closed_for) {
-            return Err(Diagnostic::provider_rate_limited(id, left));
-        }
-        match tokio::time::timeout(PROVIDER_TIMEOUT, p.by_isbn(isbn)).await {
-            Ok(Ok(found)) => Ok(found),
-            Ok(Err(e)) => Err(match p.manners().and_then(Manners::closed_for) {
-                Some(left) => Diagnostic::provider_rate_limited(id, left),
-                None => Diagnostic::provider_failed(id, &e),
-            }),
-            Err(_) => Err(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
-        }
-    });
+    let asks = providers
+        .iter()
+        .map(|p| ask_provider(p.as_ref(), provider_deadline(), p.by_isbn(isbn)));
     let mut found = Vec::new();
     let mut warnings = Vec::new();
     for (p, answer) in providers.iter().zip(join_all(asks).await) {
@@ -1073,6 +1081,62 @@ mod fanout_tests {
             out.warnings[0]
         );
         assert!(!out.warnings[0].is_timeout());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_provider_is_not_asked_and_is_reported() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Closed {
+            asked: Arc<AtomicUsize>,
+            manners: Manners,
+        }
+        #[async_trait]
+        impl MetadataProvider for Closed {
+            fn id(&self) -> ProviderId {
+                ProviderId::OpenLibrary
+            }
+            async fn search(&self, _req: &SearchRequest) -> Result<Vec<ProviderBook>> {
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+            async fn by_isbn(&self, _isbn: &str) -> Result<Option<ProviderBook>> {
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+            fn manners(&self) -> Option<&Manners> {
+                Some(&self.manners)
+            }
+        }
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let manners = Manners::unlimited();
+        manners.close_for(Duration::from_secs(90));
+        let providers: Vec<Box<dyn MetadataProvider>> = vec![
+            Box::new(Closed {
+                asked: asked.clone(),
+                manners,
+            }),
+            provider(
+                ProviderId::GoogleBooks,
+                Behaviour::Answers(vec![book("Dune")]),
+            ),
+        ];
+        let out = federated_search(&providers, &req()).await.unwrap();
+
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "a closed provider was asked"
+        );
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].is_rate_limited());
+        assert_eq!(
+            out.warnings[0].to_string(),
+            "openlibrary: asked to wait; not asked again for 90s"
+        );
     }
 
     #[tokio::test]

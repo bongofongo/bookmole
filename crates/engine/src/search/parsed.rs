@@ -3,12 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use super::PROVIDER_TIMEOUT;
 use super::query::{KnownNames, ParsedQuery, fold};
+use super::{ask_provider, provider_deadline};
 use crate::book::Book;
 use crate::diagnostic::Diagnostic;
-use crate::error::EngineError;
-use crate::providers::{Manners, MetadataProvider, ProviderId, ProviderWork, SearchRequest};
+use crate::providers::{MetadataProvider, ProviderId, ProviderWork, SearchRequest};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Plan {
@@ -161,40 +160,22 @@ fn author_follow_up(q: &ParsedQuery, works: &[ProviderWork], limit: u32) -> Opti
     })
 }
 
-pub(crate) fn failure(p: &dyn MetadataProvider, e: &EngineError) -> Diagnostic {
-    match p.manners().and_then(Manners::closed_for) {
-        Some(left) => Diagnostic::provider_rate_limited(p.id(), left),
-        None => Diagnostic::provider_failed(p.id(), e),
-    }
-}
-
 pub(crate) async fn ask(
     p: &dyn MetadataProvider,
     q: &ParsedQuery,
     plan: &Plan,
 ) -> std::result::Result<Vec<ProviderWork>, Diagnostic> {
     let id = p.id();
-    if let Some(left) = p.manners().and_then(Manners::closed_for) {
-        return Err(Diagnostic::provider_rate_limited(id, left));
-    }
-    let deadline = tokio::time::Instant::now() + PROVIDER_TIMEOUT;
-    let mut works = match tokio::time::timeout_at(deadline, p.search_works(&plan.primary)).await {
-        Ok(Ok(w)) => w,
-        Ok(Err(e)) => return Err(failure(p, &e)),
-        Err(_) => return Err(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
-    };
+    let deadline = provider_deadline();
+    let mut works = ask_provider(p, deadline, p.search_works(&plan.primary)).await?;
     if works.is_empty()
         && let Some(fallback) = &plan.fallback
     {
-        works = match tokio::time::timeout_at(deadline, p.search_works(fallback)).await {
-            Ok(Ok(w)) => w,
-            Ok(Err(e)) => return Err(failure(p, &e)),
-            Err(_) => return Err(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
-        };
+        works = ask_provider(p, deadline, p.search_works(fallback)).await?;
     }
     if let Some(follow) = author_follow_up(q, &works, plan.limit) {
-        match tokio::time::timeout_at(deadline, p.search_works(&follow)).await {
-            Ok(Ok(more)) => {
+        match ask_provider(p, deadline, p.search_works(&follow)).await {
+            Ok(more) => {
                 let offset = works.len();
                 works.extend(more.into_iter().map(|mut w| {
                     w.found.position += offset;
@@ -202,11 +183,8 @@ pub(crate) async fn ask(
                     w
                 }));
             }
-            Ok(Err(e)) => {
-                tracing::debug!(provider = %id, class = ?crate::diagnostic::ErrorClass::from(&e),
-                    "author follow-up failed; the first answer stands");
-            }
-            Err(_) => tracing::debug!(provider = %id, "author follow-up ran out of time"),
+            Err(d) => tracing::debug!(provider = %id, kind = ?d.kind,
+                "author follow-up failed; the first answer stands"),
         }
     }
     Ok(works)
@@ -229,8 +207,9 @@ pub(crate) fn log_degraded(id: ProviderId, d: &Diagnostic) {
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::search::RankedResult;
+    use crate::providers::Manners;
     use crate::search::query::{KnowsNothing, parse};
+    use crate::search::{PROVIDER_TIMEOUT, RankedResult};
 
     fn p(text: &str) -> Plan {
         plan(&parse(text, &KnowsNothing), 20)

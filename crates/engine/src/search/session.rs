@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::PROVIDER_TIMEOUT;
 use super::correct::{self, Fix, Target, Verdict};
 use super::held::{Held, Library};
 use super::kept;
@@ -23,7 +22,7 @@ use crate::book::Book;
 use crate::diagnostic::{Diagnostic, DiagnosticKind, ErrorClass};
 use crate::error::{EngineError, Result};
 use crate::providers::{
-    KeptRecord, Manners, MetadataProvider, ProviderAvailability, ProviderId, ProviderWork,
+    KeptRecord, MetadataProvider, ProviderAvailability, ProviderId, ProviderWork,
 };
 use crate::storage::{BookFilter, KeptEntry, KeptRow, LibraryScope, Storage, now_unix};
 
@@ -1091,11 +1090,8 @@ async fn ask(p: &dyn MetadataProvider, q: &ParsedQuery, plan: &Plan) -> Asked {
     let Some(isbn) = plan.primary.isbn.as_deref() else {
         return parsed::ask(p, q, plan).await;
     };
-    if let Some(left) = p.manners().and_then(Manners::closed_for) {
-        return Err(Diagnostic::provider_rate_limited(id, left));
-    }
-    match tokio::time::timeout(PROVIDER_TIMEOUT, p.by_isbn(isbn)).await {
-        Ok(Ok(found)) => Ok(found
+    match super::ask_provider(p, super::provider_deadline(), p.by_isbn(isbn)).await {
+        Ok(found) => Ok(found
             .into_iter()
             .map(|pb| {
                 let kept_record = id
@@ -1107,8 +1103,7 @@ async fn ask(p: &dyn MetadataProvider, q: &ParsedQuery, plan: &Plan) -> Asked {
                 w
             })
             .collect()),
-        Ok(Err(e)) => Err(parsed::failure(p, &e)),
-        Err(_) => Err(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
+        Err(d) => Err(d),
     }
 }
 
