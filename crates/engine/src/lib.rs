@@ -2,6 +2,7 @@
 //!
 //! The engine performs **no terminal I/O**: every user interaction lives in a
 //! frontend (CLI today, TUI later). Frontends drive it through [`Engine`].
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 
 /// Apple Books' highlights and notes, read out of copies of its databases.
 pub mod apple_books;

@@ -144,10 +144,15 @@ pub fn install_hook(ctx: CrashContext) {
             // The entire user-facing payoff. Without this line the file is
             // written and never found. Runs after the TUI has already restored
             // the terminal, so it lands legibly in the scrollback.
-            eprintln!("\nbookmole crashed. Report written to {}", path.display());
+            announce(&path);
         }
         previous(info);
     }));
+}
+
+#[allow(clippy::print_stderr)]
+fn announce(path: &Path) {
+    eprintln!("\nbookmole crashed. Report written to {}", path.display());
 }
 
 fn timestamp() -> String {
