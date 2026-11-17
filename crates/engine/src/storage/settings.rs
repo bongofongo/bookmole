@@ -1,32 +1,21 @@
-//! The settings store (migration `0024`): a frontend's choices, kept beside the
-//! library they describe.
-//!
-//! **The engine stores and does not interpret.** A key is a frontend's name
-//! (`history.overview.cards`, `history.chart.<id>`) and a value is JSON text.
-//! Two things are validated and nothing else: the key's alphabet and that the
-//! value parses as JSON — so a client cannot write a value that the next client
-//! to read it cannot parse, and a key cannot carry a path separator, a space or
-//! a capital that two frontends would spell two ways. **No secrets go here**:
-//! the Google Books key keeps its own path, which never logs it.
+//! The settings store: a frontend's choices, kept beside the library.
+//! The engine stores and does not interpret: it validates only the key alphabet and that the value
+//! is JSON. No secrets.
 
 use sqlx::Row;
 
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 
-/// The longest key the store accepts.
 pub const SETTING_KEY_MAX: usize = 64;
 
-/// One stored setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Setting {
     pub key: String,
-    /// JSON text, exactly as written.
     pub value: String,
 }
 
-/// `[a-z0-9._-]{1,64}`. A function rather than a regex: four byte classes do
-/// not need an automaton, and the rule reads the same in the doc and the code.
+/// Key alphabet: `[a-z0-9._-]{1,64}`.
 pub fn is_setting_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= SETTING_KEY_MAX
@@ -46,7 +35,6 @@ fn check_key(key: &str) -> Result<()> {
 }
 
 impl Storage {
-    /// The JSON text stored under `key`, or `None` when nothing is.
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         check_key(key)?;
         Ok(
@@ -57,10 +45,8 @@ impl Storage {
         )
     }
 
-    /// Store `value` under `key`, replacing what was there. Refuses a key
-    /// outside the alphabet and a value that is not JSON (`InvalidInput`). The
-    /// value is stored as written, not re-serialised: a frontend reading back
-    /// what it wrote gets its own bytes.
+    /// Refuses a bad key or a non-JSON value (`InvalidInput`); the value is stored as written, not
+    /// re-serialised.
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         check_key(key)?;
         if serde_json::from_str::<serde_json::Value>(value).is_err() {
@@ -80,9 +66,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Every setting whose key starts with `prefix`, in key order. An empty
-    /// prefix is every setting. The prefix is compared with `substr`, not
-    /// `LIKE`, so `_` in it is a literal underscore rather than a wildcard.
+    /// Prefix is compared with `substr`, not `LIKE`, so `_` is a literal underscore.
     pub async fn list_settings(&self, prefix: &str) -> Result<Vec<Setting>> {
         let rows = sqlx::query(
             "SELECT key, value FROM settings
@@ -142,7 +126,6 @@ mod tests {
             .collect();
         assert_eq!(keys, vec!["history.chart.a", "history.overview.cards"]);
         assert_eq!(s.list_settings("").await.unwrap().len(), 3);
-        // `_` is not a wildcard.
         assert!(s.list_settings("history_").await.unwrap().is_empty());
     }
 

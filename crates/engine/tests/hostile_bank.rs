@@ -1,28 +1,5 @@
-//! The testing corpus's hostile replay: hand-written hostile inputs, each with
-//! the class of outcome it must have, applied straight to the engine.
-//!
-//! Every case in `crates/corpus/hostile.json` whose `fields` name a text field
-//! the engine API takes directly is applied to an in-memory engine, and the
-//! case's declared `expect` class is asserted:
-//!
-//! | field                    | door                                              |
-//! |--------------------------|---------------------------------------------------|
-//! | `note-body`, `note-title`| `Engine::create_note`, read back via `note_body`  |
-//! | `title`, `author`, `isbn`| `Engine::set_book_fields` on a seeded book        |
-//! | `page`                   | `i64` parse (the CLI's boundary), then `update_progress` |
-//! | `highlight`              | `Storage::insert_highlight` (the `internals` feature) |
-//! | `query`                  | `Engine::search_marks` must answer, not error     |
-//!
-//! One test per class; a failure names the case id and the field. The bank is
-//! **not** edited to match what the engine does: where the engine contradicts a
-//! declared class, the pair is listed in [`KNOWN_DIVERGENCES`] with what was
-//! observed, so the suite stays green on today's behaviour, goes red on any
-//! *new* contradiction, and goes red again when a listed one is fixed (so the
-//! entry is removed and the case keeps its class). Each listed pair is reported
-//! as a suspected engine bug, which is the bank's whole purpose.
-//!
-//! The bank is hand-edited and committed, so this suite needs no fixture and
-//! never skips. It runs on every PR.
+//! Replays `crates/corpus/hostile.json` against the engine and asserts each case's declared
+//! outcome class. Contradictions are listed in `KNOWN_DIVERGENCES`, not edited out of the bank.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,20 +10,8 @@ use serde_json::Value;
 mod common;
 use common::{engine, highlight, seed_book};
 
-/// `(case id, field, what the engine was observed to do)`. Every entry is a
-/// declared class the engine contradicts today; see the module comment.
-///
-/// Observed when the bank was first replayed. Two engine findings account
-/// for all of them:
-///
-/// - **`Engine::set_book_fields` stores an ISBN without `normalize_isbn`.** The
-///   CLI's `set` normalises before calling it, so `rb set --isbn` is safe; the
-///   facade is not, and `crates/api`'s `set_book_fields` (the door every
-///   API client uses) passes a `BookDto` straight through — so the rule "every
-///   ISBN entering the system goes through `normalize_isbn`, no exceptions" has
-///   an exception at the API seam.
-/// - **`update_progress` accepts a negative page** and stores it as the
-///   reading's `current_page` (`rb progress <book> -- -12` prints `p.-12`).
+/// `(case id, field, observed behaviour)` for declared classes the engine contradicts today;
+/// the suite fails when a listed pair is fixed, so the entry must then be removed.
 const KNOWN_DIVERGENCES: &[(&str, &str, &str)] = &[
     (
         "isbn-excel-armour",
@@ -126,9 +91,7 @@ fn bank() -> Vec<Case> {
         .collect()
 }
 
-/// The bank's two templates, expanded as its comment says a generator must
-/// (the same rule as `crates/corpus/src/reader.rs::expand`, restated here
-/// because this crate may not link the generator, nor it this one).
+/// Restates the bank's template expansion because this crate may not link the generator.
 fn expand(value: &str, self_title: &str) -> String {
     let v = value.replace("{self_title}", self_title);
     if let Some(body) = v.strip_prefix("{repeat:").and_then(|r| r.strip_suffix('}'))
@@ -140,24 +103,16 @@ fn expand(value: &str, self_title: &str) -> String {
     v
 }
 
-/// What one application produced.
 #[derive(Debug)]
 enum Observed {
-    /// Written; this is what reads back. `path` is the vault-relative file a
-    /// note landed in, for the slug checks.
     Stored { value: String, path: Option<String> },
-    /// Refused with an error and nothing written (checked by the door). The
-    /// message is read only through `Debug`, in a failure line.
     #[allow(dead_code)]
     Refused(String),
-    /// Accepted without error but nothing was written — refusal by omission.
     Dropped,
-    /// The door panicked.
     Panicked(String),
 }
 
-/// Apply `value` through the door for `field`. Runs in a spawned task, so a
-/// panic is observed and attributed to its case instead of aborting the test.
+/// Runs in a spawned task so a panic is attributed to its case instead of aborting the test.
 async fn apply(engine: &Arc<Engine>, case: &Case, field: &str) -> Observed {
     let engine = Arc::clone(engine);
     let case = case.clone();
@@ -253,8 +208,6 @@ async fn door(engine: &Engine, case: &Case, field: &str) -> Observed {
             }
         }
         "page" => {
-            // The CLI's `progress <book> <page>` parses an i64 before the engine
-            // sees anything; that parse is the boundary for typed text.
             let page = match case.value.trim().parse::<i64>() {
                 Ok(p) => p,
                 Err(e) => return Observed::Refused(format!("not an i64: {e}")),
@@ -306,12 +259,10 @@ async fn door(engine: &Engine, case: &Case, field: &str) -> Observed {
     }
 }
 
-/// Does `observed` satisfy `case`'s class for `field`? `Err` says why not.
 fn verdict(case: &Case, field: &str, observed: &Observed) -> Result<(), String> {
     if let Observed::Panicked(p) = observed {
         return Err(format!("panicked: {p}"));
     }
-    // A query is checked the same way whatever its class: the search answers.
     if field == "query" {
         return match observed {
             Observed::Stored { .. } => Ok(()),
@@ -322,8 +273,6 @@ fn verdict(case: &Case, field: &str, observed: &Observed) -> Result<(), String> 
     match case.expect.as_str() {
         "verbatim" => match observed {
             Observed::Stored { value, .. } => {
-                // `note_body` returns the body minus trailing whitespace — the
-                // vault's stated rule (`update_note_body` trims the same way).
                 let want = if field == "note-body" {
                     input.trim_end().to_string()
                 } else {
@@ -340,8 +289,6 @@ fn verdict(case: &Case, field: &str, observed: &Observed) -> Result<(), String> 
         "normalised" => {
             let normal = case.normal.clone().unwrap_or_default();
             match (field, observed) {
-                // A title's normal form is the slug the vault makes of it, and
-                // it must stay inside the vault.
                 ("note-title", Observed::Stored { path: Some(p), .. }) => {
                     let stem = Path::new(p)
                         .file_stem()
@@ -374,15 +321,11 @@ fn verdict(case: &Case, field: &str, observed: &Observed) -> Result<(), String> 
             Observed::Stored { value, .. } => Err(format!("accepted and stored {value:?}")),
             Observed::Panicked(_) => unreachable!(),
         },
-        // Not panicking was checked above; the engine-still-answers half is
-        // checked once per run by `still_answers`.
         "no-crash" => Ok(()),
         other => Err(format!("unknown class {other}")),
     }
 }
 
-/// After every application: the engine still answers a search and finds the
-/// sentinel note written before the first case.
 async fn still_answers(engine: &Engine) -> Result<(), String> {
     let hits = engine
         .search_marks("quillsentinel", None, None, 5)
@@ -398,8 +341,6 @@ async fn still_answers(engine: &Engine) -> Result<(), String> {
     Ok(())
 }
 
-/// Run every applicable `(case, field)` of one class; collect failures,
-/// excusing (and re-checking) the listed divergences.
 async fn run_class(class: &str) {
     let (_tmp, engine) = engine().await;
     let engine = Arc::new(engine);
@@ -469,7 +410,6 @@ async fn no_crash_cases_do_not_panic_and_search_still_answers() {
     run_class("no-crash").await;
 }
 
-/// The declaration is the contract; this keeps it well-formed.
 #[test]
 fn the_bank_is_well_formed() {
     let cases = bank();

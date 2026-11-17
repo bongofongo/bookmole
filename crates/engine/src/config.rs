@@ -2,50 +2,26 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// sqlx sqlite URL, e.g. "sqlite://database/app.db"
     pub db_url: String,
-    /// Directory for downloaded / extracted cover images.
     pub images_dir: PathBuf,
-    /// Obsidian-openable vault directory for note markdown files.
     pub vault_dir: PathBuf,
-    /// Content-addressed store for the ebook files bookmole owns
-    /// (`<files_dir>/<ab>/<sha256>.<ext>`, migration `0010`).
-    ///
-    /// Beside `images_dir` under `database/` rather than next to the vault: the
-    /// vault is the user's to open, edit and sync, and a directory of files
-    /// named after their own hashes is ours to manage and meaningless to read.
+    /// Content-addressed: `<files_dir>/<ab>/<sha256>.<ext>`. Not beside the vault, which is the
+    /// user's to edit and sync.
     pub files_dir: PathBuf,
-    /// Where a frontend should put its log and crash files.
-    ///
-    /// Under the data root rather than `$XDG_STATE_HOME` on purpose: the data
-    /// root is already this app's single runtime-state anchor, it is already
-    /// gitignored, and it moves with `--data-dir` — so a sandbox run writes its
-    /// logs into the sandbox instead of the user's home.
+    /// Under the data root, not `$XDG_STATE_HOME`, so a sandbox run with `--data-dir` logs into the
+    /// sandbox.
     pub log_dir: PathBuf,
-    /// Where files written for other software go — today the Anki export.
-    ///
-    /// Under the data root for `log_dir`'s reason: it moves with `--data-dir`,
-    /// so a sandbox run writes its exports into the sandbox. Beside the vault
-    /// rather than inside it: the vault is the notebook Obsidian also edits,
-    /// and an export file there would show up as a note.
+    /// Files written for other software (the Anki export). Beside the vault, not in it, or exports
+    /// show up as notes.
     pub exports_dir: PathBuf,
-    /// Optional Google Books API key. Without one Google Books is not asked at
-    /// all: keyless requests are refused with a 429 on every call.
+    /// Without a key Google Books is not asked at all: keyless requests are refused with a 429.
     pub google_api_key: Option<String>,
-    /// A directory to look for calibre's command line tools in, **before**
-    /// `PATH` and the known install locations.
-    ///
-    /// Not a setting anyone is asked to fill in — calibre is feature-detected
-    /// and never a hard dependency, and detection
-    /// already covers `PATH` plus the places calibre installs itself. This is
-    /// what lets a test point at a directory of fake binaries **without
-    /// mutating `PATH`**, which is process-global and therefore a data race
-    /// with every other test in the same binary.
+    /// Searched before `PATH` and the known install dirs; lets tests use fake binaries without
+    /// mutating `PATH`.
     pub calibre_bin_dir: Option<PathBuf>,
 }
 
 impl EngineConfig {
-    /// Standard layout rooted at `data_root`: database/app.db, database/images/, vault/.
     pub fn rooted_at(data_root: impl Into<PathBuf>) -> Self {
         let root: PathBuf = data_root.into();
         EngineConfig {
@@ -72,7 +48,6 @@ mod tests {
         assert_eq!(c.images_dir, PathBuf::from("/tmp/rb/database/images"));
         assert_eq!(c.files_dir, PathBuf::from("/tmp/rb/database/files"));
         assert_eq!(c.vault_dir, PathBuf::from("/tmp/rb/vault"));
-        // Logs must follow --data-dir, or a sandbox run scribbles in $HOME.
         assert_eq!(c.log_dir, PathBuf::from("/tmp/rb/logs"));
         assert_eq!(c.exports_dir, PathBuf::from("/tmp/rb/exports"));
     }

@@ -1,59 +1,7 @@
-//! Layer: a reader's own input — the **physical reader** — as two files.
-//!
-//! This is the avenue every other fixture skips: a reader with no
-//! files and no device. Books arrive from a Goodreads export, pages are typed
-//! with `progress`, notes cite page numbers, one book is finished by hand, one
-//! is reread, three are corrected with `set`, and two editions of one work are
-//! folded together with `merge`.
-//!
-//! # Output — `corpus/generated/reader/`
-//!
-//! - `physical.csv` — a Goodreads export in Goodreads' own 24-column dialect
-//!   (header copied from `crates/engine/tests/fixtures/goodreads/recorded/`):
-//!   CRLF rows, Excel-armoured ISBNs (`="0316769487"`, `=""` for none),
-//!   multi-line reviews with quotes and commas, a few blank `My Rating` cells.
-//!   Half the titles are the real ones in `corpus/manifest.json`, so the epub,
-//!   calibre and KOReader layers can match them; the rest are invented.
-//! - `verbs.jsonl` — what the reader typed afterwards, in order. **The shape is
-//!   the contract the recipe runner (`recipe.rs`) consumes**, stated exactly:
-//!
-//!   ```text
-//!   {"argv": [...], "expect": "ok" | "fail", "case": "<hostile id or null>", "why": "..."}
-//!   ```
-//!
-//!   one object per line, replayed in order as
-//!   `bookmole --data-dir <dir> <argv...>` from the repository root (a path
-//!   in argv is repo-relative), with text arguments after `--`
-//!   where the CLI allows. `expect` is the exit status the runner must see
-//!   (`ok` = 0). `case` names the `hostile.json` case salted into that line, or
-//!   is `null`. The file presupposes `physical.csv` was imported first
-//!   (`goodreads import`), so every recipe that replays it imports that CSV
-//!   in an earlier step.
-//! - `manifest.json` — the layer's declaration: every book with the fragment
-//!   that selects it, every salted row/line with its case id and `expect`
-//!   class, and the sha256 of both files (the layer's byte lock).
-//!
-//! # Rules this file keeps
-//!
-//! - **Books are referenced by ISBN where the shelf row has a valid one, else
-//!   by title fragment, never by id** — ids depend on build order, and a title
-//!   stops being unique the moment another layer brings a second edition into
-//!   the same library (the `everything` recipe). Each fragment matches exactly one title of the CSV,
-//!   case-insensitively as SQL `LIKE` does (a unit test asserts it). In a
-//!   recipe that composes this layer with others a real title may also arrive
-//!   from an epub; whether the two become one book is the engine's matching
-//!   policy and is what such a recipe tests.
-//! - **`cite` and typed review/reflection bodies are gap pins.** `cite` takes
-//!   a numeric note id only (ids depend on build order) and `review`/`reflect`
-//!   take a body only through `$EDITOR`. The verbs open reviews and
-//!   reflections with `--no-edit` (and a rating), the review prose lives in the
-//!   CSV's `My Review`, and three `expect: "fail"` lines carry what the reader
-//!   would have typed — a reflection body, a review body, `cite <note title>` —
-//!   so the replay flags them the day the CLI accepts those forms.
-//! - Hostile values come from `crates/corpus/hostile.json` only, at most one
-//!   per row and at most 5% of rows of each file.
-//! - ChaCha8 from `--seed`, a fixed calendar, never `now()`; no dependency on
-//!   `bookmole` (the ISBN check digits are computed here from the spec).
+//! Layer `reader`: `physical.csv` (a Goodreads export) and `verbs.jsonl`, one JSON object per line
+//! `{argv, expect, case, why}` replayed in order by the recipe runner after importing the CSV.
+//! Books are referenced by ISBN or a title fragment matching exactly one row, never by id: ids
+//! depend on build order.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -64,11 +12,9 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// Bumped when the shape of the output changes. 1 was the empty stub.
 pub const GENERATOR_VERSION: u32 = 2;
 
-/// The reader's calendar opens 2024-01-01 (days since the unix epoch) and runs
-/// to `END_DAY`, 2026-06-30. Fixed, never `now()`.
+/// The calendar runs from 2024-01-01 to `END_DAY` (2026-06-30); fixed, never `now()`.
 const EPOCH_DAY: i64 = 19_723;
 const END_DAY: i64 = 20_634;
 
@@ -76,7 +22,6 @@ pub struct Options {
     pub seed: u64,
 }
 
-/// `corpus/generated/reader`, gitignored like every other generated layer.
 pub fn default_out() -> PathBuf {
     repo_root().join("corpus/generated/reader")
 }
@@ -94,11 +39,8 @@ fn hostile_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hostile.json")
 }
 
-// ---- banks -----------------------------------------------------------------
-
-/// Invented-but-plausible books: `(title, author, unique fragment)`. The two
-/// *Meditations* are the duplicate-edition pair `merge` folds; *Middlemrch* is
-/// the typo `set --title` corrects.
+/// The two *Meditations* are the duplicate-edition pair `merge` folds; *Middlemrch* is the typo
+/// `set --title` corrects.
 const INVENTED: [(&str, &str); 30] = [
     ("Meditations (Hays translation)", "Marcus Aurelius"),
     ("Meditations (Long translation)", "Marcus Aurelius"),
@@ -219,8 +161,6 @@ const DANGLING: [&str; 4] = [
     "Translation Questions",
 ];
 
-// ---- the model ---------------------------------------------------------------
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Shelf {
     Read,
@@ -244,7 +184,6 @@ struct BookRow {
     title: String,
     author: String,
     extra_authors: String,
-    /// The text that selects this book through `resolve_books`; unique.
     frag: String,
     source: &'static str,
     isbn13: Option<String>,
@@ -257,7 +196,7 @@ struct BookRow {
     start: Option<i64>,
     date_read: Option<i64>,
     date_added: i64,
-    /// `None` is a blank cell — Goodreads writes `0`, a hand-edited export does not.
+    /// `None` is a blank cell: Goodreads writes `0`, a hand-edited export does not.
     rating: Option<u32>,
     review: Option<String>,
     private_notes: Option<String>,
@@ -271,7 +210,6 @@ struct Verb {
     expect: &'static str,
     case: Option<String>,
     why: String,
-    /// Which hostile field the salt sits in; the manifest's, not the line's.
     #[serde(skip)]
     field: &'static str,
 }
@@ -279,7 +217,6 @@ struct Verb {
 #[derive(Serialize)]
 struct Salt {
     file: &'static str,
-    /// 1-based data row for the CSV (header excluded), 1-based line for verbs.
     row: usize,
     field: &'static str,
     case: String,
@@ -316,8 +253,6 @@ fn load_hostile() -> std::io::Result<Vec<Hostile>> {
         .collect())
 }
 
-/// `{repeat:s:n}` and `{self_title}` are the bank's two templates (see its
-/// comment); expanded here, as the bank says the generator must.
 pub fn expand(value: &str, self_title: &str) -> String {
     let mut v = value.replace("{self_title}", self_title);
     if let Some(rest) = v.strip_prefix("{repeat:")
@@ -335,8 +270,6 @@ fn case<'a>(bank: &'a [Hostile], id: &str) -> &'a Hostile {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("hostile.json has no case {id}"))
 }
-
-// ---- generation --------------------------------------------------------------
 
 pub fn generate(manifest: &Path, out: &Path, opts: &Options) -> std::io::Result<usize> {
     std::fs::create_dir_all(out)?;
@@ -405,16 +338,8 @@ fn manifest_books(manifest: &Path) -> std::io::Result<Vec<(String, String)>> {
 }
 
 fn build_books(rng: &mut ChaCha8Rng, real: &[(String, String)]) -> Vec<BookRow> {
-    // Half real (up to 30 from the manifest), half invented, then dealt onto
-    // shelves. Fragments are whole titles: they are unique within the CSV by
-    // construction and checked by `every_fragment_selects_exactly_one_book`.
-    //
-    // One manifest book per author. A second title by an author already on the
-    // shelf can score into the importer's candidate band against the first
-    // (*The Adventures of Tom Sawyer* read as *Adventures of Huckleberry Finn*,
-    // 67%), and a refused row is never created, which strands every verb that
-    // selects it by ISBN. The deliberate collision is the pinned Meditations
-    // pair below, among the invented rows.
+    // One manifest book per author: a second title by the same author can score into the importer's
+    // candidate band against the first, and a refused row is never created, stranding its verbs.
     let mut authors = BTreeSet::new();
     let mut seeds: Vec<(String, String, &'static str)> = real
         .iter()
@@ -431,9 +356,8 @@ fn build_books(rng: &mut ChaCha8Rng, real: &[(String, String)]) -> Vec<BookRow> 
     let n = seeds.len();
     let mut order: Vec<usize> = (0..n).collect();
     shuffle(rng, &mut order);
-    // The pinned roles go to fixed invented rows whatever the shuffle says:
-    // both Meditations and Middlemrch are read, so `merge` and `set` have
-    // something with a history to act on.
+    // Pinned roles go to fixed invented rows: both Meditations and Middlemrch are read, so `merge`
+    // and `set` have history to act on.
     let pinned_read: BTreeSet<&str> = [
         "Meditations (Hays translation)",
         "Meditations (Long translation)",
@@ -464,17 +388,13 @@ fn build_books(rng: &mut ChaCha8Rng, real: &[(String, String)]) -> Vec<BookRow> 
             Some((first, rest)) => (first.to_string(), rest.to_string()),
             None => (author_field.clone(), String::new()),
         };
-        // A row that reuses a corpus title always carries an ISBN: once the
-        // layers share a library that title names two editions, and the verbs
-        // select by ISBN exactly so that composition cannot make them ambiguous.
-        // Invented titles still go without one on a fifth of rows.
+        // A row reusing a corpus title always carries an ISBN: once layers share a library the title
+        // names two editions, and verbs select by ISBN so composition stays unambiguous.
         let isbn13 = (*source == "manifest" || below(rng, 10) >= 2).then(|| isbn13(rng));
         let pages = 90 + below(rng, 800);
         let orig_year = 1600 + below(rng, 420);
         let (start, date_read, date_added, read_count) = match shelf {
             Shelf::Read => {
-                // One calendar: readings of 5–40 days, overlapping so one to
-                // three books are open at once, with gaps between.
                 let len = 5 + below(rng, 36) as i64;
                 let start = read_cursor;
                 read_cursor += len / 2 + below(rng, 12) as i64;
@@ -508,10 +428,8 @@ fn build_books(rng: &mut ChaCha8Rng, real: &[(String, String)]) -> Vec<BookRow> 
         }
         books.push(BookRow {
             gr_id: 40_000_000 + (i as u32) * 7_919,
-            // An ISBN survives composition with other layers; a title does not
-            // (two editions of Pride and Prejudice are one fragment). Where the
-            // shelf row carries a valid ISBN the verbs select by it, which the
-            // CLI's selector accepts beside an id or a title fragment.
+            // Where the row has a valid ISBN the verbs select by it: it survives composition with other
+            // layers, a title fragment does not.
             frag: isbn13
                 .as_deref()
                 .filter(|i| is_valid_isbn13(i))
@@ -547,23 +465,17 @@ fn review(rng: &mut ChaCha8Rng) -> String {
         parts.push(pick(rng, &REVIEW_MIDDLES).to_string());
     }
     parts.push(pick(rng, &REVIEW_CLOSINGS).to_string());
-    // Multi-line, the way Goodreads exports a review typed with returns.
     parts.join("\n")
 }
 
-/// The CSV's hostile rows: at most 5% of data rows, one value per row, chosen
-/// from cases whose `fields` allow a Goodreads cell. Returns the salted rows'
-/// ids, which no verb then selects (a salted title is not a stable fragment).
+/// Returns the salted rows' ids, which no verb selects (a salted title is not a stable fragment).
 fn salt_csv(
     rng: &mut ChaCha8Rng,
     bank: &[Hostile],
     books: &mut [BookRow],
     salts: &mut Vec<Salt>,
 ) -> BTreeSet<u32> {
-    // (field, case): the three rows the 5% budget allows. A formula in a
-    // cell (the `csv-cell` attack, carried in the review column because that
-    // is the free-text cell a reader writes), hostile review prose, and a
-    // malformed date. The ISBN salt rides in the verbs (`set --isbn`).
+    // The ISBN salt rides in the verbs (`set --isbn`), so the CSV carries three rows.
     let plan: [(&'static str, &str); 3] = [
         ("csv-cell", "csv-formula-injection"),
         ("review", "html-img-onerror"),
@@ -584,8 +496,7 @@ fn salt_csv(
         let value = expand(&c.value, &b.title);
         match field {
             "review" | "csv-cell" => b.review = Some(value),
-            // The date cell is written raw by `write_csv` from this marker,
-            // carried in `private_notes` (which the row then leaves empty).
+            // The date cell is written raw by `write_csv` from this marker, carried in `private_notes`.
             "date" => {
                 b.date_read = None;
                 b.private_notes = Some(format!("\u{2}DATE:{value}"));
@@ -604,7 +515,6 @@ fn salt_csv(
     salted
 }
 
-/// Titles some verb selects; the CSV never salts these rows.
 const PROTECTED: [&str; 3] = [
     "Meditations (Hays translation)",
     "Meditations (Long translation)",
@@ -638,11 +548,8 @@ const HEADER: [&str; 24] = [
     "Owned Copies",
 ];
 
-/// Placeholder bracket for a cell written raw after the csv writer has quoted
-/// everything else: Goodreads' `="…"` armour is not valid CSV (a bare field
-/// with quotes inside it), so it cannot go through `write_record` — and a
-/// blanket `"""` → `"` replace, as `goodreads.rs` does, would corrupt a review
-/// that ends in a quotation.
+/// Brackets a cell written raw after the csv writer quoted everything else: `="…"` armour is not
+/// valid CSV, and a blanket `"""` replace would corrupt a review ending in a quotation.
 const RAW: char = '\u{1}';
 
 fn raw(s: &str) -> String {
@@ -662,7 +569,6 @@ fn write_csv(books: &[BookRow]) -> std::io::Result<String> {
                     .unwrap_or_else(|| raw("=\"\"")),
                 raw(&format!("=\"{i}\"")),
             ),
-            // A salted value: armoured as Goodreads would armour anything.
             Some(i) => (raw("=\"\""), raw(&format!("=\"{i}\""))),
             None => (raw("=\"\""), raw("=\"\"")),
         };
@@ -720,8 +626,7 @@ fn write_csv(books: &[BookRow]) -> std::io::Result<String> {
         .into_inner()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let text = String::from_utf8(bytes).map_err(std::io::Error::other)?;
-    // Unwrap every raw cell: the csv writer quoted it (it contains `"`), so
-    // its on-disk form is `"\u1=""…""\u1"`; replace that with the bare armour.
+    // The csv writer quoted each raw cell (it contains `"`); replace that form with the bare armour.
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();
     while let Some(start) = rest.find(&format!("\"{RAW}")) {
@@ -743,8 +648,6 @@ fn last_first(author: &str) -> String {
         None => author.to_string(),
     }
 }
-
-// ---- verbs -------------------------------------------------------------------
 
 fn s(x: &str) -> String {
     x.to_string()
@@ -783,11 +686,8 @@ fn build_verbs(
         .filter(|b| b.shelf == Shelf::Read && !PROTECTED.contains(&b.title.as_str()))
         .collect();
 
-    // 0. The importer asks about two rows (the two Meditations look like one
-    //    book to it, and so do two Twain titles); the reader answers "they are
-    //    separate" by importing again with `--new`, which creates only the
-    //    undecided rows. The path is repo-relative: the runner runs from the
-    //    repository root, as recipe paths are.
+    // The importer asks about two rows that look like one book; the reader answers with `--new`,
+    // which creates only the undecided rows. The path is repo-relative: the runner runs from the root.
     verbs.push(ok(
         vec![
             s("goodreads"),
@@ -798,8 +698,6 @@ fn build_verbs(
         "answer the importer's duplicate question: create the undecided rows",
     ));
 
-    // 1. Typed pages over weeks for every book on the nightstand. Pages rise
-    //    monotonically, with a believable evening's worth between entries.
     for b in &reading {
         let mut page = 3 + below(rng, 20);
         let sessions = 5 + below(rng, 5);
@@ -814,7 +712,6 @@ fn build_verbs(
             page += 8 + below(rng, 40);
         }
     }
-    // One finished by hand: the last page, then `--finished`.
     if let Some(b) = reading.first() {
         verbs.push(ok(
             vec![
@@ -826,7 +723,6 @@ fn build_verbs(
             "a physical book finished by hand: last page and --finished in one verb",
         ));
     }
-    // One reread: a finished book opened again, then a few typed pages.
     if let Some(b) = read.first() {
         verbs.push(ok(
             vec![s("progress"), b.frag.clone(), s("--reread")],
@@ -840,9 +736,6 @@ fn build_verbs(
         }
     }
 
-    // 2. Notes. A hub note per author links to every per-book note title; the
-    //    book notes link back to their author's hub, cite a page, and some
-    //    link to a note nobody has written yet.
     let mut authors: Vec<&str> = usable
         .iter()
         .filter(|b| b.shelf != Shelf::ToRead)
@@ -850,7 +743,7 @@ fn build_verbs(
         .collect();
     authors.sort_unstable();
     authors.dedup();
-    let mut book_note_titles: Vec<(String, String)> = Vec::new(); // (author, title)
+    let mut book_note_titles: Vec<(String, String)> = Vec::new();
     for b in usable.iter().filter(|b| b.shelf != Shelf::ToRead) {
         let n = 1 + below(rng, 3);
         for k in 0..n {
@@ -900,8 +793,7 @@ fn build_verbs(
         ));
     }
 
-    // 3. Reviews and reflections, opened without $EDITOR (bodies cannot be
-    //    typed on the command line; the prose is in the CSV's My Review).
+    // Reviews and reflections open without $EDITOR; the prose lives in the CSV's My Review.
     for b in read.iter().take(10) {
         let rating = 2 + below(rng, 4);
         verbs.push(ok(
@@ -922,11 +814,8 @@ fn build_verbs(
         ));
     }
 
-    // 3b. Gap pins. A physical reader would type a reflection's or review's
-    //     body and cite a note by its title; the CLI takes neither (bodies
-    //     only through $EDITOR, `cite` only by numeric ids). These lines are
-    //     what the reader would type, expected to fail today, so the replay
-    //     flags them the day the CLI grows the form and the line flips to ok.
+    // Gap pins: the CLI takes a review/reflection body only via $EDITOR and `cite` only numeric
+    // ids. These lines are expected to fail so the replay flags them when the CLI grows the form.
     if let Some(b) = reading.get(1) {
         verbs.push(Verb {
             argv: vec![
@@ -977,7 +866,6 @@ fn build_verbs(
         });
     }
 
-    // 4. Search for what was written.
     for w in ["narrator", "weather", "pencil"] {
         verbs.push(ok(
             vec![s("find"), s("--"), s(w)],
@@ -985,15 +873,11 @@ fn build_verbs(
         ));
     }
 
-    // 5. Hostile lines, inserted at deterministic positions among the benign
-    //    ones before the corrections, at most 5% of the final count.
     let salted = hostile_verbs(bank, &reading);
-    // k salted lines among n benign ones plus the 4 corrections must satisfy
-    // 20k <= n + k + 4, i.e. k <= (n + 4) / 19.
+    // k salted lines among n benign plus 4 corrections must satisfy 20k <= n + k + 4.
     let budget = (verbs.len() + 4) / 19;
-    // An ISBN-changing salt goes last: every later verb selects that book by
-    // its ISBN, and a mid-stream `set --isbn` would strand them (found in the
-    // `everything` recipe: a reflect on Dracula by an ISBN `set` had replaced).
+    // An ISBN-changing salt goes last: later verbs select that book by ISBN, and a mid-stream
+    // `set --isbn` would strand them.
     let mut late = Vec::new();
     for (field, mut v) in salted.into_iter().take(budget) {
         v.field = field;
@@ -1005,9 +889,7 @@ fn build_verbs(
         verbs.insert(at, v);
     }
 
-    // 6. Corrections, last, so earlier verbs select the uncorrected titles:
-    //    three `set`s give `field_provenance` its `user` rows, then the two
-    //    Meditations become one.
+    // Corrections go last so earlier verbs select the uncorrected titles.
     let year_book = read.get(1).map(|b| b.frag.clone()).unwrap_or_default();
     let isbn_book = read.get(2).map(|b| b.frag.clone()).unwrap_or_default();
     verbs.push(ok(
@@ -1034,7 +916,6 @@ fn build_verbs(
 
     verbs.extend(late);
 
-    // Record the salts' final line numbers.
     for (i, v) in verbs.iter().enumerate() {
         if let Some(c) = &v.case {
             let h = case(bank, c);
@@ -1050,8 +931,6 @@ fn build_verbs(
     verbs
 }
 
-/// The verbs file's hostile lines, in priority order (the budget takes a
-/// prefix). Each is the CLI shape that puts the value where the field names.
 fn hostile_verbs(bank: &[Hostile], reading: &[&BookRow]) -> Vec<(&'static str, Verb)> {
     let frag = reading
         .get(1)
@@ -1119,12 +998,10 @@ fn hostile_verbs(bank: &[Hostile], reading: &[&BookRow]) -> Vec<(&'static str, V
             },
         )
     };
-    // A link case is a body whose hostile part is the `[[...]]` target.
     let link = |id: &str, t: &str| ("wikilink", body(id, t).1);
     let isbn = {
-        // Not `isbn-10-x-check`: the calibre layer salts that one too, and the
-        // same ISBN set on a second book collides on `books.isbn_10 UNIQUE` the
-        // moment the two layers share a library (seen in the `everything` recipe).
+        // Not `isbn-10-x-check`: the calibre layer salts that one too, and the same ISBN on a second
+        // book collides on `books.isbn_10 UNIQUE` once the layers share a library.
         let c = case(bank, "isbn-979");
         (
             "isbn",
@@ -1154,8 +1031,6 @@ fn hostile_verbs(bank: &[Hostile], reading: &[&BookRow]) -> Vec<(&'static str, V
         body("frontmatter-breaker", "A body with a fence"),
     ]
 }
-
-// ---- small helpers (copied from goodreads.rs, so each layer stands alone) ---
 
 fn date(days: i64) -> String {
     let z = days + 719_468;
@@ -1188,9 +1063,6 @@ fn isbn13(rng: &mut ChaCha8Rng) -> String {
         .collect()
 }
 
-/// A real ISBN-13: thirteen digits whose check digit agrees. A salted value
-/// (a bad checksum) fails this and is written without an ISBN-10 sibling, so
-/// the row carries only the hostile value.
 fn is_valid_isbn13(s: &str) -> bool {
     s.len() == 13
         && s.bytes().all(|c| c.is_ascii_digit())
@@ -1282,8 +1154,7 @@ mod tests {
         assert_eq!(text.lines().next(), recorded.lines().next());
         assert!(text.contains("\r\n"), "Goodreads writes CRLF");
         assert!(text.contains(",=\""), "ISBNs carry Excel armour");
-        // The armour is not valid CSV, so count columns the way the engine's
-        // reader will: the `csv` crate is lenient about quotes mid-field.
+        // The armour is not valid CSV, so count columns as the engine's reader will; `csv` is lenient.
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
             .from_reader(text.as_bytes());
@@ -1345,7 +1216,6 @@ mod tests {
                 };
                 assert_eq!(hits, 1, "{frag:?} selects {hits} books in {line}");
             }
-            // `set --title` renames from the next line on.
             if argv[0] == "set"
                 && let Some(i) = argv.iter().position(|a| *a == "--title")
             {

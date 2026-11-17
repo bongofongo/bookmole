@@ -1,12 +1,5 @@
-//! Tables of contents: the EPUB 3 navigation document and the EPUB 2 NCX.
-//!
-//! Both read into the same tree of [`TocNode`]s. [`Package::nav`] and
-//! [`Package::ncx`] give the whole of one document — its table of contents,
-//! and the landmarks and page list beside it; [`Package::toc`] picks the
-//! better of the two. Either document may be missing or broken: that is a
-//! [`Warning`] and an empty answer, never an error. Nesting is bounded by
-//! [`Limits::max_xml_depth`](crate::Limits::max_xml_depth), since a level of
-//! the tree is at least one element of the document.
+//! Tables of contents: the EPUB 3 navigation document and the EPUB 2 NCX, as one `TocNode` tree.
+//! A missing or broken document is a `Warning` and an empty answer, never an error.
 
 use std::io::{Read, Seek};
 use std::iter::FusedIterator;
@@ -20,37 +13,26 @@ use crate::xml::{Document, Node, collapse};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TocNode {
-    /// The label: the text of the NCX `navLabel`, or of the navigation
-    /// document's `a`/`span`, with XML whitespace collapsed and trimmed
-    /// (U+00A0 is kept). An image-only label falls back to the image's `alt`,
-    /// then a `title`. Empty when the book gives none.
+    /// Whitespace collapsed (U+00A0 kept); an image-only label falls back to `alt`, then `title`.
     pub label: String,
-    /// The link as written: NCX `content@src`, or the `a`'s `href`. `None`
-    /// for an unlinked heading (a navigation document's `span`, or a
-    /// `navPoint` with no `content`).
+    /// As written. `None` for an unlinked heading.
     pub href: Option<String>,
-    /// The archive path `href` points into, without its fragment: resolved
-    /// against the directory of the document that holds the link, as the
-    /// spec says (an NCX's links against the NCX, a navigation document's
-    /// against it), by textual join like every other path here — not
-    /// percent-decoded and not dot-folded. A link that is only a fragment
-    /// (`#notes`) points into its own document. `None` with no `href`, and
-    /// for an absolute URL (`https://…`), which is not inside the book.
+    /// `href`'s archive path without fragment, joined textually to the holding document's directory
+    /// (not decoded or dot-folded). `None` without an `href` or for an absolute URL.
     pub path: Option<String>,
     /// The fragment after `#`, without the `#`.
     pub fragment: Option<String>,
     /// NCX `playOrder`, when present and a number.
     pub play_order: Option<usize>,
-    /// The link's `epub:type` (a landmark's `bodymatter`, `toc`, `cover`…),
-    /// or an NCX `pageTarget`'s `type`.
+    /// The link's `epub:type` (a landmark's `bodymatter`, `toc`, `cover`…), or an NCX
+    /// `pageTarget`'s `type`.
     pub epub_type: Option<String>,
     /// Nested entries, in reading order.
     pub children: Vec<TocNode>,
 }
 
 impl TocNode {
-    /// `path#fragment`, or `path` alone — the place this entry points at,
-    /// as one string. `None` without a `path`.
+    /// `path#fragment`, or `path` alone — the place this entry points at, as one string.
     pub fn target(&self) -> Option<String> {
         let path = self.path.as_deref()?;
         Some(match &self.fragment {
@@ -76,8 +58,7 @@ pub enum TocSource {
 pub struct Navigation {
     /// Which document this is.
     pub source: TocSource,
-    /// The NCX's `docTitle`, or the heading of the navigation document's
-    /// table-of-contents `nav`.
+    /// The NCX's `docTitle`, or the heading of the navigation document's table-of-contents `nav`.
     pub title: Option<String>,
     /// The table of contents.
     pub toc: Vec<TocNode>,
@@ -93,7 +74,7 @@ pub struct Navigation {
 pub struct Toc {
     /// Which document it came from.
     pub source: TocSource,
-    /// The entries, in reading order. Never empty.
+    /// Never empty.
     pub entries: Vec<TocNode>,
 }
 
@@ -104,9 +85,7 @@ impl Toc {
     }
 }
 
-/// Walk a tree of entries in reading order — each entry, then its children —
-/// yielding `(depth, entry)`, depth 0 at the top. Iterative, so it costs no
-/// stack however deep the tree.
+/// Yields `(depth, entry)` in reading order, depth 0 at the top; iterative, so depth is safe.
 pub fn flatten(nodes: &[TocNode]) -> Flatten<'_> {
     Flatten {
         stack: vec![(0, nodes.iter())],
@@ -147,13 +126,7 @@ impl FusedIterator for Flatten<'_> {}
 const NCX_MEDIA_TYPE: &str = "application/x-dtbncx+xml";
 
 impl<R: Read + Seek> Package<R> {
-    /// The table of contents, from the best document the book has.
-    ///
-    /// The EPUB 3 navigation document is preferred when it yields at least
-    /// one entry — it is the normative one in EPUB 3, and an NCX beside it is
-    /// there for older reading systems. Otherwise the NCX, when it yields at
-    /// least one. `None` when neither does. Each call reads the documents
-    /// again.
+    /// Prefers the EPUB 3 navigation document when it yields an entry, else the NCX. Rereads each call.
     pub fn toc(&mut self) -> Option<Toc> {
         let nav = self.nav_toc();
         if !nav.is_empty() {
@@ -169,30 +142,19 @@ impl<R: Read + Seek> Package<R> {
         })
     }
 
-    /// The EPUB 3 navigation document's table of contents; empty without
-    /// one. See [`Package::nav`].
+    /// The EPUB 3 navigation document's table of contents; empty without one.
     pub fn nav_toc(&mut self) -> Vec<TocNode> {
         self.nav().map(|n| n.toc).unwrap_or_default()
     }
 
-    /// The NCX's table of contents; empty without one. See [`Package::ncx`].
+    /// The NCX's table of contents; empty without one.
     pub fn ncx_toc(&mut self) -> Vec<TocNode> {
         self.ncx().map(|n| n.toc).unwrap_or_default()
     }
 
-    /// The EPUB 3 navigation document: the first manifest item whose
-    /// `properties` include `nav`, read leniently as XHTML.
-    ///
-    /// Its table of contents is the `nav` whose `epub:type` includes `toc`
-    /// (failing that, the one with `id="toc"`, failing that the first `nav`
-    /// that is neither landmarks nor a page list): its `ol` of `li`, each
-    /// labelled by an `a` (a link) or a `span` (an unlinked heading), nested
-    /// by an `ol` inside the `li`. `landmarks` and `page-list` navs are read
-    /// the same way. Links resolve against the navigation document's own
-    /// directory.
-    ///
-    /// `None` when the book has no navigation document, or when it cannot be
-    /// read — which also records a [`Warning::NavUnreadable`].
+    /// The toc is the `nav` with `epub:type` `toc`, else `id="toc"`, else the first that is neither
+    /// landmarks nor page list. `None` without a navigation document; an unreadable one also
+    /// records `Warning::NavUnreadable`.
     pub fn nav(&mut self) -> Option<Navigation> {
         let id = self
             .manifest()
@@ -218,19 +180,8 @@ impl<R: Read + Seek> Package<R> {
         }
     }
 
-    /// The EPUB 2 NCX: the manifest item the spine's `toc` attribute names,
-    /// or — when there is no such attribute — the first item of the NCX
-    /// media type.
-    ///
-    /// Each `navPoint` becomes a node, with its `navLabel`'s text, its
-    /// `content@src` resolved against the NCX's own directory, and its
-    /// `playOrder`. A `navPoint` without a `playOrder` is kept. Siblings are
-    /// put in `playOrder` order when **every** one of them has a numeric
-    /// `playOrder` (a stable sort: equal ones keep document order), and kept
-    /// in document order otherwise. `docTitle` and `pageList` are read too.
-    ///
-    /// `None` when the book has no NCX, or when it cannot be read — which
-    /// also records a [`Warning::NcxUnreadable`].
+    /// Siblings sort by `playOrder` (stable) only when every one has it; a `navPoint` without one is
+    /// kept. `None` without an NCX; an unreadable one also records `Warning::NcxUnreadable`.
     pub fn ncx(&mut self) -> Option<Navigation> {
         let id = match self.spine().toc.clone() {
             Some(id) => id,
@@ -253,8 +204,7 @@ impl<R: Read + Seek> Package<R> {
         }
     }
 
-    /// Read and parse a navigation document by manifest id; its warnings go
-    /// on the package.
+    /// Read and parse a navigation document by manifest id; its warnings go on the package.
     fn read_toc_document(
         &mut self,
         id: &str,
@@ -335,8 +285,8 @@ fn read_ncx(root: &Node, ncx_path: &str) -> Result<Navigation, TocProblem> {
     })
 }
 
-/// The text of a `navLabel` or `docTitle`: its `text` child (or, failing
-/// that, its first child), collapsed.
+/// The text of a `navLabel` or `docTitle`: its `text` child (or, failing that, its first
+/// child), collapsed.
 fn label_of_ncx(label: &Node) -> Option<String> {
     label
         .child("text")
@@ -355,8 +305,6 @@ fn ncx_node(item: &Node, ncx_path: &str) -> TocNode {
         href: href.map(str::to_string),
         path,
         fragment,
-        // Parsed exactly as the old crate did (no trimming), so a book keeps
-        // the order it had.
         play_order: item.attr("playOrder").and_then(|n| n.parse::<usize>().ok()),
         epub_type: None,
         children: Vec::new(),
@@ -485,8 +433,8 @@ mod tests {
     const CH: &str = r#"<item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>"#;
     const SPINE: &str = r#"<itemref idref="ch1"/><itemref idref="ch2"/>"#;
 
-    /// A book with a navigation document at `OEBPS/nav/nav.xhtml` and/or an
-    /// NCX at `OEBPS/toc.ncx`.
+    /// A book with a navigation document at `OEBPS/nav/nav.xhtml` and/or an NCX at
+    /// `OEBPS/toc.ncx`.
     fn book(nav: Option<&str>, ncx: Option<&str>) -> Vec<u8> {
         let mut manifest = CH.to_string();
         if nav.is_some() {
@@ -586,7 +534,6 @@ mod tests {
             ]
         );
         assert_eq!(nav.toc[2].href.as_deref(), Some("https://example.com/more"));
-        // A link out of the nav's own directory still finds its spine item.
         let spine: Vec<Option<usize>> = flatten(&nav.toc)
             .map(|(_, n)| n.path.as_deref().and_then(|x| p.spine_index_of_path(x)))
             .collect();
@@ -635,8 +582,7 @@ mod tests {
         assert_eq!(p.toc().unwrap().source, TocSource::Ncx);
     }
 
-    /// The old crate dropped a `navPoint` with no `playOrder`. It is kept,
-    /// and a level where any sibling lacks one keeps document order.
+    /// The old crate dropped a `navPoint` with no `playOrder`.
     #[test]
     fn a_nav_point_without_a_play_order_is_kept_in_document_order() {
         let ncx = r#"<ncx><navMap>
@@ -677,7 +623,6 @@ mod tests {
     #[test]
     fn an_ncx_found_by_media_type_when_the_spine_names_none() {
         let bytes = book(None, Some(NCX));
-        // Drop the spine's toc attribute.
         let mut p = Package::from_bytes(&bytes).unwrap();
         assert!(p.spine().toc.is_some());
         let opf = opf(
@@ -721,8 +666,7 @@ mod tests {
         }
     }
 
-    /// Real navigation documents are not always well-formed; what can be
-    /// read is.
+    /// Real navigation documents are not always well-formed; what can be read is.
     #[test]
     fn a_sloppy_navigation_document_is_read_as_far_as_it_goes() {
         let nav = r#"<HTML><BODY><NAV epub:type="toc"><OL>
@@ -757,7 +701,6 @@ mod tests {
             id: "nav".into(),
             problem: TocProblem::LimitExceeded
         }));
-        // Under the cap, every level is kept.
         let limits = Limits::default().with_max_xml_depth(1024);
         let mut p = Package::from_bytes_with(&bytes, limits).unwrap();
         let toc = p.nav_toc();
@@ -798,10 +741,8 @@ mod tests {
         assert_eq!(resolve("x", Some("mailto:a@b")), (None, None));
     }
 
-    /// A 20 000-entry table of contents over a 20 000-item manifest: every
-    /// entry's spine position is looked up, which used to scan the manifest
-    /// per entry. The bound is loose on purpose — the point is that it is
-    /// linear, which a quadratic scan (4 × 10⁸ path comparisons) is not.
+    /// A 20 000-entry table of contents over a 20 000-item manifest: every entry's spine position
+    /// is looked up, which used to scan the manifest per entry.
     #[test]
     fn a_huge_toc_over_a_huge_manifest_resolves_in_linear_time() {
         const N: usize = 20_000;
@@ -841,9 +782,8 @@ mod tests {
         eprintln!("20k-entry toc read and resolved in {elapsed:?}");
     }
 
-    /// An HTML entity in an NCX label resolves, and whitespace inside a label
-    /// collapses to one space. (The old `epub` crate dropped the whole TOC on
-    /// the entity, and trimmed only a label's ends.)
+    /// An HTML entity in an NCX label resolves, and whitespace inside a label collapses to one
+    /// space.
     #[test]
     fn ncx_labels_resolve_html_entities_and_collapse_whitespace() {
         let ncx = "<ncx><navMap><navPoint playOrder=\"1\"><navLabel><text>Part\n      One &mdash; Start</text></navLabel><content src=\"text/ch1.xhtml\"/></navPoint></navMap></ncx>";
@@ -855,10 +795,8 @@ mod tests {
         assert_eq!(toc[0].target().as_deref(), Some("OEBPS/text/ch1.xhtml"));
     }
 
-    /// An NCX in a subdirectory of the package document's resolves its links
-    /// against its own directory, and the spine item is still found. (The
-    /// old crate joined them to the package document's directory, so
-    /// `../text/ch1.xhtml` named no spine item.)
+    /// An NCX in a subdirectory of the package document's resolves its links against its own
+    /// directory, and the spine item is still found.
     #[test]
     fn an_ncx_in_a_subdirectory_resolves_against_its_own_directory() {
         let ncx = r#"<ncx><navMap><navPoint playOrder="1"><navLabel><text>One</text></navLabel><content src="../text/ch1.xhtml"/></navPoint></navMap></ncx>"#;
@@ -886,10 +824,8 @@ mod tests {
         );
     }
 
-    /// A `navPoint` with no label is kept with an empty one, and one with no
-    /// `content` of its own is kept with no link — it does not borrow a
-    /// descendant's. (The old crate dropped the label-less point with its
-    /// whole subtree, and searched depth-first for `content`.)
+    /// A `navPoint` with no label is kept with an empty one, and one with no `content` of its own
+    /// is kept with no link — it does not borrow a descendant's.
     #[test]
     fn a_nav_point_without_a_label_or_its_own_content_is_kept() {
         let ncx = r#"<ncx><navMap><navPoint playOrder="1"><content src="text/ch1.xhtml"/></navPoint><navPoint playOrder="2"><navLabel><text>Heading</text></navLabel><navPoint playOrder="3"><navLabel><text>Inside</text></navLabel><content src="text/ch1.xhtml#i"/></navPoint></navPoint></navMap></ncx>"#;
@@ -924,8 +860,6 @@ mod props {
     }
 
     fn label() -> impl Strategy<Value = String> {
-        // Text with no XML whitespace at the ends and single spaces inside,
-        // so it is its own collapsed form; markup characters included.
         "[A-Za-z0-9é&<>'\"][A-Za-z0-9é&<>'\",.-]{0,8}( [A-Za-z0-9é&<>'\"]{1,6}){0,2}"
     }
 
@@ -1020,8 +954,8 @@ mod props {
     }
 
     proptest! {
-        /// A generated navigation document reads back as the tree it was
-        /// written from, every target and every depth in place.
+        /// A generated navigation document reads back as the tree it was written from, every target
+        /// and every depth in place.
         #[test]
         fn a_generated_nav_tree_round_trips(t in tree()) {
             let mut ol = String::new();
@@ -1049,8 +983,8 @@ mod props {
             prop_assert!(p.warnings().is_empty(), "{:?}", p.warnings());
         }
 
-        /// Flattening visits every node once, parents before children, and a
-        /// node's depth is one more than its parent's.
+        /// Flattening visits every node once, parents before children, and a node's depth is one more
+        /// than its parent's.
         #[test]
         fn flatten_preserves_order_and_depth(t in tree()) {
             fn to_nodes(t: &[Tree]) -> Vec<TocNode> {

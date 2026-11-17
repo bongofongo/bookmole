@@ -1,21 +1,7 @@
-//! Named character references: XML's five and HTML 4's 253.
-//!
-//! EPUB content documents are XHTML, and books written by hand or by older
-//! tools use HTML's named entities (`&mdash;`, `&hellip;`, `&eacute;`) without
-//! declaring them, in content, in navigation documents and now and then in an
-//! NCX or a package document. An XML parser that knows only `&lt;` and its
-//! siblings would refuse all of those files. This is the fixed table XHTML
-//! 1.0 names — Latin-1 (96), Symbols (124) and Special (32, which include
-//! `quot`, `amp`, `lt` and `gt`), plus XML's `apos` — 253 names, each mapped
-//! to the one character HTML 4 defines for it.
-//!
-//! It is a sorted static slice searched by binary search: no allocation, no
-//! hashing, no build script and no crate. **Nothing else is ever expanded.**
-//! An entity a document declares in its own DTD is not in this table and
-//! stays literal, so an entity bomb costs its own length.
+//! Named character references: XML's five and HTML 4's 253, as a sorted static slice.
+//! Nothing else is expanded: an entity declared in a document's own DTD stays literal.
 
-/// `(name, character)`, sorted by name in byte order (uppercase first), so
-/// that [`lookup`] can binary-search it.
+/// Sorted by name in byte order (uppercase first), so [`lookup`] can binary-search it.
 pub(crate) const ENTITIES: &[(&str, char)] = &[
     ("AElig", '\u{C6}'),
     ("Aacute", '\u{C1}'),
@@ -272,9 +258,7 @@ pub(crate) const ENTITIES: &[(&str, char)] = &[
     ("zwnj", '\u{200C}'),
 ];
 
-/// The character a named reference stands for: one of XML's five predefined
-/// entities or one of HTML 4's. Names are case-sensitive (`&Eacute;` is not
-/// `&eacute;`).
+/// Names are case-sensitive (`&Eacute;` is not `&eacute;`).
 pub(crate) fn lookup(name: &str) -> Option<char> {
     ENTITIES
         .binary_search_by(|(n, _)| (*n).cmp(name))
@@ -304,8 +288,7 @@ mod tests {
         }
     }
 
-    /// The Latin-1 block is HTML 4's first list: one name for each of
-    /// U+00A0..=U+00FF, no gaps.
+    /// The Latin-1 block is HTML 4's first list: one name for each of U+00A0..=U+00FF, no gaps.
     #[test]
     fn latin1_is_covered_exactly_once() {
         let mut seen: Vec<u32> = ENTITIES

@@ -1,18 +1,5 @@
-//! The free-text search: a [`ParsedQuery`] asked of every provider, merged and
-//! ranked by [`super::ranking::rank`].
-//!
-//! What a provider is **sent** is decided here, once, from the parse — so every
-//! provider is asked the same question and each provider module only spells it
-//! (`openlibrary.rs` knows `q` must be three characters and plain; this module
-//! knows `dune by frank herbert` is a title and an author).
-//!
-//! **One request per provider, two at most** (Open Library allows one a
-//! second): the plan's request; then, only if that answered nothing, the plain
-//! text as a fallback (a wrong guess at a marker must not cost the search); or,
-//! only if the answer shows the text is an author's whole name and few of the
-//! rows are theirs, a request for that author's books. Both second requests run
-//! inside the same five-second budget, and a second request that fails or runs
-//! out of time costs nothing the first one found.
+//! The free-text search: a `ParsedQuery` asked of every provider, merged and ranked.
+//! At most two requests per provider: the plan, then a plain-text fallback or an author follow-up.
 
 use std::collections::BTreeSet;
 
@@ -23,16 +10,13 @@ use crate::diagnostic::Diagnostic;
 use crate::error::EngineError;
 use crate::providers::{Manners, MetadataProvider, ProviderId, ProviderWork, SearchRequest};
 
-/// What each provider is asked.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Plan {
     pub primary: SearchRequest,
-    /// Asked only when `primary` answered nothing.
     pub fallback: Option<SearchRequest>,
     pub limit: u32,
 }
 
-/// The request a parse becomes.
 pub(crate) fn plan(q: &ParsedQuery, limit: u32) -> Plan {
     let base = SearchRequest {
         limit,
@@ -57,9 +41,7 @@ pub(crate) fn plan(q: &ParsedQuery, limit: u32) -> Plan {
     }
     let f = &q.fields;
     if f.title.is_some() || f.author.is_some() || f.series.is_some() {
-        // Fielded, or marked (`by`, ` - `, a comma): the parts as typed. The
-        // series has no field of its own at either provider; it goes in the
-        // free text, where both search it.
+        // Series has no field at either provider; it goes in the free text, where both search it.
         let free: Vec<&str> = [f.free.as_deref(), f.series.as_deref()]
             .into_iter()
             .flatten()
@@ -72,8 +54,8 @@ pub(crate) fn plan(q: &ParsedQuery, limit: u32) -> Plan {
                 query: (!free.is_empty()).then(|| free.join(" ")),
                 ..base.clone()
             },
-            // A marker can be part of a title (*Stand by Me*): if reading it as
-            // one found nothing, ask the text as typed.
+            // A marker can be part of a title (*Stand by Me*): if reading it as one found nothing,
+            // ask the text as typed.
             fallback: if marked { plain() } else { None },
             limit,
         };
@@ -88,9 +70,6 @@ pub(crate) fn plan(q: &ParsedQuery, limit: u32) -> Plan {
     }
 }
 
-/// The names a set of results carries: the authors the search has in hand, so
-/// a second parse can believe a split of the text into title and author when
-/// its author half is one of them.
 pub(crate) struct ResultNames {
     authors: Vec<Vec<String>>,
 }
@@ -104,7 +83,6 @@ impl ResultNames {
         )
     }
 
-    /// The names themselves: the offline index's authors, for example.
     pub(crate) fn named<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
         let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
         for a in names {
@@ -118,7 +96,6 @@ impl ResultNames {
         }
     }
 
-    /// These names and `more`'s.
     pub(crate) fn and(mut self, more: &ResultNames) -> Self {
         let mut all: BTreeSet<Vec<String>> = self.authors.into_iter().collect();
         all.extend(more.authors.iter().cloned());
@@ -126,8 +103,7 @@ impl ResultNames {
         self
     }
 
-    /// Whether `folded` is some author's whole name: every word of it is in
-    /// the name, and every word of the name longer than an initial is in it.
+    /// Every word of `folded` is in the name, and every name word longer than an initial is in it.
     fn whole(&self, folded: &str) -> bool {
         let want: Vec<&str> = folded.split_whitespace().collect();
         !want.is_empty()
@@ -137,8 +113,7 @@ impl ResultNames {
     }
 }
 
-/// Every word of `want` is a word of `name`, or an initial of one, and at least
-/// one of them is a real name (three letters or more).
+/// Every word of `want` is a word or initial of `name`, and at least one has three letters or more.
 fn covers(want: &[&str], name: &[String]) -> bool {
     want.iter().any(|w| w.chars().count() >= 3)
         && want.iter().all(|w| {
@@ -158,12 +133,8 @@ impl KnownNames for ResultNames {
     }
 }
 
-/// How many results a whole-name query should see by that author before an
-/// author request is not worth its second.
 const AUTHOR_ROWS_ENOUGH: usize = 5;
 
-/// The second request for a query that is an author's whole name, when the
-/// first answer was mostly books *about* them.
 fn author_follow_up(q: &ParsedQuery, works: &[ProviderWork], limit: u32) -> Option<SearchRequest> {
     if q.isbn.is_some() || q.fields != Default::default() || q.words.len() < 2 {
         return None;
@@ -190,7 +161,6 @@ fn author_follow_up(q: &ParsedQuery, works: &[ProviderWork], limit: u32) -> Opti
     })
 }
 
-/// A provider's error, as a diagnostic: closed if it closed itself on the way.
 pub(crate) fn failure(p: &dyn MetadataProvider, e: &EngineError) -> Diagnostic {
     match p.manners().and_then(Manners::closed_for) {
         Some(left) => Diagnostic::provider_rate_limited(p.id(), left),
@@ -198,7 +168,6 @@ pub(crate) fn failure(p: &dyn MetadataProvider, e: &EngineError) -> Diagnostic {
     }
 }
 
-/// One provider's whole part in a search, inside its budget.
 pub(crate) async fn ask(
     p: &dyn MetadataProvider,
     q: &ParsedQuery,
@@ -233,7 +202,6 @@ pub(crate) async fn ask(
                     w
                 }));
             }
-            // The first answer stands; the second was a refinement of it.
             Ok(Err(e)) => {
                 tracing::debug!(provider = %id, class = ?crate::diagnostic::ErrorClass::from(&e),
                     "author follow-up failed; the first answer stands");
@@ -244,8 +212,7 @@ pub(crate) async fn ask(
     Ok(works)
 }
 
-/// A degradation, logged without its detail: a provider's error text can hold
-/// the request URL, and the request URL holds the query.
+/// Logged without detail: a provider's error text can hold the request URL, which holds the query.
 pub(crate) fn log_degraded(id: ProviderId, d: &Diagnostic) {
     use crate::diagnostic::DiagnosticKind as K;
     let (kind, class) = match &d.kind {
@@ -335,16 +302,12 @@ mod tests {
         assert!(!names.whole("dune herbert"));
     }
 
-    // ---- the fan-out, against fakes ----
-
     use crate::providers::ProviderBook;
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// A script: each book a request is answered with, and its edition count.
     type Script = Box<dyn Fn(&SearchRequest) -> Vec<(Book, u32)> + Send + Sync>;
 
-    /// Answers each request from a script and records what it was asked.
     struct Scripted {
         answer: Script,
         asked: Mutex<Vec<SearchRequest>>,
@@ -442,10 +405,7 @@ mod tests {
                 self.0.manners()
             }
         }
-        // The whole pipeline as `Engine::search` runs it: a session, to its
-        // end, against a database of its own.
-        // No database: these run under a paused clock, which sqlx's pool
-        // cannot (the session's own tests cover what is kept).
+        // No database: these run under a paused clock, which sqlx's pool cannot.
         let providers: Vec<Box<dyn MetadataProvider>> = vec![Box::new(Shared(p.clone()))];
         let roster = super::super::session::Roster {
             providers: std::sync::Arc::new(providers),
@@ -480,8 +440,6 @@ mod tests {
         (results, done.warnings)
     }
 
-    /// A marked query that finds nothing is asked again as typed — one more
-    /// request, not a dead end.
     #[tokio::test]
     async fn a_marked_query_that_finds_nothing_falls_back_to_the_text() {
         let p = std::sync::Arc::new(Scripted::new(|req| {
@@ -500,8 +458,6 @@ mod tests {
         assert_eq!(asked[1].query.as_deref(), Some("stand by me"));
     }
 
-    /// An author's whole name answered mostly by books *about* her asks once
-    /// more for her books, and ranks them above the studies.
     #[tokio::test]
     async fn an_author_s_name_asks_for_her_books_once() {
         let p = std::sync::Arc::new(Scripted::new(|req| match &req.author {
@@ -533,7 +489,6 @@ mod tests {
         assert!(top4.iter().all(|a| *a == "Haruki Murakami"), "{top4:?}");
     }
 
-    /// A provider that said to wait is not asked, and the search says so.
     #[tokio::test(start_paused = true)]
     async fn a_closed_provider_is_not_asked_and_is_reported() {
         let mut s = Scripted::new(|_| vec![(titled("Dune", "Frank Herbert"), 100)]);
@@ -552,8 +507,6 @@ mod tests {
         );
     }
 
-    /// The budget covers both requests: a hanging provider is one timeout,
-    /// not two.
     #[tokio::test(start_paused = true)]
     async fn a_hanging_provider_times_out_once() {
         let mut s = Scripted::new(|_| Vec::new());
@@ -567,8 +520,6 @@ mod tests {
         assert_eq!(start.elapsed(), PROVIDER_TIMEOUT);
     }
 
-    /// Two providers looked up at once: two hanging ones cost one budget, not
-    /// two in a row.
     #[tokio::test(start_paused = true)]
     async fn an_isbn_lookup_asks_every_provider_at_once() {
         let mut a = Scripted::new(|_| Vec::new());

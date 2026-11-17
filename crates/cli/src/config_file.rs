@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// User-level CLI configuration, stored as TOML at
-/// `$XDG_CONFIG_HOME/bookmole/config.toml` (default `~/.config/...`).
-/// Written with mode 600 — it holds secrets.
+/// CLI config as TOML at `$XDG_CONFIG_HOME/bookmole/config.toml`.
+/// Written with mode 600 because it holds secrets.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CliConfig {
@@ -47,7 +46,7 @@ pub fn save(config: &CliConfig) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Show a secret without revealing it: `AIza…f3Qk` (first/last 4 chars).
+/// Masks a secret to its first and last 4 characters (`AIza…f3Qk`).
 pub fn mask(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() <= 8 {

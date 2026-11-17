@@ -29,11 +29,7 @@ pub use book_search::BookMatch;
 pub(crate) use book_search::LibraryBook;
 pub(crate) use book_search::{HeldFacts, LibraryIdentities};
 pub use books::{BookSort, MergeReport};
-/// The merge table's three crate-internal readers: which columns it governs,
-/// what a record says about one of them, and which it speaks to at all. Item
-/// 30's enrichment assembles per-field attribution and prints held-back values,
-/// and both have to name columns *this* table knows rather than strings that
-/// look like column names.
+/// Lets enrichment name columns the merge table knows rather than column-like strings.
 pub(crate) use books::{
     field_pair, field_value, fields_said, merge_columns, merge_provider_record,
 };
@@ -80,17 +76,12 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 use crate::error::Result;
 
-/// Concrete storage boundary wrapping SQLite. This struct IS the swap point:
-/// a future backend replaces its internals, or grows into a trait when a
-/// second backend actually exists.
 #[derive(Debug, Clone)]
 pub struct Storage {
     pool: SqlitePool,
 }
 
 impl Storage {
-    /// Connect (creating the file if missing), enable foreign keys, run
-    /// embedded migrations. Accepts any sqlx sqlite URL incl. "sqlite::memory:".
     pub async fn connect(db_url: &str) -> Result<Storage> {
         let opts = SqliteConnectOptions::from_str(db_url)?
             .create_if_missing(true)
@@ -114,34 +105,9 @@ impl Storage {
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-/// Applied migrations whose **comments** were amended after they shipped:
-/// `(version, a SHA-384 sqlx may have recorded for the file as it was, the
-/// SHA-384 of the file as it is now)`.
-///
-/// sqlx stores each applied migration's checksum and refuses to open a
-/// database whose file has changed since, so "never edit an applied migration"
-/// is enforced by every library that has applied it. These were edited anyway,
-/// because the source is published and their comments carried personal data
-/// (a name, a mount path) or pointed at documents that are not published with
-/// it: **the SQL of each is byte-identical**, which is checked by stripping the
-/// comments from the old and new files and comparing what is left. It is never
-/// a way to change what a migration does.
-///
-/// A version amended twice has a row for each checksum a library may hold:
-/// 16, 19, 22, 26 and 32 had their comments amended twice, so a library can
-/// carry either earlier checksum.
-///
-/// Adding a row means: comments only, with the SQL byte-identical; the old
-/// checksum taken from git
-/// (`git show <rev>:<file> | openssl dgst -sha384 -binary | xxd -p -c 256`)
-/// and checked against a real database's `hex(checksum)` on a copy; both
-/// checksums recorded here; and the file exempted from CI's append-only
-/// migrations check, which would otherwise fail every change from then on.
-///
-/// The third column is not used by the repair, which writes whatever the
-/// embedded migrator carries. It is a pin: CI's append-only check exempts
-/// these files, so `every_amended_entry_names_a_changed_migration` is what
-/// refuses a further edit to one of them.
+/// Applied migrations whose comments were amended: `(version, old SHA-384, current SHA-384)`.
+/// The SQL must stay byte-identical; a new row also needs the file exempted from CI's
+/// append-only check.
 const AMENDED: &[(i64, &str, &str)] = &[
     (
         3,
@@ -305,12 +271,7 @@ const AMENDED: &[(i64, &str, &str)] = &[
     ),
 ];
 
-/// Run the embedded migrations, first moving any [`AMENDED`] version recorded
-/// with its *old* checksum onto the current one.
-///
-/// The repair is exact: a row is rewritten only when its stored checksum is
-/// the one listed. Any other mismatch is left for the migrator to refuse, as
-/// it always has, so this is not a bypass of sqlx's check.
+/// Repairs only the exact listed old checksums; any other mismatch is still refused.
 async fn migrate(pool: &SqlitePool) -> Result<()> {
     repair_amended_checksums(pool).await?;
     MIGRATOR.run(pool).await?;
@@ -345,8 +306,6 @@ async fn repair_amended_checksums(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// Lowercase hex to bytes. Only ever fed [`AMENDED`]'s constants, which a
-/// test decodes in full.
 fn from_hex(hex: &str) -> Vec<u8> {
     hex.as_bytes()
         .chunks(2)
@@ -365,9 +324,7 @@ pub(crate) fn now_unix() -> i64 {
 mod tests {
     use super::*;
 
-    // Doubles as the FTS5-availability canary: migration includes a
-    // CREATE VIRTUAL TABLE ... fts5 and fails here if the bundled
-    // SQLite lacks it.
+    // Doubles as the FTS5-availability canary: a migration creates an fts5 table.
     #[tokio::test]
     async fn migrates_in_memory() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -404,11 +361,7 @@ mod tests {
             .to_vec()
     }
 
-    /// Each amended version exists, its old checksum is a whole SHA-384, the
-    /// file really did change — a row whose old and new agree would be a
-    /// repair of nothing — and the file is still exactly the amended one. That
-    /// last pin is the append-only rule for the amended files: CI exempts them
-    /// from the diff check, so a further edit is refused here instead.
+    /// The final pin is the append-only rule for amended files: a further edit is refused here.
     #[test]
     fn every_amended_entry_names_a_changed_migration() {
         for &(version, old, new) in AMENDED {
@@ -424,10 +377,8 @@ mod tests {
         }
     }
 
-    /// `.github/amended-migrations.txt` is what CI's append-only check skips,
-    /// and it must name exactly the migrations this table repairs: one missing
-    /// there fails every pull request from then on, and one extra lets an
-    /// unrepaired edit through.
+    /// The amended-migrations list must equal this table: a missing entry fails CI, an extra one
+    /// lets an unrepaired edit through.
     #[test]
     fn the_amended_list_matches_the_repair_table() {
         let list = include_str!("../../../../.github/amended-migrations.txt");
@@ -443,9 +394,6 @@ mod tests {
         assert_eq!(listed, table);
     }
 
-    /// A library that applied the amended files before their comments changed
-    /// opens, and ends holding the current checksums — on a real file, closed
-    /// and reopened, the way an existing library meets a new build.
     #[tokio::test]
     async fn a_library_migrated_before_the_amendment_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -462,8 +410,6 @@ mod tests {
         }
     }
 
-    /// The repair is for exactly the listed checksums. Any other mismatch on
-    /// an amended version — or on any version at all — is refused as before.
     #[tokio::test]
     async fn any_other_checksum_is_still_refused() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();

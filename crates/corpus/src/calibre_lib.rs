@@ -1,40 +1,7 @@
-//! Layer `calibre`: a real calibre library, built by `calibredb` from the
-//! Gutenberg epubs, plus a shelf of formatless ("physical") rows.
-//!
-//! One tier-2 layer: one avenue (calibre) at one realism level, generated
-//! into its own directory and pinned by its own lock, with hostile values
-//! salted in at a declared, low proportion.
-//!
-//! **The warts are the tool's.** Every row is created with `calibredb add` and
-//! dressed with `calibredb set_metadata`, so `&`-joined authors, calibre's
-//! `0101-01-01` undated sentinel, `series_index = 1.0` on a series-less row,
-//! comma-split tags, the `isbn` column derived from the `identifiers` map and
-//! the formats `ebook-convert` really produced are what calibre wrote, never
-//! what this file thinks calibre writes. Recording them by hand would prove we
-//! agree with ourselves.
-//!
-//! **Semantic lock, not byte lock.** calibre mints uuids,
-//! timestamps and `last_modified` no seed controls, and it renders `pubdate`
-//! through the local timezone (a leap-day pubdate of `2024-02-29` came back as
-//! `2024-02-28T00:00:00+00:00` on a UTC+ machine — measured). So
-//! `calibre.lock.json` records only what is a function of
-//! `(seed, GENERATOR_VERSION, manifest)`: per row the calibre id (rows are
-//! added one at a time, in plan order), title, authors as calibredb reports
-//! them, format extensions, tags, series, series index, cover presence, isbn,
-//! identifier keys and the publication *year*. The `metadata.db` bytes are not
-//! deterministic and nothing asserts on them.
-//!
-//! **Safety.** Every invocation passes `--with-library` and points
-//! `CALIBRE_CONFIG_DIRECTORY` at a private directory under the output, so the
-//! user's own calibre settings and library are never read or written. The
-//! generator refuses to touch a target whose `metadata.db` it did not create
-//! (no marker file) and any path containing `Calibre Library`.
-//!
-//! **Salting**, the rule every layer follows: at most one hostile value per row, at most 5% of
-//! rows, drawn from `crates/corpus/hostile.json` for the fields `title`,
-//! `author`, `tag`, `isbn`, `date`. A value calibredb itself refuses (an
-//! impossible date) is recorded as `calibre_rejected` and the row keeps its
-//! benign metadata — the tool's refusal is the observation.
+//! Layer `calibre`: a real calibre library built by `calibredb` from the Gutenberg epubs, plus
+//! formatless rows. The lock records only what is deterministic, never `metadata.db` bytes.
+//! Every call passes `--with-library` and a private `CALIBRE_CONFIG_DIRECTORY`, so the user's
+//! calibre is never touched; targets without our marker or under `Calibre Library` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -44,33 +11,23 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 use serde_json::{Value, json};
 
-/// Bumped when the *shape* of the layer changes (which rows, which fields).
 pub const GENERATOR_VERSION: u32 = 2;
 
-/// Marker written into a library this generator created. Its absence beside a
-/// `metadata.db` means somebody else's library, and the generator refuses.
+/// Written into libraries this generator created; a `metadata.db` without it is never touched.
 const MARKER: &str = ".bookmole-corpus";
 
-/// How many formatless rows join the Gutenberg ones. Calibre users track
-/// physical books exactly this way (`calibredb add --empty`), and it is what
-/// makes 5% of the rows enough to salt one case per field.
 const PHYSICAL_ROWS: usize = 70;
 
-/// Fields this layer salts, in the order cases are chosen.
 const SALT_FIELDS: [&str; 5] = ["title", "author", "tag", "isbn", "date"];
 
-/// Gutenberg ids that get a second format through `ebook-convert`. Short books
-/// on purpose: a pdf of War and Peace costs minutes for no extra coverage.
 const CONVERSIONS: [(u64, &str); 3] = [(1080, "pdf"), (11, "mobi"), (219, "azw3")];
 
-/// Gutenberg ids whose epub cover is replaced by a rendered PNG.
 const RENDERED_COVERS: [u64; 3] = [1952, 1404, 16328];
 
 pub struct Options {
     pub seed: u64,
 }
 
-/// `corpus/generated/calibre`, gitignored like every other generated layer.
 pub fn default_out() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -83,8 +40,6 @@ pub fn default_out() -> PathBuf {
 fn hostile_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hostile.json")
 }
-
-// ---- banks -------------------------------------------------------------------
 
 const ADJECTIVES: &[&str] = &[
     "Quiet", "Northern", "Lost", "Salt", "Winter", "Borrowed", "Paper", "Iron", "Hidden", "Last",
@@ -150,9 +105,7 @@ const PUBLISHERS: &[&str] = &[
     "Granta",
     "NYRB Classics",
 ];
-/// Tags as a calibre user really types them: spaces, case, an apostrophe, a
-/// quoted word, and one entry that is two tags joined by a comma — calibre
-/// splits it, which is the wart.
+/// One entry is two tags joined by a comma, which calibre splits.
 const TAGS: &[&str] = &[
     "Fiction",
     "classics",
@@ -173,25 +126,19 @@ const SERIES: &[&str] = &[
     "Northern Lights Cycle",
 ];
 
-// ---- the plan ----------------------------------------------------------------
-
 #[derive(Debug, Clone, Default)]
 struct Row {
-    /// Gutenberg id, or `None` for a formatless row.
     gutenberg: Option<u64>,
     title: String,
     authors: String,
     publisher: Option<String>,
-    /// `Some(year)` or `None` = undated (calibre's `0101-01-01`).
     year: Option<i32>,
     tags: Vec<String>,
     series: Option<String>,
-    /// `Some` only when the series is given an index; a series without one is
-    /// left to calibre's 1.0 default, which is the wart under test.
+    /// A series without an index is left to calibre's 1.0 default, deliberately.
     series_index: Option<f64>,
     isbn: Option<String>,
     goodreads: Option<u64>,
-    /// Put the ISBN in through `identifiers:` (true) or the `isbn` field (false).
     isbn_via_identifiers: bool,
     language: Option<String>,
     rendered_cover: bool,
@@ -217,8 +164,7 @@ fn chance(rng: &mut ChaCha8Rng, percent: u64) -> bool {
     rng.next_u64() % 100 < percent
 }
 
-/// A valid ISBN-13 with a 978 prefix. Computed here, not by the engine's
-/// `normalize_isbn` — the generator is the independent oracle.
+/// Computed here, not by the engine's `normalize_isbn`, so the generator stays independent.
 fn isbn13(rng: &mut ChaCha8Rng) -> String {
     let mut digits = vec![9u32, 7, 8];
     for _ in 0..9 {
@@ -249,8 +195,6 @@ struct Manifest {
     books: Vec<ManifestBook>,
 }
 
-/// Expand the bank's `{repeat:s:n}` template; refuse what cannot be an argv
-/// element (NUL) or needs a per-row substitution (`{self_title}`).
 fn usable_value(raw: &str) -> Option<String> {
     if raw.contains('\0') || raw.contains("{self_title}") {
         return None;
@@ -299,8 +243,6 @@ fn plan(manifest: &Manifest, epubs: &Path, seed: u64) -> std::io::Result<Vec<Row
     books.sort_by_key(|b| b.id);
 
     for b in books {
-        // calibre's own separator. The manifest lists the Federalist's three
-        // authors with commas; a calibre user would have typed `&`.
         let authors = b.author.split(", ").collect::<Vec<_>>().join(" & ");
         let mut row = Row {
             gutenberg: Some(b.id),
@@ -315,8 +257,6 @@ fn plan(manifest: &Manifest, epubs: &Path, seed: u64) -> std::io::Result<Vec<Row
         rows.push(row);
     }
 
-    // The second edition: a physical Penguin copy of a book the shelf already
-    // holds as a Gutenberg epub. Same work, different edition, real ISBN.
     rows.push(Row {
         title: "Crime and Punishment".into(),
         authors: "Fyodor Dostoyevsky".into(),
@@ -366,14 +306,8 @@ fn plan(manifest: &Manifest, epubs: &Path, seed: u64) -> std::io::Result<Vec<Row
         if chance(&mut rng, 12) {
             authors = format!("{authors} & {two}");
         }
-        // Two invented rows whose authors share a name must not share a title
-        // word either: the importer reads *The Distant Atlas* by Noor Brennan
-        // as a near-miss of *The Distant Island* by Helen Brennan (77%), and
-        // *The Borrowed Clockmaker* by Mateo Dunmore as one of *The Borrowed
-        // Orchard* by Elena Fairbairn & Mateo Hale (74%), and refuses to
-        // create either, so a salted case on that row never reaches its book.
-        // Re-drawn rather than kept as a collision; the deliberate duplicate is
-        // the second Crime and Punishment above.
+        // Invented rows whose authors share a name must not share a title word: the importer treats
+        // near-misses as the same book and refuses to create the row.
         let words = title_words(&title);
         let names = name_words(&authors);
         if invented
@@ -400,7 +334,6 @@ fn plan(manifest: &Manifest, epubs: &Path, seed: u64) -> std::io::Result<Vec<Row
     Ok(rows)
 }
 
-/// An invented title's words, without its articles and its `in`.
 fn title_words(title: &str) -> BTreeSet<String> {
     title
         .split_whitespace()
@@ -409,7 +342,6 @@ fn title_words(title: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Every first and last name in an invented `A & B` author field.
 fn name_words(authors: &str) -> BTreeSet<String> {
     authors
         .split_whitespace()
@@ -418,7 +350,6 @@ fn name_words(authors: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The benign metadata every row gets, from the banks.
 fn dress(row: &mut Row, rng: &mut ChaCha8Rng, years: std::ops::Range<i32>) {
     if chance(rng, 70) {
         row.year = Some(years.start + below(rng, (years.end - years.start) as usize) as i32);
@@ -435,7 +366,6 @@ fn dress(row: &mut Row, rng: &mut ChaCha8Rng, years: std::ops::Range<i32>) {
     let s = below(rng, 100);
     if s < 12 {
         row.series = Some(SERIES[below(rng, SERIES.len())].to_string());
-        // Novellas are numbered 1.5 in calibre; one in four here.
         let whole = 1 + below(rng, 5) as u32;
         row.series_index = Some(if chance(rng, 25) {
             f64::from(whole) + 0.5
@@ -453,18 +383,16 @@ fn dress(row: &mut Row, rng: &mut ChaCha8Rng, years: std::ops::Range<i32>) {
             row.goodreads = Some(1000 + rng.next_u64() % 9_000_000);
         }
     } else if i < 60 {
-        // An identifiers map with no isbn: `isbn` comes back empty beside it.
+        // An identifiers map with no isbn leaves `isbn` empty.
         row.goodreads = Some(1000 + rng.next_u64() % 9_000_000);
     }
 }
 
-/// One case per salted field, on distinct rows, within 5% of the rows.
 fn salt(rows: &mut [Row], rng: &mut ChaCha8Rng) -> std::io::Result<()> {
     let budget = rows.len() * 5 / 100;
     let mut used = BTreeSet::new();
     for field in SALT_FIELDS.iter().take(budget) {
-        // Distinct cases: `empty-string` fits four of the five fields, and
-        // salting it twice spends the 5% on one observation.
+        // Distinct cases: salting `empty-string` twice spends the 5% budget on one observation.
         let candidates: Vec<Salt> = hostile_candidates(field)?
             .into_iter()
             .filter(|c| {
@@ -477,8 +405,7 @@ fn salt(rows: &mut [Row], rng: &mut ChaCha8Rng) -> std::io::Result<()> {
             continue;
         }
         let pick = candidates[below(rng, candidates.len())].clone();
-        // Salt formatless rows: they are the cheap ones, and a salted title on
-        // a Gutenberg row would also change its on-disk folder name.
+        // Salt formatless rows only: a salted title on a Gutenberg row changes its folder name.
         let mut idx = below(rng, rows.len());
         let mut probed = 0;
         while rows[idx].gutenberg.is_some() || rows[idx].why.is_some() || used.contains(&idx) {
@@ -495,8 +422,6 @@ fn salt(rows: &mut [Row], rng: &mut ChaCha8Rng) -> std::io::Result<()> {
     }
     Ok(())
 }
-
-// ---- running calibre ----------------------------------------------------------
 
 struct Calibre {
     library: PathBuf,
@@ -543,8 +468,7 @@ fn refuse_foreign(out: &Path) -> std::io::Result<()> {
             "refusing: the target looks like a user's calibre library",
         ));
     }
-    // Anything already in library/ that this generator did not mark is not
-    // ours to wipe, whether or not it carries a metadata.db.
+    // Never wipe anything in library/ that this generator did not mark.
     let foreign_contents =
         lib.is_dir() && !lib.join(MARKER).exists() && std::fs::read_dir(&lib)?.next().is_some();
     if foreign_contents {
@@ -598,8 +522,7 @@ pub fn generate(
                 c.arg("--empty").arg(format!("--title={}", row.title));
             }
         }
-        // `isbn` is not a `set_metadata` field; `add --isbn` is the tool's other
-        // door for it, so the rows that do not use `identifiers:` use this one.
+        // `isbn` is not a `set_metadata` field; `add --isbn` is the other way in.
         if let Some(isbn) = row.isbn.as_ref().filter(|_| !row.isbn_via_identifiers) {
             c.arg(format!("--isbn={isbn}"));
         }
@@ -631,8 +554,7 @@ pub fn generate(
         }
         let mut ids = Vec::new();
         if let Some(isbn) = &row.isbn {
-            // `identifiers:` replaces the whole map, so an ISBN that came in
-            // through `add --isbn` is restated when a goodreads id joins it.
+            // `identifiers:` replaces the whole map, so restate the isbn when a goodreads id joins it.
             if row.isbn_via_identifiers || row.goodreads.is_some() {
                 ids.push(format!("isbn:{isbn}"));
             }
@@ -673,8 +595,7 @@ pub fn generate(
             cal.must(c, "add_format")?;
         }
 
-        // The salt goes last and alone, so a value calibre refuses costs only
-        // itself and the row keeps everything above.
+        // The salt goes last and alone, so a value calibre refuses costs only itself.
         if let Some(s) = &row.salt {
             let calibre_field = match s.field {
                 "title" => "title",
@@ -706,7 +627,6 @@ pub fn generate(
         }
     }
 
-    // calibre's view, projected onto what is deterministic.
     let mut c = cal.cmd("list");
     c.args([
         "--for-machine",
@@ -861,13 +781,9 @@ fn rows_counts(
     }
 }
 
-// ---- rendered covers ----------------------------------------------------------
-
 const COVER_W: u32 = 400;
 const COVER_H: u32 = 600;
 
-/// A flat two-tone cover with a diagonal, deterministic from the calibre id —
-/// `devdb.rs`'s approach, so a wrong tile is obvious rather than plausible.
 fn write_cover(path: &Path, id: i64) -> std::io::Result<()> {
     let hue = ((id as f64) * 137.507_764_05) % 360.0;
     let (r, g, b) = hsv_rgb(hue, 0.50, 0.70);
@@ -920,8 +836,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The plan — which rows, which metadata, which salts — is a pure function
-    /// of the seed. No calibre needed, so this runs everywhere.
     #[test]
     fn the_plan_is_a_function_of_the_seed() {
         let m = manifest();
@@ -974,7 +888,6 @@ mod tests {
         assert!(refuse_foreign(&tmp).is_err());
         std::fs::write(tmp.join("library").join(MARKER), b"").unwrap();
         assert!(refuse_foreign(&tmp).is_ok());
-        // Unmarked contents without a metadata.db are refused too.
         std::fs::remove_dir_all(&tmp).unwrap();
         std::fs::create_dir_all(tmp.join("library")).unwrap();
         std::fs::write(tmp.join("library/notes.txt"), b"x").unwrap();

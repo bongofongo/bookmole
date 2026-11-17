@@ -1,16 +1,5 @@
-//! The notes surface on the facade: note lists, threads, links, the drawn
-//! graph, parts, mentions and link previews.
-//!
-//! Every method here composes reads that live in `storage/note_rows.rs` with
-//! the pure rules in [`crate::notes`] (excerpts, headings, parts, mentions) and
-//! [`crate::note_graph`] (threads, the drawn graph). Nothing a notes view shows
-//! is derived above the seam: which months exist, which note is a thread's hub,
-//! what a row's first words are and which link a sentence would become are all
-//! answered here, once, for every frontend.
-//!
-//! **Privacy.** Excerpts, headings, part bodies, mention snippets and preview
-//! paragraphs are the reader's own writing. Nothing in this module logs any of
-//! them, and nothing may above `trace!`.
+//! The notes surface on the facade: lists, threads, links, graph, parts, mentions, previews.
+//! Note text is the reader's private writing: never log it above `trace!`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,71 +15,50 @@ use crate::storage::{
     ReadCount, SearchHit, ko_datetime_to_unix,
 };
 
-/// The widest UTC offset [`Engine::note_periods_in`] accepts, ±18 hours —
-/// ISO 8601's bound, and wider than any zone in use (UTC+14 is the widest).
 pub const MAX_UTC_OFFSET_MINUTES: i32 = 18 * 60;
 
-/// One row of a note list.
 #[derive(Debug, Clone)]
 pub struct NoteRow {
     pub note: NoteRecord,
     pub book: Option<Book>,
-    /// The heading a row draws — see [`notes::row_heading`].
     pub heading: Option<String>,
-    /// The latest part's words, plain — see [`notes::excerpt`].
     pub excerpt: String,
-    /// `1` for an ordinary note.
     pub parts: i64,
-    /// Unix seconds: the newest part's date.
-    pub latest_part_at: i64,
     /// The latest part's page, else the note's.
+    pub latest_part_at: i64,
     pub latest_part_page: Option<i64>,
-    /// Distinct targets the body names, written or not.
     pub links_out: i64,
-    /// Distinct notes linking here.
     pub links_in: i64,
-    /// The hub id of the thread this note is in; `None` when it links nothing
-    /// and nothing links it.
+    /// Hub id of the note's thread; `None` when it links nothing and nothing links it.
     pub thread: Option<i64>,
-    /// Which read of its book the note's reading is, counted over every
-    /// sibling — *the first read's review*. `None` for a note that names no
-    /// reading (an ordinary note floats free of one).
+    /// Which read of its book the note's reading is; `None` for a note naming no reading.
     pub read: Option<ReadCount>,
 }
 
-/// Which rows `note_rows` returns.
 #[derive(Debug, Clone, Default)]
 pub struct NoteRowQuery {
-    /// `None` is every kind.
     pub kinds: Option<Vec<NoteKind>>,
     pub scope: NoteScope,
-    /// Exactly these notes, in the engine's order.
     pub ids: Option<Vec<i64>>,
-    /// Unix seconds, exclusive: rows whose latest part is before this.
+    /// Unix seconds, exclusive.
     pub until: Option<i64>,
-    /// A cursor: only rows strictly after `(latest_part_at, id)` in the list's
-    /// own order (`latest_part_at DESC, id DESC`) — so two notes sharing a
-    /// second at a page edge are never skipped, which `until` alone cannot
-    /// promise.
+    /// Cursor: rows strictly after `(latest_part_at, id)` in list order; `until` alone can skip ties.
     pub after: Option<(i64, i64)>,
     /// Negative is no limit.
     pub limit: i64,
 }
 
-/// One thread a set of notes is in.
 #[derive(Debug, Clone)]
 pub struct ThreadSummary {
     pub hub: NoteRow,
     pub notes: i64,
-    /// Distinct, in order of first appearance among the members newest first.
+    /// Distinct, in order of first appearance among members newest first.
     pub books: Vec<Book>,
     /// Members whose latest part is at or after `since`; `0` without one.
     pub joined: i64,
-    /// Every member, newest first.
     pub members: Vec<i64>,
 }
 
-/// One wikilink a note wrote.
 #[derive(Debug, Clone)]
 pub struct NoteLink {
     pub from: NoteRow,
@@ -98,14 +66,11 @@ pub struct NoteLink {
     pub to: Option<NoteRecord>,
 }
 
-/// One drawn node.
 #[derive(Debug, Clone)]
 pub struct GraphNodeView {
-    /// `n<id>` or `t<lowercased title>`.
     pub key: String,
     /// `None` for an unwritten link.
     pub row: Option<NoteRow>,
-    /// The note's title, or the link text as first written.
     pub title: String,
     pub degree: i64,
 }
@@ -123,7 +88,6 @@ pub struct NoteGraphView {
     pub edges: Vec<GraphEdgeView>,
 }
 
-/// What an unsaved note would link to and be linked from.
 #[derive(Debug, Clone, Default)]
 pub struct LinkPreview {
     pub outgoing: Vec<OutgoingLink>,
@@ -131,12 +95,7 @@ pub struct LinkPreview {
 }
 
 impl Engine {
-    // ---- the list ------------------------------------------------------------
-
-    /// A page of note rows, newest part first — see
-    /// [`crate::Storage::note_row_facts`] for the order and the narrowings.
-    /// `book_id` and `reading_id` are alternatives; the API refuses the pair,
-    /// and [`NoteScope`] cannot represent it.
+    /// A page of note rows, newest part first. `book_id` and `reading_id` are alternatives.
     pub async fn note_rows(&self, q: &NoteRowQuery) -> Result<Vec<NoteRow>> {
         let facts = self
             .storage
@@ -156,19 +115,12 @@ impl Engine {
         self.rows_from_facts(facts, &index).await
     }
 
-    /// Every month (UTC) some note's latest part falls in, newest first, as
-    /// `(year, month)`. Which months exist is the engine's fact; *Today*, *This
-    /// week* and *October* are a frontend's words for them.
+    /// Every UTC month some note's latest part falls in, newest first, as `(year, month)`.
     pub async fn note_periods(&self) -> Result<Vec<(i32, u8)>> {
         self.storage.note_periods().await
     }
 
-    /// [`Engine::note_periods`] in the reader's zone: the months are read in
-    /// a fixed offset `utc_offset_minutes` east of UTC (UTC−8 is `-480`), so
-    /// *Jump to*'s months agree with a list whose day bands are local. The
-    /// engine still has no zone of its own — the frontend, which does, names
-    /// the offset. Refused (`InvalidInput`) beyond ±18 hours, the range of
-    /// every zone that exists and of ISO 8601's offsets.
+    /// [`Engine::note_periods`] in a fixed offset `utc_offset_minutes` east of UTC; refused past ±18h.
     pub async fn note_periods_in(&self, utc_offset_minutes: i32) -> Result<Vec<(i32, u8)>> {
         if utc_offset_minutes.abs() > MAX_UTC_OFFSET_MINUTES {
             return Err(EngineError::InvalidInput(format!(
@@ -231,8 +183,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// Rows for exactly these notes, keyed by id — the graph's and the
-    /// threads' way of asking the list query for a set.
     async fn rows_by_id(&self, ids: Vec<i64>) -> Result<HashMap<i64, NoteRow>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
@@ -247,11 +197,7 @@ impl Engine {
         Ok(rows.into_iter().map(|r| (r.note.id, r)).collect())
     }
 
-    // ---- threads --------------------------------------------------------------
-
-    /// The threads containing at least one of `note_ids`, newest member first.
-    /// `since` counts how many members' latest part is at or after it — the
-    /// *N joined this week* a view says — and is `0` when absent.
+    /// Threads containing any of `note_ids`, newest member first; `since` counts members at or after.
     pub async fn threads_for(
         &self,
         note_ids: &[i64],
@@ -314,11 +260,8 @@ impl Engine {
         Ok(out)
     }
 
-    // ---- links you made --------------------------------------------------------
-
-    /// Every wikilink written in these notes: newest source first (the list's
-    /// order), body order within one note. A self-link is left out, as
-    /// `link_contexts` leaves it out — it is not a link to anything.
+    /// Every wikilink written in these notes: newest source first, body order within a note;
+    /// self-links are left out.
     pub async fn links_from_notes(&self, note_ids: &[i64]) -> Result<Vec<NoteLink>> {
         let written = self.storage.links_written(note_ids).await?;
         let mut by_source: HashMap<i64, Vec<(String, Option<NoteRecord>)>> = HashMap::new();
@@ -348,12 +291,7 @@ impl Engine {
         Ok(out)
     }
 
-    // ---- the graph -------------------------------------------------------------
-
-    /// The graph a links view draws — see [`GraphScope`] for what each scope
-    /// holds and [`note_graph::build_graph`] for the rules they share. `Around`
-    /// takes `steps` of 1 or 2 and nothing else, and a note that does not exist
-    /// is `NotFound`.
+    /// The graph a links view draws. `Around` takes `steps` of 1 or 2; a missing note is `NotFound`.
     pub async fn note_graph(&self, scope: GraphScope) -> Result<NoteGraphView> {
         let mut mentions = Vec::new();
         if let GraphScope::Around { note_id, steps } = scope {
@@ -422,8 +360,6 @@ impl Engine {
         Ok(NoteGraphView { nodes, edges })
     }
 
-    // ---- parts ------------------------------------------------------------------
-
     async fn note_or_not_found(&self, note_id: i64) -> Result<NoteRecord> {
         self.storage
             .get_note(note_id)
@@ -431,33 +367,22 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("note id {note_id}")))
     }
 
-    /// Which parts of a note a search query matches, as part numbers
-    /// (1-based, ascending) — the half of a search hit `SearchMarks` cannot
-    /// carry, since a hit names the note. The parts are read from the file as
-    /// [`Engine::note_parts`] reads them and matched by `notes_fts`' own rules
-    /// ([`crate::storage::Storage::matching_texts`]): the parts holding every term, else the
-    /// parts holding any, else none (the match was in the title, or there is
-    /// none). `NotFound` for a note that does not exist.
+    /// Part numbers (1-based, ascending) of a note matched by `query`: parts holding every term,
+    /// else any, else none. `NotFound` for a missing note.
     pub async fn matched_parts(&self, note_id: i64, query: &str) -> Result<Vec<i64>> {
         let parts = self.note_parts(note_id).await?;
         let texts: Vec<(i64, &str)> = parts.iter().map(|p| (p.n, p.body.as_str())).collect();
         self.storage.matching_texts(query, &texts).await
     }
 
-    /// A note's parts, read from its **file** — the origin, since this is what
-    /// an editor opens. Part 1 is dated by the note's `created_at` and paged by
-    /// its `page`.
+    /// A note's parts, read from its file (the origin). Part 1 takes the note's `created_at`, `page`.
     pub async fn note_parts(&self, note_id: i64) -> Result<Vec<NotePart>> {
         let note = self.note_or_not_found(note_id).await?;
         let body = self.note_body(&note)?;
         Ok(parts_of(&note, &body))
     }
 
-    /// Add a dated part to the end of a note: a marker line, then `body`.
-    /// Refuses an empty body, a body holding a marker line (the file would
-    /// read it as two parts), and a negative page. Returns every part after
-    /// the append; the earlier parts' text is untouched by construction
-    /// ([`notes::append_part`]).
+    /// Appends a dated part. Refuses an empty body, a body holding a marker line, and a negative page.
     pub async fn continue_note(
         &self,
         note_id: i64,
@@ -486,9 +411,7 @@ impl Engine {
         Ok(parts_of(&note, &next))
     }
 
-    /// Rewrite part `n` (1-based) and nothing else: every marker line stays
-    /// byte-identical ([`notes::replace_part`]). `NotFound` for a part the note
-    /// does not have; `InvalidInput` for a body holding a marker line.
+    /// Rewrites part `n` (1-based) only. `NotFound` for a missing part; `InvalidInput` for a marker.
     pub async fn update_note_part(
         &self,
         note_id: i64,
@@ -506,10 +429,6 @@ impl Engine {
         Ok(parts_of(&note, &next))
     }
 
-    /// Write a whole body back under the note's own frontmatter and bring the
-    /// whole index in line in **one** transaction (FTS, edges, parts) —
-    /// `reindex_note`, the vault watcher's own write, rather than
-    /// `update_note_body`'s two.
     async fn write_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
         let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
@@ -522,17 +441,8 @@ impl Engine {
             .await
     }
 
-    // ---- mentions ----------------------------------------------------------------
-
-    /// Notes that mention this one's title without linking it, in the index's
-    /// rank, at most `limit`: a link the writer may have meant to make.
-    ///
-    /// Excluded: the note itself and every note linked to it either way. A
-    /// title under three characters, one derived from the body's first words
-    /// (nobody types a six-word derived title into another note), and one
-    /// the wikilink grammar cannot hold mention nothing. Every hit is one
-    /// [`notes::find_mention`] agrees with, so `LinkMention` can always honour
-    /// it.
+    /// Notes mentioning this one's title without linking it, in index rank, at most `limit`.
+    /// Every hit is one `notes::find_mention` agrees with, so `link_mention` can honour it.
     pub async fn unlinked_mentions(&self, note_id: i64, limit: i64) -> Result<Vec<SearchHit>> {
         let note = self.note_or_not_found(note_id).await?;
         let body = self
@@ -568,11 +478,8 @@ impl Engine {
             .collect())
     }
 
-    /// Link the first unlinked mention of `to`'s title in `from`'s body —
-    /// `[[as written]]`, or `[[Title|as written]]` when the case differs — and
-    /// re-index `from` (edges included). `NotFound` when the phrase is no
-    /// longer there; `InvalidInput` for a note linking itself or a title no
-    /// wikilink can hold.
+    /// Links the first unlinked mention of `to`'s title in `from`'s body and reindexes `from`.
+    /// `NotFound` when the phrase is gone; `InvalidInput` for a self-link or an unholdable title.
     pub async fn link_mention(&self, from_note_id: i64, to_note_id: i64) -> Result<()> {
         if from_note_id == to_note_id {
             return Err(EngineError::InvalidInput(
@@ -595,25 +502,8 @@ impl Engine {
         self.write_note_body(&from, &next).await
     }
 
-    // ---- a passage typed in ----------------------------------------------------
-
-    /// A passage typed in by hand: `source = 'user'`, no `pos0`, and a
-    /// `ko_datetime` of this instant to the nanosecond.
-    ///
-    /// **Why the instant is stored and not only hashed.** `identity_hash_of`
-    /// reads `ko_datetime`, and `merge_books` recomputes every moved row's hash
-    /// from the stored columns — so a stamp that lived only in the hash would
-    /// make two identical typed passages collide (and one be dropped) the first
-    /// time their book was merged. Stored, it also lets `attribute_highlights`
-    /// place the passage in the reading it was typed during, and keep it there
-    /// across every import that recomputes the book's attribution. The format
-    /// is SQLite's own (`YYYY-MM-DD HH:MM:SS.fffffffff`, UTC), which `date()`
-    /// and `strftime()` read — so the activity log's highlight filler dates it
-    /// (labelled `koreader`/`inferred` like every highlight; that filler names
-    /// no other source today, and is left as it is).
-    ///
-    /// A KOReader import never touches the row: its identity cannot match a
-    /// sidecar's, and the device digest reads `source = 'koreader'` only.
+    /// A passage typed by hand: `source = 'user'`, no `pos0`, `ko_datetime` of now to the nanosecond.
+    /// The instant is stored, not only hashed: merges rehash, so identical stamps would collide.
     pub async fn create_highlight(
         &self,
         book_id: i64,
@@ -632,8 +522,6 @@ impl Engine {
             .await?
             .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
         let chapter = chapter.map(str::trim).filter(|c| !c.is_empty());
-        // Two typed passages in one nanosecond is not a thing a person does,
-        // but the loop costs nothing and makes "two rows" true by construction.
         for _ in 0..8 {
             let now = OffsetDateTime::now_utc();
             let stamp = format!(
@@ -669,15 +557,6 @@ impl Engine {
         ))
     }
 
-    // ---- links while typing ------------------------------------------------------
-
-    /// What an unsaved note would link to, and which existing notes it would
-    /// be linked from. `outgoing` resolves the body's wikilinks by
-    /// `write_links`' own clause; `incoming` is every **dangling** edge naming
-    /// `title` (or the body's `# heading` when there is no title) — the links
-    /// this note would resolve by being written — each with its paragraph, as
-    /// `link_contexts` reads it. With neither a title nor a heading, nothing
-    /// can link to it yet and `incoming` is empty.
     pub async fn preview_links(&self, title: Option<&str>, body: &str) -> Result<LinkPreview> {
         let mut outgoing = Vec::new();
         for target in notes::extract_wikilinks(body) {
@@ -715,19 +594,10 @@ impl Engine {
         Ok(LinkPreview { outgoing, incoming })
     }
 
-    // ---- passages and books, for a notes view --------------------------------
-
-    /// One passage by id — a notes view's way to open a passage without
-    /// loading its whole book.
     pub async fn get_highlight(&self, id: i64) -> Result<Option<Highlight>> {
         self.storage.get_highlight(id).await
     }
 
-    /// The books that have **linked** notes, with how many of their notes are
-    /// in the graph — what a graph view's book picker offers. A note is linked when
-    /// it wrote a link to anything but itself (a forward reference included)
-    /// or another note links to it: exactly the notes a `GraphScope::Book`
-    /// graph draws as that book's. Most notes first, then title order.
     pub async fn note_books(&self) -> Result<Vec<(Book, i64)>> {
         let edges = self.storage.all_link_edges().await?;
         let mut linked: HashSet<i64> = HashSet::new();
@@ -762,16 +632,8 @@ impl Engine {
         Ok(out)
     }
 
-    /// A read's notes and passages in one order, newest first — *Also from
-    /// this read*.
-    ///
-    /// Passages are the read's by `highlights.reading_id` (the import's window
-    /// attribution). Notes are the read's by [`crate::history::attribute_note`]:
-    /// a reflection or review names its reading, and an ordinary note belongs
-    /// to the read whose window holds the moment it was written — the same
-    /// rule History's per-read counts use, so the list and the count agree.
-    /// Ties at one instant go to the higher id, a note before a passage. A
-    /// negative `limit` is no limit; an unknown reading is `NotFound`.
+    /// A read's notes and passages, newest first; ties go to the higher id, a note before a passage.
+    /// A negative `limit` is no limit; an unknown reading is `NotFound`.
     pub async fn read_marks(&self, reading_id: i64, limit: i64) -> Result<Vec<ReadMark>> {
         let reading = self
             .storage
@@ -824,12 +686,10 @@ impl Engine {
     }
 }
 
-/// One mark of a read, for *Also from this read*.
 #[derive(Debug, Clone)]
 pub enum ReadMark {
-    /// A note, as a list row. `at` is when it was written.
     Note { at: i64, row: Box<NoteRow> },
-    /// A passage. `at` is the device's stamp, else when it was stored.
+    /// A passage; `at` is the device's stamp, else when it was stored.
     Passage { at: i64, highlight: Box<Highlight> },
 }
 

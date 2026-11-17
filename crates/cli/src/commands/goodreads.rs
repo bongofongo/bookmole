@@ -1,8 +1,3 @@
-//! `goodreads import` / `goodreads export`.
-//!
-//! Goodreads' API died in December 2020; the CSV is the interface, both
-//! directions. All the printing lives here — the engine does no terminal I/O.
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -27,8 +22,6 @@ pub async fn import(engine: &Engine, path: &Path, dry_run: bool, new: bool) -> R
         println!("{}", book_line(b, &report));
     }
 
-    // Unmatched is a decision, not a dead end: say what the row probably is, and
-    // what the two moves are.
     for u in &report.unmatched {
         println!(
             "unmatched: {} — {}",
@@ -56,8 +49,6 @@ pub async fn import(engine: &Engine, path: &Path, dry_run: bool, new: bool) -> R
 
     println!();
     if report.dry_run {
-        // The same refusal-with-a-next-move shape `ko sync` has: show what would
-        // happen and name the flag, rather than writing a whole shelf unasked.
         println!(
             "{} rows read, {} books would be created, {} left for you to decide about.",
             report.rows,

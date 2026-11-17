@@ -1,23 +1,5 @@
-//! The kitty graphics protocol: getting an RGBA image onto the screen, and off
-//! it again.
-//!
-//! Two halves, deliberately separated:
-//!
-//! - **Transmission** is escape sequences ([`transmit`], [`delete`]) — zlib'd,
-//!   base64'd, chunked, and wrapped in tmux DCS passthrough when needed.
-//! - **Placement** is ordinary text ([`placeholder_symbol`], [`id_color`]).
-//!
-//! That second half is the good part. Rather than telling the terminal *where*
-//! to draw (which tmux would immediately invalidate on any redraw), we create a
-//! **virtual placement** and then emit `U+10EEEE` cells carrying the row and
-//! column in combining diacritics and the image id in the foreground colour.
-//! tmux — and ratatui's diff engine, and the layout code — see nothing but
-//! text, so scrolling, resizing, pane rotation and cell-level overdraw all work
-//! with no special handling at all. The image follows its cells around.
-//!
-//! Everything the terminal sends back is suppressed with `q=2`, because the app
-//! is about to hand the tty to crossterm's `EventStream`: an unsolicited reply
-//! would surface as a phantom keypress.
+//! The kitty graphics protocol: transmitting an RGBA image and placing it with placeholder cells.
+//! Replies are suppressed with `q=2` so they never surface as phantom keypresses.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -26,21 +8,12 @@ use ratatui::style::Color;
 use super::caps::maybe_wrap;
 use super::raster::RgbaBuf;
 
-/// The placeholder character. A cell containing this (plus diacritics, plus an
-/// id in its foreground colour) shows one cell of the image.
 pub const PLACEHOLDER: char = '\u{10EEEE}';
 
-/// Kitty's documented payload ceiling for one escape chunk, in base64 bytes.
 const CHUNK: usize = 4096;
 
-/// The row/column diacritics, index = the number they encode.
-///
-/// Generated from the `rowcolumn-diacritics.txt` that ships with kitty
-/// (`Contents/Resources/doc/kitty/html/_downloads/*/`), itself derived from
-/// UnicodeData 6.0.0. **Do not hand-edit**: the same discipline as `blit.rs`'s
-/// octant table, and for the same reason — a single transposed entry puts one
-/// row or column of the image in the wrong place, which is maddening to spot by
-/// eye. `diacritic_table_is_intact` guards it.
+/// Generated from kitty's `rowcolumn-diacritics.txt`; do not hand-edit, one transposed entry
+/// misplaces a row or column.
 #[rustfmt::skip]
 const DIACRITICS: [char; 297] = [
     '\u{0305}', '\u{030d}', '\u{030e}', '\u{0310}', '\u{0312}', '\u{033d}', '\u{033e}',
@@ -88,33 +61,20 @@ const DIACRITICS: [char; 297] = [
     '\u{1d242}', '\u{1d243}', '\u{1d244}',
 ];
 
-/// Largest image span the placeholder scheme can address, in cells per axis.
 pub const MAX_SPAN: u16 = DIACRITICS.len() as u16;
 
-/// Allocate the process's image id.
-///
-/// Deliberately below 2^24 and non-zero. Under 2^24 the whole id fits the
-/// 24-bit foreground colour, so the third ("most significant byte") diacritic
-/// is never needed and every placeholder cell stays two diacritics long. The
-/// pid low bits keep two concurrent instances in the same terminal apart.
+/// Non-zero and below 2^24 so the id fits the 24-bit foreground colour and needs no third
+/// diacritic; the pid bits keep concurrent instances apart.
 pub fn image_id() -> u32 {
     0x00B0_0000 | (std::process::id() & 0xFFFF)
 }
 
-/// The image id, encoded as a foreground colour for a placeholder cell.
 pub fn id_color(id: u32) -> Color {
     Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8)
 }
 
-/// The placeholder cell text for `(row, col)` of an image, or `None` when the
-/// image spans more cells than the diacritic table can address.
-///
-/// **Both diacritics are always emitted**, even though kitty lets consecutive
-/// cells inherit them from the cell on their left. That shorthand is unusable
-/// here: ratatui's `Buffer::diff` emits only the cells that changed, in
-/// possibly non-contiguous runs, so "the cell to the left" may never have been
-/// written this frame. Spelling out every cell costs four bytes and removes the
-/// entire class of bug.
+/// Both diacritics are always emitted: ratatui's diff writes non-contiguous runs, so a cell
+/// cannot inherit them from its left neighbour.
 pub fn placeholder_symbol(row: u16, col: u16) -> Option<String> {
     let r = *DIACRITICS.get(row as usize)?;
     let c = *DIACRITICS.get(col as usize)?;
@@ -125,38 +85,15 @@ pub fn placeholder_symbol(row: u16, col: u16) -> Option<String> {
     Some(s)
 }
 
-/// How an image payload goes on the wire.
-///
-/// A wire format is not normally a policy question — zlib is smaller and every
-/// terminal that speaks the protocol accepts it. It became one because
-/// **libghostty's decompressor dies on ours**. Ghostty 1.3.1 and herdr 0.7.5
-/// (which embeds libghostty: `ghostty_terminal_vt_write` sits directly under
-/// its pty reader in the crash report) both take a `SIGTRAP` inside
-/// `std.compress.flate` while decoding the settle frame:
-///
-/// ```text
-/// Io.Writer.unreachableRebase ← compress.flate.Decompress.streamInner
-///   ← Io.Reader.appendRemaining ← terminal.…Handler.apcEnd
-/// ```
-///
-/// It is their bug — our payload is protocol-correct, `px.len() == s*v*4` — but
-/// it kills the user's whole multiplexer, and the only end of it we own is
-/// whether we hand that decompressor anything at all. [`ImageWire::Raw`] is the
-/// route around it: uncompressed RGBA reaches `apcEnd` and is copied, never
-/// inflated.
+/// `Raw` exists because libghostty's decompressor crashes on zlib payloads; raw is only copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImageWire {
-    /// zlib (`o=z`) — ~6x smaller, and what every terminal but a libghostty
-    /// one should get.
     #[default]
     Zlib,
-    /// Uncompressed RGBA. Costs bytes, which is why the settle budget shrinks
-    /// with it ([`super::raster::RAW_SETTLE_MAX_PX`]).
     Raw,
 }
 
 impl ImageWire {
-    /// The `o=` key this format needs, empty when the bytes go as they are.
     fn key(self) -> &'static str {
         match self {
             ImageWire::Zlib => "o=z,",
@@ -165,12 +102,6 @@ impl ImageWire {
     }
 }
 
-/// Transmit `img` as image `id` and create a virtual placement spanning
-/// `cols` x `rows` cells.
-///
-/// `a=T` does both in one escape. `U=1` marks the placement virtual (it draws
-/// nothing by itself — the placeholder cells do that), `f=32` is straight RGBA,
-/// `o=z` zlib (see [`ImageWire`]), `q=2` silences all responses.
 pub fn transmit(
     img: &RgbaBuf,
     id: u32,
@@ -185,14 +116,9 @@ pub fn transmit(
 
     let payload = match wire {
         ImageWire::Zlib => {
-            // Level 1: a smooth product render compresses several-fold, and the
-            // cheap level runs fast enough that the win on the wire dwarfs the
-            // CPU cost.
             let mut enc = ZlibEncoder::new(Vec::new(), Compression::new(1));
             let compressed = match enc.write_all(&img.px).and_then(|()| enc.finish()) {
                 Ok(v) => v,
-                // Compression cannot really fail against a Vec, but a renderer
-                // must never take the app down: drop the frame instead.
                 Err(_) => return String::new(),
             };
             base64::engine::general_purpose::STANDARD.encode(&compressed)
@@ -208,10 +134,7 @@ pub fn transmit(
         .collect();
     let last = chunks.len().saturating_sub(1);
 
-    // Framing: every escape is `ESC _ G <control keys> ; <payload> ESC \` (an
-    // APC string). Only the first chunk carries the control keys; the rest
-    // carry `m` alone, and `m=1` means "more follows" — the terminal buffers
-    // chunks until it sees `m=0`, then decodes the whole image at once.
+    // Only the first chunk carries the control keys; the rest carry `m` alone (`m=1` = more follows).
     for (i, chunk) in chunks.iter().enumerate() {
         let more = u8::from(i < last);
         let escape = if i == 0 {
@@ -224,47 +147,31 @@ pub fn transmit(
         } else {
             format!("\x1b_Gm={more};{chunk}\x1b\\")
         };
-        // Each chunk is a complete escape wrapped in its own passthrough — an
-        // escape must never be split across two DCS wrappers.
         out.push_str(&maybe_wrap(&escape, in_tmux));
     }
     out
 }
 
-/// Delete image `id` and every placement of it.
 pub fn delete(id: u32, in_tmux: bool) -> String {
     maybe_wrap(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\"), in_tmux)
 }
 
-// ---------------------------------------------------------------------------
-// Teardown
-// ---------------------------------------------------------------------------
-
-/// The image currently on screen, and whether it needs tmux wrapping.
-///
-/// Process-global and atomic. Global because `restore_terminal` is a free
-/// function reached from a `'static` panic hook that cannot borrow `App`;
-/// atomic rather than a `Mutex` because that hook must never deadlock on a lock
-/// the panicking thread already holds, nor care about poisoning.
+/// Atomic, not a `Mutex`: the panic hook's `restore_terminal` reads it and must never block on a
+/// lock the panicking thread holds.
 static LIVE_IMAGE: AtomicU32 = AtomicU32::new(0);
 static LIVE_IN_TMUX: AtomicBool = AtomicBool::new(false);
 
-/// Note that `id` is now on screen and will need deleting.
 pub fn register_live(id: u32, in_tmux: bool) {
     LIVE_IN_TMUX.store(in_tmux, Ordering::SeqCst);
     LIVE_IMAGE.store(id, Ordering::SeqCst);
 }
 
-/// Forget the live image without emitting anything (the caller already did).
 pub fn forget_live() {
     LIVE_IMAGE.store(0, Ordering::SeqCst);
 }
 
-/// Delete whatever we left on screen. Idempotent — the swap clears the debt, so
-/// calling it from both the panic hook and normal shutdown is safe.
-///
-/// Must run *before* leaving the alternate screen: the placement lives on that
-/// screen and has to be deleted while it is still the current one.
+/// Idempotent: runs from both the panic hook and shutdown. Must run before leaving the alternate
+/// screen, where the placement lives.
 pub fn teardown() {
     let id = LIVE_IMAGE.swap(0, Ordering::SeqCst);
     if id == 0 {
@@ -283,7 +190,6 @@ mod tests {
 
     fn img(w: u32, h: u32) -> RgbaBuf {
         let mut b = RgbaBuf::new(w, h);
-        // Non-uniform, so a round-trip actually proves something.
         for (i, px) in b.px.iter_mut().enumerate() {
             *px = (i % 251) as u8;
         }
@@ -293,12 +199,9 @@ mod tests {
     #[test]
     fn diacritic_table_is_intact() {
         assert_eq!(DIACRITICS.len(), 297);
-        // The two the protocol docs spell out by hand.
         assert_eq!(DIACRITICS[0], '\u{0305}');
         assert_eq!(DIACRITICS[1], '\u{030D}');
         assert_eq!(DIACRITICS[2], '\u{030E}');
-        // Generated from UnicodeData, so it must be strictly ascending and
-        // free of duplicates — a repeat would alias two rows onto each other.
         for pair in DIACRITICS.windows(2) {
             assert!(pair[0] < pair[1], "not ascending at {:?}", pair);
         }
@@ -309,28 +212,19 @@ mod tests {
         let s = placeholder_symbol(0, 1).expect("in range");
         let chars: Vec<char> = s.chars().collect();
         assert_eq!(chars, vec![PLACEHOLDER, '\u{0305}', '\u{030D}']);
-        // The doc's worked example: image 42 at (0,0) and (0,1).
         assert_eq!(placeholder_symbol(0, 0).unwrap().chars().count(), 3);
     }
 
     #[test]
     fn placeholder_cells_stay_inline_in_a_ratatui_cell() {
-        // `Cell` stores its symbol in a CompactString with 24 bytes of inline
-        // capacity; spilling to the heap for every cell of every frame would
-        // be a real cost. Worst case here is 4 + 4 + 4 bytes.
         let worst = placeholder_symbol(MAX_SPAN - 1, MAX_SPAN - 1).unwrap();
         assert!(worst.len() <= 24, "{} bytes would spill", worst.len());
     }
 
     #[test]
     fn a_placeholder_cell_measures_exactly_one_column() {
-        // Load-bearing, and not obvious: ratatui's `Buffer::diff` skips
-        // `symbol().width() - 1` cells after each one it emits. If U+10EEEE
-        // ever measured two columns, every second cell of the image would go
-        // unwritten and the object would visibly tear. UAX#11 classes Plane-16
-        // private use as Ambiguous (width 1 outside CJK context) and combining
-        // marks as zero, so this holds — but it holds by assumption unless
-        // something checks it.
+        // ratatui's `Buffer::diff` skips `width() - 1` cells after each emitted one, so U+10EEEE must
+        // measure one column or every second cell goes unwritten.
         use unicode_width::UnicodeWidthStr;
         for (row, col) in [(0u16, 0u16), (3, 7), (MAX_SPAN - 1, MAX_SPAN - 1)] {
             let s = placeholder_symbol(row, col).unwrap();
@@ -340,8 +234,6 @@ mod tests {
 
     #[test]
     fn spans_past_the_table_are_refused_not_wrapped() {
-        // Silently wrapping would put a row of the image in the wrong place;
-        // the caller falls back to glyphs instead.
         assert!(placeholder_symbol(MAX_SPAN, 0).is_none());
         assert!(placeholder_symbol(0, MAX_SPAN).is_none());
         assert!(placeholder_symbol(MAX_SPAN - 1, MAX_SPAN - 1).is_some());
@@ -364,7 +256,6 @@ mod tests {
 
         let src = img(40, 30);
         let esc = transmit(&src, 7, 10, 5, false, ImageWire::Zlib);
-        // Pull the payload back out of every chunk and reassemble it.
         let mut b64 = String::new();
         for part in esc.split("\x1b_G").skip(1) {
             let body = part.trim_end_matches("\x1b\\");
@@ -385,9 +276,7 @@ mod tests {
     fn a_raw_transmit_hands_the_decompressor_nothing() {
         use base64::Engine as _;
 
-        // The whole point of the format: `o=z` is what libghostty dies on, so a
-        // raw payload must not merely be decodable *without* zlib — the key
-        // that sends it into the decompressor must be absent.
+        // The `o=z` key must be absent: it is what sends the payload into libghostty's decompressor.
         let src = img(40, 30);
         let esc = transmit(&src, 7, 10, 5, false, ImageWire::Raw);
         assert!(!esc.contains("o=z"), "raw payload still claims compression");
@@ -407,17 +296,10 @@ mod tests {
 
     #[test]
     fn raw_costs_bytes_which_is_why_it_costs_pixels_too() {
-        // The number behind `RAW_SETTLE_MAX_PX = SETTLE_MAX_PX / 6`. If this
-        // ratio ever drifts far from six, that divisor is wrong rather than
-        // conservative — and the settle frame is either needlessly soft or
-        // quietly six times heavier than the budget it was sized against.
         let src = img(400, 400);
         let zlib = transmit(&src, 1, 10, 10, false, ImageWire::Zlib).len() as f64;
         let raw = transmit(&src, 1, 10, 10, false, ImageWire::Raw).len() as f64;
         assert!(raw > zlib, "raw {raw} was not larger than zlib {zlib}");
-        // The fixture is `i % 251` noise, which is close to incompressible; a
-        // real render compresses far better, so this is the *lower* bound on
-        // the ratio and the budget divisor stays honest.
         assert!(raw / zlib > 1.2, "ratio {} is implausible", raw / zlib);
     }
 
@@ -432,7 +314,6 @@ mod tests {
         assert!(first.contains("q=2"), "responses must be suppressed");
         assert!(first.contains("s=64,v=64"), "pixel dimensions missing");
         assert!(first.contains("c=4,r=2"), "cell span missing");
-        // Continuations carry only the continuation flag.
         for part in esc.split("\x1b_G").skip(2) {
             assert!(part.starts_with("m="), "continuation restated control keys");
         }
@@ -440,7 +321,6 @@ mod tests {
 
     #[test]
     fn chunking_marks_every_chunk_but_the_last_as_continued() {
-        // Big enough to need several chunks even after compressing.
         let esc = transmit(&img(400, 400), 3, 10, 10, false, ImageWire::Zlib);
         let chunks: Vec<&str> = esc.split("\x1b_G").skip(1).collect();
         assert!(chunks.len() > 1, "test needs a multi-chunk payload");
@@ -454,7 +334,6 @@ mod tests {
             chunks.last().unwrap().contains("m=0"),
             "final chunk not marked complete"
         );
-        // No chunk may exceed kitty's documented payload limit.
         for chunk in &chunks {
             let body = chunk.trim_end_matches("\x1b\\");
             let payload = body.split_once(';').expect("has payload").1;
@@ -484,14 +363,11 @@ mod tests {
     #[test]
     fn deletes_target_the_image_and_stay_quiet() {
         assert_eq!(delete(42, false), "\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
-        // Teardown runs through tmux too, or the image outlives the app.
         assert!(delete(42, true).starts_with("\x1bPtmux;"));
     }
 
     #[test]
     fn teardown_is_idempotent() {
-        // It runs from both the panic hook and normal shutdown, so a second
-        // call must be a no-op rather than a second delete.
         register_live(image_id(), false);
         assert_ne!(LIVE_IMAGE.load(Ordering::SeqCst), 0);
         teardown();

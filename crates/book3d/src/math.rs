@@ -1,6 +1,3 @@
-//! Minimal 3-vector / 3x3-matrix math. Hand-rolled: the renderer needs a
-//! dozen operations, not a linear-algebra dependency.
-
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -34,12 +31,10 @@ impl Vec3 {
         if len == 0.0 { self } else { self / len }
     }
 
-    /// Componentwise minimum.
     pub fn min(self, o: Vec3) -> Vec3 {
         vec3(self.x.min(o.x), self.y.min(o.y), self.z.min(o.z))
     }
 
-    /// Componentwise maximum.
     pub fn max(self, o: Vec3) -> Vec3 {
         vec3(self.x.max(o.x), self.y.max(o.y), self.z.max(o.z))
     }
@@ -52,7 +47,7 @@ impl Vec3 {
         self.x.min(self.y).min(self.z)
     }
 
-    /// Axis 0/1/2 -> x/y/z.
+    /// 0 is x, 1 is y, anything else is z.
     pub fn axis(self, i: usize) -> f32 {
         match i {
             0 => self.x,
@@ -83,7 +78,6 @@ impl Neg for Vec3 {
     }
 }
 
-/// Componentwise product (used for per-channel color scaling too).
 impl Mul for Vec3 {
     type Output = Vec3;
     fn mul(self, o: Vec3) -> Vec3 {
@@ -98,8 +92,7 @@ impl Mul<f32> for Vec3 {
     }
 }
 
-/// Componentwise division. Deliberately allows division by zero: the slab
-/// test relies on the resulting ±inf to handle axis-parallel rays.
+/// Division by zero is intended: the slab test relies on the resulting ±inf.
 impl Div for Vec3 {
     type Output = Vec3;
     fn div(self, o: Vec3) -> Vec3 {
@@ -114,7 +107,6 @@ impl Div<f32> for Vec3 {
     }
 }
 
-/// Row-major 3x3 matrix.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat3 {
     pub rows: [Vec3; 3],
@@ -137,8 +129,7 @@ impl Mat3 {
         }
     }
 
-    /// Transpose — for a rotation matrix this is also its inverse, which is
-    /// how world-space rays get pulled into the book's local space.
+    /// For a rotation matrix this is also the inverse.
     pub fn transpose(self) -> Mat3 {
         let [a, b, c] = self.rows;
         Mat3 {
@@ -165,7 +156,7 @@ impl Mul<Vec3> for Mat3 {
 impl Mul<Mat3> for Mat3 {
     type Output = Mat3;
     fn mul(self, o: Mat3) -> Mat3 {
-        let ot = o.transpose(); // columns of `o` as rows
+        let ot = o.transpose();
         Mat3 {
             rows: [
                 vec3(

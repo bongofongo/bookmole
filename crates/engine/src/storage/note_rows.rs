@@ -1,19 +1,5 @@
-//! The note list and the link graph: the rows a notes view lists, the threads
-//! built around a hub note, and the graph of links between notes.
-//!
-//! Every query here reads **the index**, never the vault: bodies come from
-//! `notes_fts` (an ordinary fts5 table, readable by rowid — see
-//! [`Storage::indexed_body`]) and edges from `note_links`. A list is therefore
-//! one or two statements, not one file read per row, and the shapes built from
-//! these rows (excerpts, headings, threads, the graph) are derived in Rust by
-//! the engine facade, where they can be tested without a database.
-//!
-//! **Sets cross as one JSON bind.** A list of ids or kinds is bound as a single
-//! JSON array and opened with `json_each`, so a caller handing the engine every
-//! note in the vault cannot meet `SQLITE_MAX_VARIABLE_NUMBER` (999 on builds
-//! before 3.32) — the problem `citation_batches` solves by chunking, solved here
-//! without a second statement, since these lists are ordered by one `ORDER BY`
-//! that a chunked read would have to re-merge.
+//! The note list and link graph, read from the index (`notes_fts`, `note_links`), never the vault.
+//! Id and kind sets bind as one JSON array opened with `json_each`, avoiding the variable cap.
 
 use std::collections::HashMap;
 
@@ -23,8 +9,6 @@ use super::notes::{NOTE_COLUMNS, RESOLVE_TITLE, qualified, row_to_note};
 use super::{NoteRecord, NoteScope, Storage};
 use crate::error::Result;
 
-/// Which notes a list is about, and how many. The engine's half of
-/// `ListNoteRows`.
 #[derive(Debug, Clone, Default)]
 pub struct NoteRowFilter {
     /// `None` is every kind; `Some(vec![])` is none.
@@ -41,20 +25,17 @@ pub struct NoteRowFilter {
     pub limit: i64,
 }
 
-/// One note as the list query reads it, before the engine derives anything.
 #[derive(Debug, Clone)]
 pub struct NoteRowFacts {
     pub note: NoteRecord,
     pub parts: i64,
     pub latest_part_at: i64,
-    /// The indexed body — `""` for a note whose index row is missing, which is
-    /// a note the reconcile has not reached and not an error.
+    /// `""` for a note whose index row is missing (not yet reconciled); not an error.
     pub body: String,
     pub links_out: i64,
     pub links_in: i64,
 }
 
-/// One edge as `note_links` holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkEdge {
     pub from: i64,
@@ -63,7 +44,6 @@ pub struct LinkEdge {
     pub target_title: String,
 }
 
-/// The three facts about a note the graph and the threads are built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteStamp {
     pub id: i64,
@@ -71,22 +51,17 @@ pub struct NoteStamp {
     pub book_id: Option<i64>,
 }
 
-/// `latest_part_at` as every reader here spells it. The column is back-filled
-/// and stamped by every writer (migration `0023`), so the `COALESCE` is a
-/// belt for a row nothing can produce rather than a case — and it is **not** in
-/// any `WHERE` or `ORDER BY`, where it would cost the index.
+/// Keep out of any `WHERE` or `ORDER BY`: the `COALESCE` would defeat the index.
 const LATEST: &str = "COALESCE(n.latest_part_at, n.created_at)";
 
-/// Distinct targets a note's body names: a resolved edge counts once per
-/// note, a dangling one once per `NOCASE` spelling (SQLite's `lower` is ASCII,
-/// exactly `NOCASE`'s fold). A self-link names nothing.
+/// Distinct targets: a resolved edge counts once per note, a dangling one once per `NOCASE`
+/// spelling; self-links are excluded.
 const LINKS_OUT: &str = "(SELECT count(DISTINCT CASE WHEN l.to_note IS NOT NULL
                                      THEN 'n' || l.to_note
                                      ELSE 't' || lower(l.target_title) END)
             FROM note_links l
            WHERE l.from_note = n.id AND (l.to_note IS NULL OR l.to_note <> n.id))";
 
-/// Distinct notes linking here, a self-link excluded.
 const LINKS_IN: &str = "(SELECT count(DISTINCT l.from_note) FROM note_links l
            WHERE l.to_note = n.id AND l.from_note <> n.id)";
 
@@ -95,16 +70,8 @@ fn json_ids(ids: &[i64]) -> String {
 }
 
 impl Storage {
-    /// The rows a note list draws, newest part first — the one query behind
-    /// `ListNoteRows`, `ThreadsFor`'s hubs, `LinksFromNotes`' sources and the
-    /// graph's nodes.
-    ///
-    /// **Ordered by `latest_part_at DESC, id DESC`**: a continued note moves up
-    /// when a part is added and never when it is edited, and `id` closes the
-    /// second-resolution tie (every paged list needs a total order). Every
-    /// narrowing is a predicate before the `LIMIT` — a limit that cuts first and a
-    /// filter that runs after it answers *nothing* whenever the newest rows are
-    /// somebody else's.
+    /// Ordered by `latest_part_at DESC, id DESC`. Every narrowing is a predicate before the `LIMIT`,
+    /// since filtering after a limit can return nothing.
     pub async fn note_row_facts(&self, f: &NoteRowFilter) -> Result<Vec<NoteRowFacts>> {
         let columns = qualified(NOTE_COLUMNS, "n");
         let mut clauses: Vec<&str> = Vec::new();
@@ -122,8 +89,7 @@ impl Storage {
         if f.until.is_some() {
             clauses.push("n.latest_part_at < ?");
         }
-        // The row value compares like the `ORDER BY` reads, reversed: strictly
-        // after `(at, id)` in `latest_part_at DESC, id DESC` is strictly less.
+        // Strictly after `(at, id)` in a DESC order is strictly less.
         if f.after.is_some() {
             clauses.push("(n.latest_part_at, n.id) < (?, ?)");
         }
@@ -171,19 +137,12 @@ impl Storage {
             .collect())
     }
 
-    /// Every calendar month some note's latest part falls in, newest first, as
-    /// `(year, month)`. **UTC**, like every other day-grained answer the engine
-    /// gives (`reading_events.day`, `activity_by_month`): the engine has no
-    /// zone, and a frontend phrasing *October* for a reader at UTC−8 accepts
-    /// that a note written on the evening of 31 October files under November.
+    /// `(year, month)` in UTC, newest first; the engine has no zone.
     pub async fn note_periods(&self) -> Result<Vec<(i32, u8)>> {
         self.note_periods_in(0).await
     }
 
-    /// [`Storage::note_periods`] in a fixed zone `offset_seconds` east of UTC:
-    /// each instant is shifted before it is read as a calendar month, so a
-    /// note written at 23:30 on 31 October at UTC−8 files under October.
-    /// The offset is the caller's to validate; `0` is UTC.
+    /// In a fixed zone `offset_seconds` east of UTC; the caller validates the offset.
     pub async fn note_periods_in(&self, offset_seconds: i64) -> Result<Vec<(i32, u8)>> {
         let rows = sqlx::query(
             "SELECT DISTINCT CAST(strftime('%Y', latest_part_at + ?1, 'unixepoch') AS INTEGER) AS y,
@@ -200,9 +159,7 @@ impl Storage {
             .collect())
     }
 
-    /// Every edge in the vault, in body order within each source
-    /// (`note_links.rowid` — `set_note_links` rewrites a note's whole set, so
-    /// insertion order is the order the body wrote them).
+    /// In body order within each source (`note_links.rowid`).
     pub async fn all_link_edges(&self) -> Result<Vec<LinkEdge>> {
         let rows = sqlx::query(
             "SELECT from_note, to_note, target_title FROM note_links ORDER BY from_note, rowid",
@@ -219,8 +176,6 @@ impl Storage {
             .collect())
     }
 
-    /// Every note reduced to what the graph needs: its id, its recency and its
-    /// book. Three integers a row, so the whole vault is one cheap read.
     pub async fn note_stamps(&self) -> Result<Vec<NoteStamp>> {
         let sql =
             format!("SELECT n.id AS id, {LATEST} AS latest, n.book_id AS book_id FROM notes n");
@@ -235,9 +190,7 @@ impl Storage {
             .collect())
     }
 
-    /// The wikilinks these notes wrote, each with the note it resolves to —
-    /// grouped by source, body order within one (`LinksFromNotes`). The
-    /// engine orders the sources; this only keeps each one's links in order.
+    /// Grouped by source, body order within one; the engine orders the sources.
     pub async fn links_written(
         &self,
         note_ids: &[i64],
@@ -259,15 +212,12 @@ impl Storage {
                 (
                     r.get("from_id"),
                     r.get("target_title"),
-                    // The join missed for a forward reference; see `outgoing_links`.
                     r.get::<Option<i64>, _>("id").map(|_| row_to_note(r)),
                 )
             })
             .collect())
     }
 
-    /// The note a `[[title]]` resolves to right now, by the same clause
-    /// `write_links` resolves with ([`RESOLVE_TITLE`]).
     pub async fn resolve_title(&self, title: &str) -> Result<Option<NoteRecord>> {
         let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE {RESOLVE_TITLE}");
         Ok(sqlx::query(&sql)
@@ -278,10 +228,7 @@ impl Storage {
             .map(row_to_note))
     }
 
-    /// The **dangling** edges naming `title` — the links a note with that title
-    /// would resolve the moment it was written (`write_links` back-resolves
-    /// only `to_note IS NULL`, so these and no others). Newest-kept source
-    /// first, `incoming_links`' order.
+    /// Only dangling edges (`to_note IS NULL`): exactly the ones a note with this title would resolve.
     pub async fn dangling_links_to(&self, title: &str) -> Result<Vec<(String, NoteRecord)>> {
         let columns = qualified(NOTE_COLUMNS, "n");
         let sql = format!(
@@ -300,15 +247,8 @@ impl Storage {
             .collect())
     }
 
-    /// Notes whose **body** holds `phrase` as an fts5 phrase, in the index's
-    /// own rank, with the indexed body and a snippet — the candidates for
-    /// `UnlinkedMentions`. The engine then keeps only the ones
-    /// [`crate::notes::find_mention`] agrees are unlinked mentions, which is
-    /// why the body comes back: tokenisation ignores punctuation and `[[…]]`,
-    /// and an offer `LinkMention` could not honour is a dead end.
-    ///
-    /// The phrase is the note's title — the reader's own words, so it is never
-    /// logged above `trace!`.
+    /// The body comes back because fts tokenisation ignores punctuation and `[[…]]`; the engine then
+    /// filters with `find_mention`. The phrase is the reader's words: never logged above `trace!`.
     pub async fn mention_candidates(
         &self,
         phrase: &str,
@@ -332,7 +272,6 @@ impl Storage {
             .collect())
     }
 
-    /// The notes linked to this one in either direction, resolved edges only.
     pub async fn linked_note_ids(&self, note_id: i64) -> Result<Vec<i64>> {
         let rows = sqlx::query(
             "SELECT from_note AS id FROM note_links WHERE to_note = ?1
@@ -344,7 +283,6 @@ impl Storage {
         Ok(rows.iter().map(|r| r.get("id")).collect())
     }
 
-    /// `latest_part_at` for these notes, keyed by id.
     pub async fn latest_parts(&self, ids: &[i64]) -> Result<HashMap<i64, i64>> {
         let sql = format!(
             "SELECT n.id AS id, {LATEST} AS latest FROM notes n

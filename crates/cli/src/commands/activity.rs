@@ -1,18 +1,4 @@
-//! `bookmole activity` — the reading log.
-//!
-//! The engine keeps `reading_events` and two aggregates over it (by day and by
-//! period); this is the terminal's view of them, and one rule shapes every
-//! line of it: **absence is not zero**. A library that arrived as a Goodreads
-//! CSV has no minutes at all, and a screen that prints `0 minutes` has told its
-//! reader something false about their own reading. So an unmeasured column is
-//! `—`, never a number, and the phrase "not measured" appears in place of a
-//! total rather than beside one.
-//!
-//! What is deliberately absent: any count of what the user has *not* done. No
-//! streak, no gap, no "you read on 4 of 30 days". bookmole has no
-//! task-completion framing anywhere, and a period report is exactly where it
-//! creeps in — so the days with activity are named and the ones without are
-//! simply not there.
+//! An unmeasured column prints `—` or "not measured", never `0`; nothing counts what was not done.
 
 use anyhow::Result;
 use bookmole::{ActivitySummary, Confidence, DayActivity, DayRange, Engine, ReadingEvent};
@@ -28,8 +14,6 @@ pub struct Args {
     pub refill: bool,
 }
 
-/// The default window. Thirty days is a month of reading rather than a calendar
-/// month, which is what makes it the same question whenever it is asked.
 const DEFAULT_SPAN_DAYS: i64 = 30;
 
 pub async fn run(engine: &Engine, args: Args) -> Result<()> {
@@ -51,10 +35,6 @@ pub async fn run(engine: &Engine, args: Args) -> Result<()> {
     print!("{}", summary_text(&summary));
 
     if summary.activity_days == 0 && !args.refill {
-        // The log is filled by nothing automatically — deliberately, so it is
-        // never a side effect of whichever importer ran last. An empty period is
-        // therefore ambiguous between "nothing happened" and "nobody has built
-        // it yet", and naming the move is what stops this being a dead end.
         println!("    nothing recorded here yet.");
         println!("    bookmole activity --refill  builds it from what you already have");
         return Ok(());
@@ -67,8 +47,6 @@ pub async fn run(engine: &Engine, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One book's log, day by day. Not range-filtered: a book's whole history is
-/// the interesting length, and it is bounded by how long the book took.
 async fn one_book(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("a stored book has an id");
@@ -86,9 +64,7 @@ async fn one_book(engine: &Engine, selector: &str) -> Result<()> {
     Ok(())
 }
 
-/// Distinct days, not rows: two sources speaking about one day is one day of
-/// reading, and counting rows would inflate every book the device *and* the
-/// vault know about.
+/// Distinct days, not rows: two sources reporting one day count once.
 fn day_count(events: &[ReadingEvent]) -> usize {
     let mut days: Vec<&str> = events.iter().map(|e| e.day.as_str()).collect();
     days.sort_unstable();
@@ -96,13 +72,7 @@ fn day_count(events: &[ReadingEvent]) -> usize {
     days.len()
 }
 
-/// One row of one book's log.
-///
-/// The source and the confidence are both printed, because they answer
-/// different questions: *who says so* and *how much they are claiming*. An
-/// inferred day from a highlight stamp means you were in the book; it does not
-/// mean anyone measured anything, and a row that looked identical to a measured
-/// one would quietly turn evidence into a number.
+/// Source and confidence are both printed: an inferred day is evidence, not a measurement.
 fn event_line(e: &ReadingEvent) -> String {
     format!(
         "  {}  {:>7}  {:>6}  {:<9} {}",
@@ -128,9 +98,6 @@ fn day_line(d: &DayActivity) -> String {
     )
 }
 
-/// Built as text and returned rather than printed, following `render.rs`: a
-/// block this shape is worth asserting on, and a function that only prints
-/// cannot be.
 fn summary_text(s: &ActivitySummary) -> String {
     let mut out = format!("{} … {}\n", s.range.from(), s.range.to());
     let mut line = |label: &str, value: String| out.push_str(&format!("  {label:<14} {value}\n"));
@@ -138,20 +105,17 @@ fn summary_text(s: &ActivitySummary) -> String {
     line("books finished", s.books_finished.to_string());
     line("notes", s.notes_created.to_string());
     line("links", s.links_created.to_string());
-    // Said in words rather than as `—`, because a total is where a reader most
-    // expects a number and most easily reads a dash as one.
+    // Words, not `—`: a dash in a total column reads as a number.
     line("minutes", total(s.minutes));
     line("pages", total(s.pages));
     out
 }
 
-/// A period total, or the fact that nobody measured one.
 fn total(n: Option<i64>) -> String {
     n.map(|n| n.to_string())
         .unwrap_or_else(|| "not measured".into())
 }
 
-/// A measured column, or a dash. **Never `0`** — see the module doc.
 fn measured(n: Option<i64>, unit: &str) -> String {
     match n {
         Some(n) => format!("{n} {unit}"),
@@ -159,11 +123,7 @@ fn measured(n: Option<i64>, unit: &str) -> String {
     }
 }
 
-/// The window to report on, from what the user asked for.
-///
-/// Defaults are computed here rather than in the engine because "today" is a
-/// property of the machine the command is run on, and `DayRange` refuses an
-/// inverted or malformed span for both of us.
+/// Defaults are computed here because "today" belongs to the machine running the command.
 fn requested_range(from: Option<&str>, to: Option<&str>) -> Result<DayRange> {
     let today = OffsetDateTime::now_utc();
     let fmt = format_description!("[year]-[month]-[day]");
@@ -195,11 +155,6 @@ mod tests {
         }
     }
 
-    /// **An unmeasured column is a dash, and a measured near-nothing is a
-    /// zero.** The two are different facts and the whole activity log is built
-    /// on being able to tell them apart; one `unwrap_or(0)` here would erase the
-    /// distinction at the last possible moment, where nothing downstream could
-    /// notice.
     #[test]
     fn nothing_measured_is_never_printed_as_zero() {
         assert_eq!(measured(None, "min"), "—");
@@ -211,8 +166,6 @@ mod tests {
         assert!(!line.contains(" 0 "), "{line}");
     }
 
-    /// A summary with no minutes says so in words. `0` is the answer this
-    /// command must never give a reader whose library came from a CSV.
     #[test]
     fn a_period_nobody_measured_says_so_rather_than_reporting_zero() {
         let s = ActivitySummary {
@@ -227,10 +180,7 @@ mod tests {
         let out = summary_text(&s);
         assert!(out.contains("minutes        not measured"), "{out}");
         assert!(out.contains("pages          not measured"), "{out}");
-        // A count the engine originates: zero here is knowable, and is a number.
         assert!(out.contains("books finished 0"), "{out}");
-        // …and nothing anywhere counts what was *not* done, which is the framing
-        // bookmole never uses, and a period report is where it creeps in.
         for banned in ["streak", "goal", "missed", "of 31", "remaining"] {
             assert!(!out.contains(banned), "{banned} in: {out}");
         }

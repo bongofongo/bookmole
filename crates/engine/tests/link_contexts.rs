@@ -1,9 +1,3 @@
-//! `Engine::link_contexts` — a note's links read with the sentence they sit in
-//! and the other note's book (proposal 8, model A).
-//!
-//! Every assertion is on values. The bodies here are fixtures, not anybody's
-//! reading, but the habit is the rule's: nothing prints a paragraph.
-
 mod common;
 
 use bookmole::{LINK_PARAGRAPH_CAP, LinkDirection, NewNoteInput, NoteKind};
@@ -23,8 +17,6 @@ async fn note(engine: &bookmole::Engine, book_id: Option<i64>, title: &str, body
         .id
 }
 
-/// The scenario from the brief: two books, A links B, C links A under an
-/// alias, A writes a forward reference and links itself.
 #[tokio::test]
 async fn both_directions_carry_their_book_and_the_incoming_paragraph() {
     let (_tmp, engine) = engine().await;
@@ -69,7 +61,6 @@ async fn both_directions_carry_their_book_and_the_incoming_paragraph() {
         "incoming first, then outgoing in body order; the self-link is in neither"
     );
 
-    // The incoming row: C's book and the paragraph holding the link.
     let inc = &rows[0];
     assert_eq!(inc.book.as_ref().and_then(|b| b.id), Some(millionaires));
     let p = inc
@@ -83,13 +74,10 @@ async fn both_directions_carry_their_book_and_the_incoming_paragraph() {
     );
     assert!(!p.truncated && !p.truncated_start);
 
-    // Outgoing rows: the target's book, no paragraph (it is in A's own body).
     assert_eq!(rows[1].book.as_ref().and_then(|b| b.id), Some(millionaires));
     assert!(rows[1].paragraph.is_none());
     assert!(rows[2].book.is_none() && rows[2].paragraph.is_none());
 
-    // From B's side, A is the incoming row, with A's book and a two-line
-    // paragraph.
     let rows = engine.link_contexts(b).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].direction, LinkDirection::Incoming);
@@ -102,13 +90,10 @@ async fn both_directions_carry_their_book_and_the_incoming_paragraph() {
     );
     assert_eq!(p.link_range, (17, 25));
 
-    // A note with no links has no rows, rather than an error.
     let lone = note(&engine, None, "Lone", "No links at all.").await;
     assert!(engine.link_contexts(lone).await.unwrap().is_empty());
 }
 
-/// A long paragraph comes back cut around the link and flagged; the newest-kept
-/// source is the first incoming row.
 #[tokio::test]
 async fn a_long_incoming_paragraph_is_cut_and_the_newest_source_leads() {
     let (_tmp, engine) = engine().await;
@@ -125,8 +110,6 @@ async fn a_long_incoming_paragraph_is_cut_and_the_newest_source_leads() {
 
     let rows = engine.link_contexts(target).await.unwrap();
     let ids: Vec<_> = rows.iter().map(|r| r.note.as_ref().unwrap().id).collect();
-    // Created in this order within the test, so `long` is never older; the id
-    // breaks a same-second tie the same way.
     assert_eq!(ids, vec![long, short]);
 
     let p = rows[0].paragraph.as_ref().unwrap();

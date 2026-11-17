@@ -1,35 +1,13 @@
-//! Cells a spreadsheet will not execute.
-//!
-//! The engine writes two `.csv` files a person is likely to open in Excel,
-//! Numbers or Sheets: the History chart export (`ExportHistorySeries`) and the
-//! Goodreads export. Both carry **free text from a user or a provider** — a
-//! book title, an author, a shelf, a review — and a spreadsheet reads a cell
-//! that starts with `=`, `+`, `-` or `@` (and, in some, a tab or a carriage
-//! return before one of those) as a **formula**. A title like
-//! `=HYPERLINK("https://…","click")` would become a live link, and worse
-//! payloads exist (CSV/formula injection, OWASP).
-//!
-//! [`inert_cell`] is the one rule, and every free-text cell of those two files
-//! goes through it. **Not applied to the Anki exports** (`flashcards.rs`):
-//! those are Anki's text-import format, read by Anki as card fields rather
-//! than by a spreadsheet, and a prefixed `'` would print on the card; the
-//! `#html:true` export already neutralises `"`, tabs and a leading `#` for
-//! Anki's own parser. Nor to cells the engine formats itself (dates, counts,
-//! ids) — a negative count does not occur, and quoting a number would turn it
-//! into text.
+//! Neutralises free-text CSV cells a spreadsheet would run as formulas (leading `=`, `+`, `-`, `@`,
+//! tab, CR). Applies to the History and Goodreads exports only; in the Anki exports a prefixed `'`
+//! would print on the card.
 
 use std::borrow::Cow;
 
-/// The characters a spreadsheet treats as the start of a formula.
 const TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 
-/// `s`, prefixed with a single quote when it starts with a formula trigger —
-/// the convention every major spreadsheet reads as *this cell is text* and
-/// hides. Anything else comes back borrowed and unchanged.
-///
-/// A cell that already *looks* guarded — quotes, then a trigger — gains one
-/// more quote too, so [`uninert_cell`] can always undo exactly one: without
-/// it a title genuinely beginning `'=` would lose its quote on the way back.
+/// Prefixes a single quote when `s` starts with a formula trigger. An already-guarded cell (quotes,
+/// then a trigger) gains one more, so [`uninert_cell`] can undo exactly one.
 pub fn inert_cell(s: &str) -> Cow<'_, str> {
     if s.trim_start_matches('\'').starts_with(TRIGGERS) {
         Cow::Owned(format!("'{s}"))
@@ -38,10 +16,7 @@ pub fn inert_cell(s: &str) -> Cow<'_, str> {
     }
 }
 
-/// [`inert_cell`] undone: a leading `'` is dropped **only** when a trigger
-/// follows it, so a reader of our own export gets back exactly the text that
-/// went out. Every other cell, including one that simply starts with a quote,
-/// is unchanged.
+/// Undoes [`inert_cell`]: drops a leading `'` only when a trigger follows it.
 pub fn uninert_cell(s: &str) -> &str {
     match s.strip_prefix('\'') {
         Some(rest) if rest.trim_start_matches('\'').starts_with(TRIGGERS) => rest,
@@ -79,8 +54,6 @@ mod tests {
         use proptest::prelude::*;
 
         proptest! {
-            /// Nothing comes out starting with a trigger, and the text after
-            /// the guard is the text that went in.
             #[test]
             fn no_cell_starts_a_formula(s in ".{0,40}") {
                 let out = inert_cell(&s);

@@ -1,16 +1,5 @@
-//! The pixel raster's terminal half.
-//!
-//! The trace itself — [`render_rgba`], [`RgbaBuf`], [`Target`], [`Quality`] —
-//! lives in `bookmole_book3d::raster` so a
-//! window frontend can draw the same book without linking a terminal. What
-//! stays here is what only a terminal cares about: the wire budgets a frame is
-//! sized to, and fitting a rect of cells into them. The module doc that used to
-//! open this file — why there are two rasters, and how the silhouette is
-//! antialiased for under 1% — moved with the trace and is still true.
-//!
-//! [`render_rgba`] here is the TUI's call into it: same signature as before
-//! the move, so `present.rs` and `--bench-rich` did not change, and it hands
-//! the trace exactly the two fields it ever read (`pose`, `ss`).
+//! The terminal half of the pixel raster: wire budgets and fitting a cell rect into them.
+//! The trace itself lives in `bookmole_book3d::raster`.
 
 pub use bookmole_book3d::raster::{Quality, RgbaBuf, Target};
 
@@ -18,44 +7,16 @@ use super::kitty::ImageWire;
 use super::texture::Cover;
 use super::{Model, RenderParams};
 
-/// Pixel ceiling while the pose is changing.
-///
-/// Bytes on the wire are the binding constraint, and they are *not* the
-/// constraint our own timings show: a motion frame traces and encodes in a few
-/// ms and the pty never blocks. The cost lands inside the terminal, which has
-/// to decompress and re-upload the whole texture every frame — and tmux has to
-/// re-parse it on the way. Measured with a real (photographic) cover on a 50x26
-/// rect at 20fps:
-///
-/// | budget | render | KB/frame | MB/s |
-/// |---|---|---|---|
-/// | 420K | 651x644 | 347K | 7.1 |
-/// | 200K | 449x444 | 170K | 3.5 |
-/// | 120K | 348x344 | 105K | 2.2 |
-///
-/// 7.1 MB/s of continuous texture replacement is ~140x what the glyph path
-/// sends and made the whole terminal unusable. Note a procedural cover
-/// compresses several times better than a real one — do not re-derive this
-/// number from a synthetic fixture.
+/// Pixel ceiling while moving. The binding cost is the terminal decompressing and re-uploading
+/// the texture per frame, not our trace time, so this is far lower than the settle ceiling.
 pub const MOTION_MAX_PX: u32 = 120_000;
-/// Pixel ceiling for a settled pose, where the cost is paid once.
 pub const SETTLE_MAX_PX: u32 = 1_200_000;
 
-/// The same two ceilings for an uncompressed payload ([`ImageWire::Raw`]).
-///
-/// Both are the zlib budget divided by six, which is not a round number chosen
-/// for tidiness: a smooth product render measures well under one base64 byte
-/// per pixel through zlib, against 5.33 raw. The budget here has always been
-/// *bytes* wearing a pixel count as its unit, so dropping the compression
-/// without dropping the pixel count would fire a 6.4 MB settle frame at a
-/// decoder that has just been established as fragile about large images.
+/// The zlib budgets divided by six, the measured raw/zlib size ratio: the budget is bytes
+/// wearing a pixel count, so dropping compression must drop the pixel count too.
 pub const RAW_MOTION_MAX_PX: u32 = MOTION_MAX_PX / 6;
 pub const RAW_SETTLE_MAX_PX: u32 = SETTLE_MAX_PX / 6;
 
-/// The pixel ceiling for `quality` on `wire`.
-///
-/// Was `Quality::max_px` before the move; a free function now, because
-/// `Quality` lives in `bookmole-book3d` and the wire format does not.
 pub fn max_px(quality: Quality, wire: ImageWire) -> u32 {
     match (quality, wire) {
         (Quality::Motion, ImageWire::Zlib) => MOTION_MAX_PX,
@@ -65,10 +26,8 @@ pub fn max_px(quality: Quality, wire: ImageWire) -> u32 {
     }
 }
 
-/// Native cell resolution, scaled down uniformly until it fits the tier's
-/// budget. Uniform scaling means `width / height` stays exactly the cell rect's
-/// physical aspect, which is also the box kitty stretches the image into — so
-/// unlike the glyph path there is no `cols : rows*2` approximation here.
+/// Uniform scaling keeps `width / height` exactly the cell rect's physical aspect, which is
+/// the box kitty stretches the image into.
 pub fn target_for(
     cols: u16,
     rows: u16,
@@ -83,9 +42,6 @@ pub fn target_for(
     let (width, height) = if total <= cap {
         (native_w, native_h)
     } else {
-        // Floor, not round: rounding both axes up can carry the product just
-        // past the cap (814x516 = 420_024 against a 420_000 budget), and the
-        // budget is the thing that keeps the spin inside its frame time.
         let scale = (cap as f64 / total as f64).sqrt();
         (
             ((native_w as f64 * scale).floor() as u32).max(1),
@@ -100,9 +56,6 @@ pub fn target_for(
     }
 }
 
-/// Trace the book into straight RGBA. Uncovered pixels are fully transparent,
-/// which is how the pane keeps the user's terminal background — the pixel-path
-/// equivalent of the glyph path emitting `Color::Reset`.
 pub fn render_rgba(target: Target, model: &Model, cover: &Cover, params: RenderParams) -> RgbaBuf {
     bookmole_book3d::render_rgba(
         target,
@@ -140,7 +93,6 @@ mod tests {
 
     #[test]
     fn oversized_rects_scale_down_but_keep_their_aspect() {
-        // 120x40 cells at 20x38px is 2400x1520 = 3.6MP, well over both caps.
         let native = 2400.0f64 / 1520.0;
         for q in [Quality::Motion, Quality::Settle] {
             let t = target_for(120, 40, (20, 38), q, ImageWire::Zlib);
@@ -149,7 +101,6 @@ mod tests {
                 total <= max_px(q, ImageWire::Zlib) as u64,
                 "{q:?} exceeded its budget"
             );
-            // Comfortably within the cap, not scaled to nothing.
             assert!(
                 total > max_px(q, ImageWire::Zlib) as u64 / 2,
                 "{q:?} scaled too far down"
@@ -175,8 +126,6 @@ mod tests {
             let t = target_for(c, r, (20, 38), Quality::Motion, ImageWire::Zlib);
             assert!(t.width >= 1 && t.height >= 1, "{c}x{r} collapsed");
             let (model, cover) = fixture();
-            // Must not panic at any degenerate size — a render panic in the
-            // book view wrecks the user's pane.
             let _ = render_rgba(t, &model, &cover, RenderParams::default());
         }
     }
@@ -209,8 +158,6 @@ mod tests {
 
     #[test]
     fn the_silhouette_is_antialiased() {
-        // The whole point of the edge pass: partial coverage must exist, or the
-        // image is just the glyph path's hard mask at higher resolution.
         let (model, cover) = fixture();
         let t = target_for(30, 16, (8, 16), Quality::Settle, ImageWire::Zlib);
         let buf = render_rgba(t, &model, &cover, RenderParams::default());
@@ -226,9 +173,6 @@ mod tests {
 
     #[test]
     fn transparent_pixels_carry_no_colour() {
-        // Straight (unpremultiplied) alpha still wants clear pixels to be
-        // black: a stray colour in a fully transparent pixel shows up as a halo
-        // wherever a terminal composites naively.
         let (model, cover) = fixture();
         let t = target_for(20, 10, (8, 16), Quality::Motion, ImageWire::Zlib);
         let buf = render_rgba(t, &model, &cover, RenderParams::default());
@@ -242,10 +186,6 @@ mod tests {
         }
     }
 
-    /// Not an assertion — a measuring stick for the pixel caps above, which are
-    /// only meaningful against a **release** build (debug is ~30x slower).
-    ///
-    /// `cargo test --release -p bookmole-tui -- --ignored --nocapture raster_cost`
     #[test]
     #[ignore = "timing, not correctness; run on a release build"]
     fn raster_cost() {
@@ -280,11 +220,6 @@ mod tests {
         }
     }
 
-    /// Where a rich frame's time actually goes. The trace is only one term;
-    /// zlib, base64 and the bytes pushed at the pty are the others, and on the
-    /// wire is where a spinning book gets into trouble.
-    ///
-    /// `cargo test --release -p bookmole-tui -- --ignored --nocapture frame_budget`
     #[test]
     #[ignore = "timing, not correctness; run on a release build"]
     fn frame_budget() {
@@ -320,28 +255,16 @@ mod tests {
         }
     }
 
-    /// Bytes-on-the-wire against pixel budget, using a **real** cover if one is
-    /// present. This matters: a photographic cover compresses several times
-    /// worse than the procedural plate, and the wire rate is what a terminal
-    /// actually chokes on.
-    ///
-    /// Set `BOOKMOLE_PERF_LOG` to also append each row to the frame log, in
-    /// the same JSONL shape `--bench-render` writes — these *are* frames, just
-    /// synthetic ones, so keeping one format means one set of tools reads both.
-    ///
+    /// Uses a real cover if present, since a photographic cover compresses far worse than the
+    /// procedural one. `BOOKMOLE_PERF_LOG` appends rows to the frame log.
     /// `cargo test --release -p bookmole-tui -- --ignored --nocapture wire_rate`
     #[test]
     #[ignore = "timing, not correctness; run on a release build"]
     fn wire_rate() {
         use crate::perf;
         use crate::render3d::{kitty, texture};
-        // No book is in hand here — the file is found by walking the images
-        // dir — so the accent is the unmeasured one this stand-in book would
-        // get. It tints the spine and nothing else; what this sweep measures is
-        // how a photographic *cover* compresses.
         let book = Book::default();
         let accent = texture::accent_for(book.cover_accent_rgb(), book.display_title());
-        // Tests run from the crate dir, so try the workspace root too.
         let real = ["database/images", "../../database/images"]
             .iter()
             .filter_map(|d| std::fs::read_dir(d).ok())
@@ -357,9 +280,6 @@ mod tests {
         };
         let params = RenderParams::default();
         let meter = perf::Meter::new();
-        // Note the cwd: cargo runs a test binary from the *package* root, so a
-        // relative path here lands under `crates/tui/`, not the workspace root.
-        // The Makefile passes an absolute path for that reason.
         let mut log = std::env::var_os("BOOKMOLE_PERF_LOG")
             .map(std::path::PathBuf::from)
             .and_then(|p| match perf::Recorder::open(&p, meter.clone()) {
@@ -399,8 +319,6 @@ mod tests {
                     transmitted: true,
                     fell_back: false,
                 });
-                // Count the escape without writing it anywhere: the sweep is
-                // about how many bytes a budget *would* put on the wire.
                 use std::io::Write;
                 let _ = perf::CountingWriter::new(
                     std::io::sink(),
@@ -431,9 +349,6 @@ mod tests {
 
     #[test]
     fn the_book_keeps_its_absolute_size_across_rasters() {
-        // Both paths must route through `fill_for(rows)`, so the same rect
-        // yields the same silhouette coverage whichever raster drew it. This is
-        // the regression guard for "the book got huge in the new renderer".
         let (model, cover) = fixture();
         let params = RenderParams::default();
         let (cols, rows) = (40u16, 20u16);

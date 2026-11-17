@@ -1,41 +1,21 @@
-//! What another system said about a book: its own id for it, and the shelves
-//! it filed it under.
-//!
-//! Both tables (migration `0009`) are **inert provenance**. Nothing reads
-//! `book_tags` to decide anything, there is no UI for it, and there are no merge
-//! semantics. Collections are deliberately deferred, because three systems
-//! minting them is a merge problem with no good default. Recording the
-//! raw value now is what lets that design be made later against real shelves.
-//!
-//! `external_ids` is the working half: it is what makes re-importing the same
-//! Goodreads CSV find the same books instead of creating a second copy of every
-//! row whose ISBN we do not have. It is keyed on `(source, external_id)` rather
-//! than living as a `goodreads_id` column on `books` because Calibre needs
-//! exactly the same mapping — and the moment there are two such columns, there
-//! is a query that checks one of them.
+//! Another system's ids and shelves for a book. Both tables are inert provenance: nothing reads
+//! `book_tags`, and `external_ids` is what lets a re-import find the same books.
 
 use sqlx::Row;
 
 use super::{Storage, now_unix};
 use crate::error::Result;
 
-/// One shelf, as the origin wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookTag {
     pub tag: String,
     pub source: String,
-    /// The origin's own string, before normalization. Kept because the
-    /// normalization is ours and the shelf name is theirs.
     pub raw: Option<String>,
 }
 
 impl Storage {
-    /// Record that `source` calls this book `external_id`.
-    ///
-    /// **Repoints on conflict.** An id belongs to one book on the far side, so
-    /// the same `(source, external_id)` arriving against a different book means
-    /// the mapping was wrong (or the books were merged) — keeping the stale one
-    /// would make every later import write to the wrong book, silently.
+    /// Repoints on conflict: an id belongs to one book on the far side, so a stale mapping must not
+    /// win.
     pub async fn link_external_id(
         &self,
         source: &str,
@@ -56,7 +36,6 @@ impl Storage {
         Ok(())
     }
 
-    /// The book `source` calls `external_id`, if we have been told.
     pub async fn book_for_external_id(
         &self,
         source: &str,
@@ -71,12 +50,8 @@ impl Storage {
         .await?)
     }
 
-    /// Add tags from one source. Idempotent — re-importing a shelf list writes
-    /// no duplicate rows — and **additive**: a shelf the user removed on the far
-    /// side is not deleted here, because nothing reads these rows and losing
-    /// provenance is the one failure this table cannot recover from.
-    ///
-    /// Returns how many rows were genuinely new.
+    /// Idempotent and additive: a shelf removed at the origin is not deleted here. Returns the number
+    /// of new rows.
     pub async fn add_book_tags(
         &self,
         book_id: i64,
@@ -100,7 +75,6 @@ impl Storage {
         Ok(added)
     }
 
-    /// Every tag on a book, whoever said it, in a stable order.
     pub async fn book_tags(&self, book_id: i64) -> Result<Vec<BookTag>> {
         let rows = sqlx::query(
             "SELECT tag, source, raw FROM book_tags WHERE book_id = ?
@@ -180,8 +154,6 @@ mod tests {
             Some(other),
             "an id names one book on the far side; a stale mapping writes to the wrong one"
         );
-        // And the sources are separate namespaces, which is the whole reason
-        // this is not a `goodreads_id` column.
         assert_eq!(
             s.book_for_external_id("calibre", "9000001").await.unwrap(),
             None

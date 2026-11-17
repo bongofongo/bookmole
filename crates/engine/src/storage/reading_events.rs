@@ -1,47 +1,6 @@
-//! The source-agnostic activity log (migration `0011`), its fillers, and the
-//! first reading-stats aggregates in the engine.
-//!
-//! The problem, stated plainly: reading-time data is KOReader-only, and a
-//! surface built directly on it opens to blanks for a reader whose library came
-//! from a Goodreads CSV. So no source is consumed in its own shape. Every source
-//! writes `(book, day, source) → minutes?, pages?, confidence`, and a filler
-//! that lands later — KOReader's `statistics.sqlite3`, a locally-read PDF —
-//! changes no query and no view.
-//!
-//! **Three fillers exist today**, and all three run without touching a device:
-//!
-//! | filler | day from | source | confidence |
-//! |---|---|---|---|
-//! | [`Storage::fill_events_from_highlights`] | `highlights.ko_datetime` | `koreader` | inferred |
-//! | [`Storage::fill_events_from_notes`] | `notes.created_at` | `vault` | measured |
-//! | [`Storage::fill_events_from_readings`] | `readings.started_at`/`finished_at` | the reading's own | measured |
-//!
-//! The vault filler is the one worth dwelling on: notes, reflections, reviews
-//! and citations are data bookmole fully originates, so no importer can fail
-//! to supply them, and they are the right signal for an app that is the desk
-//! you work at rather than the device you read on.
-//!
-//! **Two more fillers write through [`Storage::record_reading_events`]** rather
-//! than deriving anything, because their evidence is not already in the
-//! database: KOReader's `statistics.sqlite3` minutes (`ko_statistics.rs`), and
-//! [`Storage::record_typed_page`] — a page you typed *here*, `source = "local"`,
-//! `confidence = measured`, filed by [`Storage::update_progress`] itself so that
-//! no frontend has to remember to. Both are what the table was shaped for:
-//! between them they added no query, no view and no line of any frontend.
-//!
-//! **Nothing here invents a day.** A highlight with no `ko_datetime`, or with
-//! one SQLite cannot read as a date, produces no event at all; a reading with no
-//! `started_at` contributes only the endpoint it has.
-//!
-//! **Every aggregate can say it does not know.** `minutes` and `pages` come back
-//! `None` when no event in the period carried one — *not* `Some(0)`, which is a
-//! claim, and the same discipline as `goodreads_for` returning `None` rather
-//! than rounding. The counts are `i64` because they count evidence the engine
-//! fully originates (its own readings, its own notes, its own edges), so zero
-//! there is knowable rather than assumed. None of them counts something the user
-//! has not done, and none of them is a run of consecutive days: the app has no
-//! task-completion framing, and a streak is the shape of it that looks most
-//! like a feature.
+//! Source-agnostic activity log: every source writes `(book, day, source) -> minutes?, pages?,
+//! confidence`. Nothing invents a day, and aggregates report `None`, not zero, when no event
+//! carried the value.
 
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -49,35 +8,15 @@ use super::readings::READING_WINDOWS;
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 
-/// Events derived from KOReader — the highlight filler off the sidecars, and
-/// the device's `statistics.sqlite3` minutes, on the same rows.
 pub const SOURCE_KOREADER: &str = "koreader";
-/// Events derived from the vault: notes, reflections, reviews.
 pub const SOURCE_VAULT: &str = "vault";
-/// A page the user typed **here** — the fifth filler, and *bookmole is the
-/// origin of what you read here* as a column value.
-///
-/// It is deliberately **not** the reading's own `source`, which
-/// [`Storage::fill_events_from_readings`] uses for its two endpoints. The two
-/// mean different things and both can be true of one day: a `koreader` reading
-/// whose page you corrected by hand this afternoon carries a `koreader` row
-/// saying the device opened this read and a `local` row saying you moved the
-/// bookmark yourself. Folding the second into the first would attribute your
-/// typing to the device; folding it into `manual` — the word `update_progress`
-/// writes when it opens a reading — would attribute the *device's* readings to
-/// your hand the moment you touched one. One word per claimant is what this
-/// column is for, and the primary key `(book_id, day, source)` is what makes
-/// two claimants two rows rather than a fight over one.
+/// A page typed here. Not the reading's own `source`: one word per claimant, so device and hand
+/// claims stay separate rows.
 pub const SOURCE_LOCAL: &str = "local";
 
-/// How much the row is willing to claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
-    /// Something recorded it: our own timestamp, a device's clock, a date the
-    /// user typed.
     Measured,
-    /// Derived. A highlight dated that day means you were in the book; it does
-    /// not mean anyone measured anything.
     Inferred,
 }
 
@@ -89,10 +28,7 @@ impl Confidence {
         }
     }
 
-    /// Read one back. An unrecognised token reads as `Inferred` on purpose: the
-    /// vocabulary lives in a comment rather than a `CHECK` so that it can grow,
-    /// and of the two ways to be wrong about a token we have never seen,
-    /// claiming a measurement nobody made is the one that matters.
+    /// Unrecognised tokens read as `Inferred`: claiming a measurement nobody made is the worse error.
     fn from_db(s: &str) -> Confidence {
         match s {
             "measured" => Confidence::Measured,
@@ -101,25 +37,21 @@ impl Confidence {
     }
 }
 
-/// One day of one book, as one source saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadingEvent {
     pub book_id: i64,
-    /// Which read this day belongs to, where the evidence agrees on one.
     pub reading_id: Option<i64>,
     /// `YYYY-MM-DD`, UTC.
     pub day: String,
-    /// Minutes read. `None` is "not known", never zero.
+    /// `None` is not known, never zero.
     pub minutes: Option<i64>,
-    /// Pages turned. `None` is "not known", never zero.
+    /// `None` is not known, never zero.
     pub pages: Option<i64>,
     pub source: String,
     pub confidence: Confidence,
     pub created_at: i64,
 }
 
-/// What a filler writes. The seam the typed page and the device's statistics
-/// come in through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewReadingEvent {
     pub book_id: i64,
@@ -131,20 +63,14 @@ pub struct NewReadingEvent {
     pub confidence: Confidence,
 }
 
-/// What one filler pass did.
-///
-/// `updated` counts rows that **actually changed**, not rows the upsert
-/// re-wrote: the `DO UPDATE` carries a `WHERE` so an unchanged row is not
-/// touched at all. Without that, every refill would report the whole table as
-/// updated and idempotency could never be observed — the same trap the tier-2
-/// corpus fell into, and the same fix `refresh_device_fields` uses.
+/// `updated` counts rows that actually changed: the upsert's `WHERE` skips unchanged rows so
+/// idempotency is observable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FillStats {
     pub inserted: u64,
     pub updated: u64,
 }
 
-/// One pass of every filler that needs no device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RefillReport {
     pub highlights: FillStats,
@@ -162,28 +88,17 @@ impl RefillReport {
     }
 }
 
-/// An inclusive span of days, both ends `YYYY-MM-DD`.
-///
-/// It carries the same span twice: as the two day strings `reading_events.day`
-/// is compared against, and as the **raw unix-second bounds** every column that
-/// stores an instant is compared against. See [`DayRange::unix_bounds`] for why
-/// the second form exists and why it is computed here rather than in SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayRange {
     from: String,
     to: String,
-    /// Inclusive lower bound, unix seconds — midnight UTC opening `from`.
+    /// Inclusive lower bound, unix seconds.
     start: i64,
-    /// **Exclusive** upper bound, unix seconds — midnight UTC closing `to`.
+    /// Exclusive upper bound, unix seconds: midnight UTC closing `to`.
     end: i64,
 }
 
-/// Midnight UTC opening this day, in unix seconds.
-///
-/// UTC because that is what `date(x, 'unixepoch')` means and what `0011` fixed
-/// `reading_events.day` to; a second convention here would put a reading and the
-/// day it is counted in a boundary apart for anyone not on UTC, which is exactly
-/// the skew `ko_statistics.rs` documents and refuses to guess its way out of.
+/// UTC, matching `date(x, 'unixepoch')` and `reading_events.day`.
 fn midnight_utc(d: time::Date) -> i64 {
     time::PrimitiveDateTime::new(d, time::Time::MIDNIGHT)
         .assume_utc()
@@ -191,9 +106,8 @@ fn midnight_utc(d: time::Date) -> i64 {
 }
 
 impl DayRange {
-    /// Both ends inclusive. Refuses anything that is not a `YYYY-MM-DD` day and
-    /// refuses an inverted span — a backwards range would otherwise select
-    /// nothing and every aggregate would report a confident, wrong zero.
+    /// Inclusive; refuses a non-day and an inverted span, which would select nothing and report a
+    /// confident zero.
     pub fn new(from: &str, to: &str) -> Result<DayRange> {
         let mut days = Vec::with_capacity(2);
         for d in [from, to] {
@@ -215,9 +129,7 @@ impl DayRange {
             from: from.to_string(),
             to: to.to_string(),
             start: midnight_utc(days[0]),
-            // A unix day is 86 400 seconds by definition — the epoch does not
-            // count leap seconds — so this is the *next representable* midnight
-            // and not an approximation of one.
+            // A unix day is exactly 86 400 seconds (no leap seconds), so this is the next midnight.
             end: midnight_utc(days[1]) + 86_400,
         })
     }
@@ -230,95 +142,50 @@ impl DayRange {
         &self.to
     }
 
-    /// The same span as unix seconds: `start` inclusive, `end` **exclusive**.
-    ///
-    /// **This is what makes an index on an instant column reachable**
-    /// (migration `0018`). Every count over `readings.finished_at` and
-    /// `notes.created_at` used to be written
-    /// `date(col, 'unixepoch') BETWEEN ? AND ?` — an expression over the column,
-    /// which SQLite declines to serve from an index on the bare column as
-    /// silently as it declines one whose collation differs (`0008`). So the two
-    /// days are converted **once, here, at the boundary that already validated
-    /// them**, and every reader compares `col >= ? AND col < ?`.
-    ///
-    /// Half-open rather than `BETWEEN`: the inclusive upper day ends at the
-    /// instant before the next one starts, and `end - 1` would be a bound
-    /// expressed in the resolution of the column rather than in the resolution
-    /// of a day. `the_bare_bounds_select_exactly_what_the_date_expression_did`
-    /// pins that this is an equivalence and not a new rule.
+    /// `start` inclusive, `end` exclusive, so callers compare the bare column (`col >= ? AND col <
+    /// ?`) and an index on it stays usable.
     pub fn unix_bounds(&self) -> (i64, i64) {
         (self.start, self.end)
     }
 }
 
-/// What is known about a period. Read the `Option`s as "we have no data",
-/// never as zero.
+/// `None` means no data, never zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivitySummary {
     pub range: DayRange,
-    /// Readings closed inside the period. Ours, so a zero here is knowable.
     pub books_finished: i64,
-    /// Days the period holds at least one event, from any source.
     pub activity_days: i64,
     pub notes_created: i64,
-    /// Wikilink edges belonging to notes created in the period.
-    ///
-    /// **Attributed to the note, because `note_links` carries no timestamp of
-    /// its own** and `set_note_links` replaces a note's whole edge set on every
-    /// save, so an edge's own creation date is not recorded anywhere and adding
-    /// a column would only record the date of the last edit to the note.
+    /// Attributed to the note: `note_links` has no timestamp and `set_note_links` rewrites the whole
+    /// set on each save.
     pub links_created: i64,
-    /// `None` when nothing in the period measured minutes. A month with no
-    /// device data has no minutes; it does not have zero of them.
+    /// `None` when nothing in the period measured minutes, not zero.
     pub minutes: Option<i64>,
     /// `None` when nothing in the period measured pages.
     pub pages: Option<i64>,
 }
 
-/// One day of the period, for a caller that wants the days and not just how
-/// many there were. Only days carrying an event appear.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayActivity {
     pub day: String,
-    /// Distinct books with an event that day.
     pub books: i64,
     pub minutes: Option<i64>,
     pub pages: Option<i64>,
 }
 
-/// One month of the period, for a caller drawing a year rather than a week.
-/// Only months carrying an event appear, exactly as [`DayActivity`] only
-/// carries days that do — the gaps are the client's to draw, and drawing them
-/// *as an absence* is the whole point.
-///
-/// **This is not [`DayActivity`] added up, and `books` is why.** Minutes and
-/// days do sum; distinct books do not — a reader who opened the same two books
-/// on twelve days read two books that month and not twenty-four — so a client
-/// bucketing days into months in its own language either gets that field wrong
-/// or cannot produce it at all. Which is a semantic decision, and semantic
-/// decisions are the engine's: derived facts live here, phrasing in the
-/// frontends.
+/// Not `DayActivity` summed: distinct `books` do not add across days. Only months with an event
+/// appear.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonthActivity {
-    /// `YYYY-MM`.
     pub month: String,
-    /// Distinct books with an event **anywhere in the month**. Deliberately not
-    /// derivable from the days.
+    /// Distinct books with an event anywhere in the month; not derivable from the days.
     pub books: i64,
-    /// Days of this month that carry an event. The month's own share of
-    /// [`ActivitySummary::activity_days`], and the denominator a client would
-    /// otherwise invent.
     pub activity_days: i64,
-    /// `None` when nothing in the month measured minutes. **Never `Some(0)`** —
-    /// a month with no device data has no minutes, it does not have zero of
-    /// them, and collapsing the two is the lie the whole column exists to
-    /// refuse.
+    /// `None` when nothing in the month measured minutes; never `Some(0)`.
     pub minutes: Option<i64>,
-    /// `None` when nothing in the month measured pages.
     pub pages: Option<i64>,
 }
 
-/// `YYYY-MM-DD`, UTC, from unix seconds.
 pub fn day_of_unix(ts: i64) -> Result<String> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     Ok(time::OffsetDateTime::from_unix_timestamp(ts)
@@ -326,46 +193,25 @@ pub fn day_of_unix(ts: i64) -> Result<String> {
         .format(fmt)?)
 }
 
-/// The day out of a KOReader `YYYY-MM-DD HH:MM:SS` stamp. `None` rather than a
-/// guess when the stamp is not one — no source invents a day.
-///
-/// Taken from the text rather than by way of a unix timestamp because the device
-/// writes local wall-clock with no zone, which `ko_datetime_to_unix` reads as
-/// UTC; going through the number and back is the identity, and doing it in two
-/// places is how the two would eventually disagree.
+/// `None` for a stamp that is not one. Taken from the text because the device writes zone-less
+/// local time that is read as UTC.
 pub fn day_of_ko_datetime(s: &str) -> Option<String> {
     let s = s.trim();
     let day = s.get(..10)?;
     is_day(day).then(|| day.to_string())
 }
 
-/// Shape *and* validity: `2026-13-45` has the shape and is not a day.
 fn is_day(s: &str) -> bool {
     parse_day(s).is_some()
 }
 
-/// The same check, keeping what it parsed.
-///
-/// [`DayRange`] needs the `Date` and not the verdict — it converts both ends to
-/// unix seconds — and re-parsing a string a line after deciding it parses is the
-/// shape of a bug rather than of an invariant.
 fn parse_day(s: &str) -> Option<time::Date> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     time::Date::parse(s, fmt).ok()
 }
 
-/// The merge, written once because three fillers share it.
-///
-/// **No-clobber, the provider pattern rather than the device's straight
-/// assignment**, and chosen for the reason `calibre.rs` states: the pattern
-/// follows whether the record is *complete*, not who owns it. Each filler is a
-/// partial view of the day — the highlight filler knows nothing about minutes,
-/// the statistics filler will know nothing about the vault — so a NULL from one
-/// of them means "no opinion" and must not erase another's answer.
-///
-/// `confidence` is the one field that is not a `COALESCE`: it ratchets to
-/// `measured` and never back. That makes the merge order-independent, which is
-/// what makes running the fillers in any order converge on the same table.
+/// No-clobber merge shared by the fillers: a NULL means no opinion and must not erase another's
+/// value; `confidence` ratchets to `measured`, so filler order does not matter.
 const EVENT_MERGE: &str = "
     reading_id = COALESCE(excluded.reading_id, reading_events.reading_id),
     minutes    = COALESCE(excluded.minutes,    reading_events.minutes),
@@ -373,9 +219,8 @@ const EVENT_MERGE: &str = "
     confidence = CASE WHEN 'measured' IN (excluded.confidence, reading_events.confidence)
                       THEN 'measured' ELSE reading_events.confidence END";
 
-/// Whether [`EVENT_MERGE`] would change anything — the `WHERE` on the
-/// `DO UPDATE`, so that `rows_affected` means "changed" rather than "seen".
-/// `IS NOT` because these columns are nullable and `<>` is not null-safe.
+/// The `WHERE` on `DO UPDATE`, so `rows_affected` means changed; `IS NOT` because `<>` is not
+/// null-safe.
 const EVENT_DIFFERS: &str = "
        reading_events.reading_id IS NOT COALESCE(excluded.reading_id, reading_events.reading_id)
     OR reading_events.minutes    IS NOT COALESCE(excluded.minutes,    reading_events.minutes)
@@ -399,11 +244,7 @@ fn row_to_event(r: &sqlx::sqlite::SqliteRow) -> ReadingEvent {
     }
 }
 
-/// Count the rows so a filler can report inserts and changes apart.
-///
-/// `rows_affected` on an upsert cannot tell the two apart, and a report that
-/// says "wrote 400 rows" every single time is a report in which idempotency is
-/// invisible.
+/// Counts rows because `rows_affected` on an upsert cannot split inserts from changes.
 async fn count(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> {
     Ok(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM reading_events")
@@ -412,7 +253,6 @@ async fn count(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> {
     )
 }
 
-/// Run one filler's `INSERT … SELECT … ON CONFLICT` and split its effect.
 async fn fill(tx: &mut Transaction<'_, Sqlite>, sql: &str, now: i64) -> Result<FillStats> {
     let before = count(tx).await?;
     let touched = sqlx::query(sql).bind(now).execute(&mut **tx).await?;
@@ -425,15 +265,8 @@ async fn fill(tx: &mut Transaction<'_, Sqlite>, sql: &str, now: i64) -> Result<F
 }
 
 impl Storage {
-    /// Every filler that needs no device, in one transaction.
-    ///
-    /// One transaction because a half-filled log is a log whose aggregates
-    /// disagree with each other, and because the three fillers overlap: a
-    /// KOReader-sourced reading and its own highlights land on the same rows.
-    ///
-    /// Idempotent by construction, and it is the property this table lives on:
-    /// a second call with nothing changed upstream reports `inserted == 0` and
-    /// `updated == 0`.
+    /// One transaction, since the fillers overlap. Idempotent: a second call with nothing new reports
+    /// zero inserted and updated.
     #[tracing::instrument(skip(self))]
     pub async fn refill_reading_events(&self) -> Result<RefillReport> {
         let now = now_unix();
@@ -452,8 +285,6 @@ impl Storage {
         Ok(report)
     }
 
-    /// The highlight filler alone. A day you were in the book, **inferred**:
-    /// nobody measured anything, the device merely stamped a highlight.
     pub async fn fill_events_from_highlights(&self) -> Result<FillStats> {
         let mut tx = self.pool().begin().await?;
         let stats = fill(&mut tx, &highlight_fill_sql(), now_unix()).await?;
@@ -461,12 +292,6 @@ impl Storage {
         Ok(stats)
     }
 
-    /// The vault filler alone.
-    ///
-    /// The filler worth dwelling on: notes, reflections and reviews are data
-    /// bookmole fully originates, so this one cannot come back empty because
-    /// an importer let us down, and it is the signal an app that is the desk
-    /// rather than the reader should be able to show.
     pub async fn fill_events_from_notes(&self) -> Result<FillStats> {
         let mut tx = self.pool().begin().await?;
         let stats = fill(&mut tx, &note_fill_sql(), now_unix()).await?;
@@ -474,12 +299,7 @@ impl Storage {
         Ok(stats)
     }
 
-    /// The reading-endpoint filler alone: the days a read opened and closed.
-    ///
-    /// `source` is the **reading's own** — a Goodreads CSV's `Date Read` lands
-    /// as `goodreads`, a locally-opened read as whatever opened it — because
-    /// `source` names where the fact came from, and this is the only filler that
-    /// knows something about that beyond its own name.
+    /// `source` is the reading's own (for example `goodreads`), not a fixed filler word.
     pub async fn fill_events_from_readings(&self) -> Result<FillStats> {
         let mut tx = self.pool().begin().await?;
         let stats = fill(&mut tx, &reading_fill_sql(), now_unix()).await?;
@@ -487,12 +307,7 @@ impl Storage {
         Ok(stats)
     }
 
-    /// Write events directly. The seam for a source that is not derivable from
-    /// what is already in the database — the typed page, the device's measured
-    /// minutes.
-    ///
-    /// Same merge as the fillers, so a hand-written event and a derived one
-    /// about the same day combine rather than fight.
+    /// Same merge as the fillers, so a hand-written and a derived event for one day combine.
     pub async fn record_reading_events(&self, events: &[NewReadingEvent]) -> Result<FillStats> {
         let now = now_unix();
         let mut tx = self.pool().begin().await?;
@@ -530,33 +345,9 @@ impl Storage {
         Ok(stats)
     }
 
-    /// The fifth filler: a page the user typed here, on the day they typed it.
-    ///
-    /// Called by [`Storage::update_progress`] and by nothing else, so every
-    /// typed page lands in the activity log without a frontend having to
-    /// remember to say so — two frontends each remembering to log is two
-    /// frontends that eventually disagree about whether today counted.
-    ///
-    /// Four calls are made here and each of them is a claim about honesty.
-    ///
-    /// **A delta needs two points.** The first page typed for a reading records
-    /// the day and `pages: None`, because "you are on page 42" is not "you read
-    /// 42 pages today" — you may have read it over a month, and this is the one
-    /// place where the difference is a fabricated number rather than a missing
-    /// one. Only a *subsequent* page yields a count.
-    ///
-    /// **Backwards is not negative.** Correcting 200 down to 190 is a fix, not
-    /// minus ten pages; it contributes nothing and erases nothing.
-    ///
-    /// **The day accumulates rather than replaces.** [`EVENT_MERGE`] is
-    /// `COALESCE`, so writing a second delta over the first would report the
-    /// evening's twenty pages and lose the morning's ten. The running total for
-    /// the day is read back and added to, which also makes a repeat of the same
-    /// page a no-op — re-typing 190 adds zero and `EVENT_DIFFERS` then declines
-    /// to touch the row at all.
-    ///
-    /// **`confidence` is `Measured`**, because a person typed it. That ratchet
-    /// is one-way, so a `local` row can never fall back to `inferred`.
+    /// Called by `update_progress` only. The first typed page records `pages: None` (a page is not a
+    /// count); a lower page adds nothing; later pages add to the day's total; confidence is
+    /// `Measured`.
     pub async fn record_typed_page(
         &self,
         book_id: i64,
@@ -567,7 +358,6 @@ impl Storage {
     ) -> Result<FillStats> {
         let day = day_of_unix(at)?;
 
-        // Only a move forward from a page we already had is a number of pages.
         let delta = previous_page.map(|p| page - p).filter(|d| *d > 0);
         let pages = match delta {
             Some(d) => {
@@ -588,14 +378,10 @@ impl Storage {
 
         self.record_reading_events(&[NewReadingEvent {
             book_id,
-            // The reading we just wrote to, named outright. `reading_for_day`
-            // exists for a source that has to *infer* which read a day belongs
-            // to; this one was told.
             reading_id: Some(reading_id),
             day,
-            // Nothing here measures time. A typed page says when and how far,
-            // never for how long, and `Some(0)` would be a claim that somebody
-            // read for no time at all.
+            // `minutes: None`: a typed page says when and how far, not how long, and `Some(0)` would be a
+            // claim.
             minutes: None,
             pages,
             source: SOURCE_LOCAL.to_string(),
@@ -604,29 +390,8 @@ impl Storage {
         .await
     }
 
-    /// Which read a **day** belongs to, or `None` when the evidence does not
-    /// settle on one.
-    ///
-    /// The day analogue of [`Storage::attribute_highlights`], and it goes
-    /// through the *same* [`READING_WINDOWS`] rather than a second copy — the
-    /// derivation of a missing `started_at` is the part that was wrong once
-    /// already, and a reread must not silently collect an earlier read's
-    /// minutes.
-    ///
-    /// The statistics import needs this because KOReader's `statistics.sqlite3`
-    /// is **per file**: it knows how long you read, and nothing whatever about rereads.
-    ///
-    /// Two deliberate calls:
-    ///
-    /// * The test is **overlap**, not containment. A day is 86 400 seconds
-    ///   wide and a reading can end at noon inside it; that read did hold part
-    ///   of the day, and a containment test would attribute the whole day to
-    ///   nobody every time a read ended mid-morning.
-    /// * Overlapping *two* windows yields `None` rather than the later one.
-    ///   `attribute_highlights` can prefer the later window because a highlight
-    ///   is an instant and the tie is genuinely near-arbitrary; a day that
-    ///   straddles a reread boundary is not a tie, it is a day whose minutes
-    ///   belong to both reads and cannot be split at this grain.
+    /// Uses the same `READING_WINDOWS` as `attribute_highlights`; overlap, not containment, and two
+    /// overlapping windows give `None` since the day's minutes cannot be split.
     pub async fn reading_for_day(&self, book_id: i64, day: &str) -> Result<Option<i64>> {
         if !is_day(day) {
             return Err(EngineError::InvalidInput(format!(
@@ -646,7 +411,6 @@ impl Storage {
         .await?)
     }
 
-    /// One book's log, oldest day first.
     pub async fn reading_events(&self, book_id: i64) -> Result<Vec<ReadingEvent>> {
         let rows = sqlx::query(&format!(
             "SELECT {EVENT_COLUMNS} FROM reading_events WHERE book_id = ?
@@ -658,32 +422,8 @@ impl Storage {
         Ok(rows.iter().map(row_to_event).collect())
     }
 
-    /// What is known about a period.
-    ///
-    /// Read `minutes` and `pages` as "we have no data" when they are `None`.
-    /// `SUM` over rows that all hold NULL is NULL in SQLite, and over no rows at
-    /// all it is NULL too, which is exactly the answer wanted in both cases —
-    /// so the absence is carried by the database rather than reconstructed here.
-    ///
-    /// **Every count over an instant column compares the bare column** (item
-    /// 43). All three used to read `date(col, 'unixepoch') BETWEEN ? AND ?`,
-    /// which is an expression over the column and therefore an index SQLite
-    /// silently declines — including `idx_readings_finished_at`, which migration
-    /// `0018` adds and which this query is one of three readers of.
-    /// [`DayRange::unix_bounds`] does the conversion once, and
-    /// `the_bare_bounds_select_exactly_what_the_date_expression_did` pins that
-    /// the rewrite selects the same rows.
-    ///
-    /// `notes.created_at` has **no** index and this migration does not add one,
-    /// so the two note counts gain nothing today. They are rewritten anyway
-    /// because two dialects for one question inside one function is how the
-    /// third caller picks the wrong one — the same argument `BookFilter` makes
-    /// about writing a `WHERE` once.
-    ///
-    /// `activity_days` and the totals still compare `day` to `from`/`to`,
-    /// because `day` **is** the day: `0011` chose a zero-padded ISO string
-    /// precisely so that `BETWEEN` is the whole range query, and
-    /// `idx_reading_events_day` serves it already.
+    /// Counts over instant columns compare the bare column via `unix_bounds` so indexes serve; `day`
+    /// is a zero-padded ISO string, so `BETWEEN` on it is the range query. `None` sums mean no data.
     pub async fn activity_summary(&self, range: &DayRange) -> Result<ActivitySummary> {
         let (from, to) = (range.from(), range.to());
         let (start, end) = range.unix_bounds();
@@ -742,9 +482,6 @@ impl Storage {
         })
     }
 
-    /// The days of a period that carry an event, oldest first. The set behind
-    /// [`ActivitySummary::activity_days`], for a caller that wants to show them
-    /// rather than count them.
     pub async fn activity_by_day(&self, range: &DayRange) -> Result<Vec<DayActivity>> {
         let rows = sqlx::query(
             "SELECT day,
@@ -771,29 +508,8 @@ impl Storage {
             .collect())
     }
 
-    /// The months of a period that carry an event, oldest first.
-    ///
-    /// The same aggregate as [`Storage::activity_by_day`] one grain up, and it
-    /// exists because the grain is **not** a client's to change. Bucketing days
-    /// into months above this seam goes wrong twice: `minutes: None` collapses
-    /// to `0` on the first `reduce` in any language that has one, turning "the
-    /// device never measured this month" into "you read for zero minutes"; and
-    /// `books` cannot be recovered at all, since distinct-books-per-day do not
-    /// sum to distinct-books-per-month. The alternative — a summary call per
-    /// month — is sixty round trips to draw five years.
-    ///
-    /// `substr(day, 1, 7)` is the whole grouping because `day` is a
-    /// zero-padded ISO date, so its lexicographic order is its chronological
-    /// order and its first seven characters are its month. That is the same
-    /// property `BETWEEN` already relies on, used again rather than a second
-    /// date function that could disagree with it.
-    ///
-    /// **A month at the edge of the range is reported for the part of it that
-    /// is inside the range**, and is not silently widened: `2026-01-20 ..
-    /// 2026-02-10` answers about twelve days of January and ten of February,
-    /// because reporting a whole January would be answering about days the
-    /// caller did not ask for and could not see in the same call's
-    /// [`ActivitySummary`].
+    /// Grouped by `substr(day, 1, 7)`; a month at the range edge covers only its days inside the
+    /// range. Not derivable from `activity_by_day`: `None` minutes and distinct `books` do not sum.
     pub async fn activity_by_month(&self, range: &DayRange) -> Result<Vec<MonthActivity>> {
         let rows = sqlx::query(
             "SELECT substr(day, 1, 7)    AS month,
@@ -823,16 +539,8 @@ impl Storage {
     }
 }
 
-/// `date()` is doing two jobs in every filler below: it turns a stamp into a
-/// day, and it returns NULL for anything it cannot read as one — `2026-13-45`
-/// included. The outer `WHERE day IS NOT NULL` is therefore the whole of "no
-/// source invents a day".
-///
-/// The read attribution is `CASE WHEN count(DISTINCT …) = 1`: a day whose
-/// evidence points at exactly one reading is attributed to it, a day that
-/// straddles a reread is left NULL. `attribute_highlights` makes the same call
-/// for the same reason — the alternative is picking one, and picking one is
-/// wrong half the time with nothing on screen looking wrong.
+/// `date()` yields NULL for unreadable stamps, so `WHERE day IS NOT NULL` stops a source
+/// inventing a day; a day spanning two readings gets a NULL reading id.
 fn upsert_wrapper(select: &str) -> String {
     format!(
         "INSERT INTO reading_events ({EVENT_COLUMNS})
@@ -856,8 +564,7 @@ fn highlight_fill_sql() -> String {
 }
 
 fn note_fill_sql() -> String {
-    // `notes.book_id` is nullable — a note whose book was deleted keeps its
-    // prose and loses its anchor — and an event has nowhere to hang without one.
+    // `notes.book_id` is nullable (a deleted book's note) and an event needs a book.
     upsert_wrapper(
         "SELECT book_id,
                 CASE WHEN count(DISTINCT reading_id) = 1 THEN min(reading_id) END,
@@ -871,9 +578,8 @@ fn note_fill_sql() -> String {
 }
 
 fn reading_fill_sql() -> String {
-    // Two endpoints, one row each, `UNION ALL` rather than two statements so a
-    // read opened and closed on one day collapses into the single event it is.
-    // Grouped by `source` as well, because this filler's source varies per row.
+    // `UNION ALL` so a read opened and closed on one day collapses to one event; grouped by `source`
+    // since it varies per row.
     upsert_wrapper(
         "SELECT book_id,
                 CASE WHEN count(DISTINCT id) = 1 THEN min(id) END,
@@ -895,7 +601,6 @@ mod tests {
     use crate::storage::{NewHighlight, NewNoteMeta};
 
     const DAY: i64 = 86_400;
-    /// 2026-01-05 00:00:00 UTC.
     const JAN5: i64 = 1_767_571_200;
 
     async fn seeded() -> (Storage, i64) {
@@ -965,8 +670,6 @@ mod tests {
             .collect()
     }
 
-    /// Every row, in a comparable shape, so "the table did not move" is one
-    /// assertion rather than seven.
     async fn snapshot(s: &Storage) -> Vec<ReadingEvent> {
         let rows = sqlx::query(&format!(
             "SELECT {EVENT_COLUMNS} FROM reading_events ORDER BY book_id, day, source"
@@ -976,8 +679,6 @@ mod tests {
         .unwrap();
         rows.iter().map(row_to_event).collect()
     }
-
-    // ---- the day encoding -------------------------------------------------
 
     #[test]
     fn a_day_is_read_off_a_ko_stamp_and_never_guessed() {
@@ -993,8 +694,6 @@ mod tests {
         assert_eq!(day_of_ko_datetime(""), None);
         assert_eq!(day_of_ko_datetime("2026-13-45 00:00:00"), None);
         assert_eq!(day_of_unix(JAN5).unwrap(), "2026-01-05");
-        // The two agree, which is what stops an event and the reading it was
-        // attributed to landing on different days.
         assert_eq!(
             day_of_ko_datetime("2026-01-05 21:14:08").unwrap(),
             day_of_unix(super::super::ko_datetime_to_unix("2026-01-05 21:14:08").unwrap()).unwrap()
@@ -1014,19 +713,6 @@ mod tests {
         );
     }
 
-    /// **The rewrite that makes migration `0018` pay is an equivalence, not a
-    /// new rule.**
-    ///
-    /// `date(col, 'unixepoch') BETWEEN from AND to` is what every count over an
-    /// instant column used to say, and it is an expression over the column that
-    /// no index can serve. [`DayRange::unix_bounds`] replaces it with a
-    /// half-open comparison of the bare column, and the claim that has to hold
-    /// is that the two select **exactly** the same instants — including both
-    /// boundaries, which is where an off-by-one would live and where a
-    /// behavioural test seeded at noon would never look.
-    ///
-    /// Asserted against SQLite's own `date()` rather than against Rust
-    /// arithmetic, because SQLite is the thing the old query asked.
     #[tokio::test]
     async fn the_bare_bounds_select_exactly_what_the_date_expression_did() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1039,9 +725,7 @@ mod tests {
         ] {
             let range = DayRange::new(from, to).unwrap();
             let (start, end) = range.unix_bounds();
-            // Every second on and around both boundaries, plus a day in the
-            // middle: the disagreement an off-by-one produces is one second
-            // wide.
+            // Every second around both boundaries: an off-by-one is one second wide.
             for probe in [
                 start - 1,
                 start,
@@ -1067,8 +751,6 @@ mod tests {
             }
         }
     }
-
-    // ---- the fillers ------------------------------------------------------
 
     #[tokio::test]
     async fn the_highlight_filler_makes_one_inferred_day_per_book_day() {
@@ -1205,8 +887,6 @@ mod tests {
         );
     }
 
-    // ---- idempotency and the merge ----------------------------------------
-
     #[tokio::test]
     async fn a_second_refill_changes_nothing() {
         let (s, book) = seeded().await;
@@ -1268,8 +948,6 @@ mod tests {
             .unwrap();
         s.fill_events_from_highlights().await.unwrap();
 
-        // What the statistics import does: the same source, the same day, with
-        // numbers.
         let stats = s
             .record_reading_events(&[NewReadingEvent {
                 book_id: book,
@@ -1290,7 +968,6 @@ mod tests {
         assert_eq!(e.pages, Some(19));
         assert_eq!(e.confidence, Confidence::Measured);
 
-        // And the filler that knows nothing about minutes does not erase them.
         s.fill_events_from_highlights().await.unwrap();
         assert_eq!(s.reading_events(book).await.unwrap()[0].minutes, Some(42));
     }
@@ -1342,8 +1019,6 @@ mod tests {
         ));
     }
 
-    // ---- the aggregates ---------------------------------------------------
-
     #[tokio::test]
     async fn a_period_with_no_device_data_has_no_minutes_rather_than_zero() {
         let (s, book) = seeded().await;
@@ -1360,7 +1035,6 @@ mod tests {
         );
         assert_eq!(sum.pages, None);
 
-        // An empty period is the same answer, not a different one.
         let feb = DayRange::new("2026-02-01", "2026-02-28").unwrap();
         let sum = s.activity_summary(&feb).await.unwrap();
         assert_eq!(sum.activity_days, 0);
@@ -1421,7 +1095,6 @@ mod tests {
         );
         assert!(by_day.iter().all(|d| d.books == 1 && d.minutes.is_none()));
 
-        // A period before any of it knows nothing, and says so the same way.
         let dec = DayRange::new("2025-12-01", "2025-12-31").unwrap();
         let sum = s.activity_summary(&dec).await.unwrap();
         assert_eq!(
@@ -1431,9 +1104,6 @@ mod tests {
         assert_eq!(sum.minutes, None);
     }
 
-    /// An indexes-only migration is judged on `EXPLAIN QUERY PLAN`, and this one
-    /// carries two indexes whose whole job is a query shape. The day index is
-    /// what stops every period aggregate scanning the log.
     #[tokio::test]
     async fn the_day_index_is_the_plan_the_planner_picks() {
         let (s, book) = seeded().await;
@@ -1471,10 +1141,6 @@ mod tests {
         );
     }
 
-    // ---- the month is a period too -----------------------------------------
-
-    /// Seed one row directly. The month aggregate is about grouping, not about
-    /// which filler wrote a row, so the fillers are not in the way here.
     async fn event(s: &Storage, book: i64, day: &str, minutes: Option<i64>) {
         s.record_reading_events(&[NewReadingEvent {
             book_id: book,
@@ -1489,19 +1155,13 @@ mod tests {
         .unwrap();
     }
 
-    /// **The test the month aggregate is for.** A month holding measured days *beside*
-    /// unmeasured ones must report only what was measured, and a month holding
-    /// none at all must report `None` — never `Some(0)`, which is the lie a
-    /// client's `reduce` produces on the first `null` it meets.
     #[tokio::test]
     async fn a_months_minutes_sum_only_what_was_measured() {
         let (s, book) = seeded().await;
-        // March: two days the device timed, two it never did.
         event(&s, book, "2026-03-02", None).await;
         event(&s, book, "2026-03-05", Some(40)).await;
         event(&s, book, "2026-03-09", None).await;
         event(&s, book, "2026-03-21", Some(20)).await;
-        // April: read about, never timed.
         event(&s, book, "2026-04-03", None).await;
         event(&s, book, "2026-04-04", None).await;
 
@@ -1526,8 +1186,6 @@ mod tests {
         assert_eq!(april.pages, None);
     }
 
-    /// The field that cannot be summed from days, which is the whole reason
-    /// this grain lives below the seam rather than in a frontend's `reduce`.
     #[tokio::test]
     async fn a_months_books_are_distinct_over_the_month_and_do_not_sum_from_days() {
         let (s, a) = seeded().await;
@@ -1565,9 +1223,6 @@ mod tests {
         assert_eq!(months[0].activity_days, 3);
     }
 
-    /// Only months carrying an event appear, for the reason only days do: an
-    /// empty month is the client's to draw, and drawing it *as an absence* is
-    /// what stops a gap looking like a zero.
     #[tokio::test]
     async fn only_months_carrying_an_event_appear() {
         let (s, book) = seeded().await;
@@ -1582,14 +1237,10 @@ mod tests {
             "April is not a row of zeroes, and neither are the other nine"
         );
 
-        // A year with nothing in it is an empty list, not twelve empty months.
         let before = DayRange::new("2025-01-01", "2025-12-31").unwrap();
         assert!(s.activity_by_month(&before).await.unwrap().is_empty());
     }
 
-    /// A month at the edge of the range covers the part of it inside the range,
-    /// and the range is never silently widened to whole months — that would
-    /// report days the caller could not see in the same call's summary.
     #[tokio::test]
     async fn a_month_at_the_edge_covers_only_the_days_inside_the_range() {
         let (s, book) = seeded().await;
@@ -1608,23 +1259,16 @@ mod tests {
         assert_eq!(months[1].activity_days, 1, "only the 5th is in range");
         assert_eq!(months[1].minutes, Some(10));
 
-        // And the summary of the same range agrees, which is the coherence a
-        // widened month would have quietly broken.
         let sum = s.activity_summary(&straddling).await.unwrap();
         assert_eq!(sum.activity_days, 2);
         assert_eq!(sum.minutes, Some(20));
     }
 
-    /// An inverted span is refused before it can become a confident empty year,
-    /// the same refusal the two older aggregates get.
     #[tokio::test]
     async fn an_inverted_range_never_reaches_the_month_aggregate() {
         assert!(DayRange::new("2026-12-31", "2026-01-01").is_err());
     }
 
-    // ---- the typed page, the fifth filler ----------------------------------
-
-    /// The `local` row of a book's log, as `(day, minutes, pages, confidence)`.
     async fn local_rows(s: &Storage, book: i64) -> Vec<(String, Option<i64>, Option<i64>, bool)> {
         s.reading_events(book)
             .await
@@ -1669,9 +1313,6 @@ mod tests {
         assert_eq!(local_rows(&s, b).await[0].2, Some(48));
     }
 
-    /// The trap [`EVENT_MERGE`] sets for this filler: it is a `COALESCE`, so a
-    /// second write of the day's delta would *replace* the first and the
-    /// morning's pages would vanish.
     #[tokio::test]
     async fn two_updates_in_one_day_accumulate_rather_than_replace() {
         let (s, b) = seeded().await;
@@ -1691,7 +1332,6 @@ mod tests {
             .await
             .unwrap();
 
-        // The correction contributes nothing and erases nothing.
         assert_eq!(local_rows(&s, b).await[0].2, Some(200));
     }
 
@@ -1724,9 +1364,6 @@ mod tests {
         assert_eq!(rows[1].2, Some(35));
     }
 
-    /// Every `local` row is `measured` and carries no minutes. Nothing here
-    /// times anything, and `Some(0)` minutes would claim somebody read for no
-    /// time at all.
     #[tokio::test]
     async fn a_typed_page_measures_pages_and_never_minutes() {
         let (s, b) = seeded().await;
@@ -1738,7 +1375,6 @@ mod tests {
         assert!(measured);
     }
 
-    /// The event names the read it was told about, rather than inferring one.
     #[tokio::test]
     async fn the_event_names_the_reading_it_was_written_to() {
         let (s, b) = seeded().await;
@@ -1749,9 +1385,6 @@ mod tests {
         assert_eq!(e[0].reading_id, Some(r));
     }
 
-    /// The whole point of putting the write in `update_progress`: no frontend
-    /// has to remember, so both of them cannot disagree about whether today
-    /// counted.
     #[tokio::test]
     async fn update_progress_files_the_day_by_itself() {
         let (s, b) = seeded().await;
@@ -1773,9 +1406,6 @@ mod tests {
         );
     }
 
-    /// The reason `local` is its own word rather than the reading's `source`.
-    /// Two claimants, one day, two rows — which is what the primary key
-    /// `(book_id, day, source)` is arranged to allow.
     #[tokio::test]
     async fn a_typed_page_and_the_reads_own_endpoint_share_a_day_without_colliding() {
         let (s, b) = seeded().await;
@@ -1793,9 +1423,6 @@ mod tests {
         assert_eq!(sources, vec!["local".to_string(), "manual".to_string()]);
     }
 
-    /// A refill must not disturb what the typed page recorded. `EVENT_MERGE` is
-    /// no-clobber and the two fillers write different sources, so this is two
-    /// invariants at once — and it is the one that would break silently.
     #[tokio::test]
     async fn refilling_does_not_erase_a_typed_days_pages() {
         let (s, b) = seeded().await;
@@ -1817,11 +1444,8 @@ mod props {
     use crate::storage::{NewHighlight, NewNoteMeta};
     use proptest::prelude::*;
 
-    /// 2026-01-05 00:00:00 UTC.
     const JAN5_UTC: i64 = 1_767_571_200;
 
-    /// One piece of evidence to seed the library with. Deliberately a mixture:
-    /// the interesting inputs are the ones where two fillers land on one day.
     #[derive(Debug, Clone)]
     enum Evidence {
         Highlight {
@@ -1837,8 +1461,6 @@ mod props {
             start: u8,
             len: u8,
         },
-        /// What the statistics import writes. Included because the merge has to
-        /// survive a filler it has not been written against.
         Measured {
             book: usize,
             day: u8,
@@ -1864,7 +1486,6 @@ mod props {
     }
 
     const DAY: i64 = 86_400;
-    /// 2026-01-01 00:00:00 UTC.
     const BASE: i64 = 1_767_225_600;
 
     async fn seed(s: &Storage, books: &[i64], ev: &[Evidence], n: &mut usize) {
@@ -1920,8 +1541,6 @@ mod props {
                 }
                 Evidence::Reading { book, start, len } => {
                     let from = BASE + i64::from(start) * DAY;
-                    // `record_reading` is the door Goodreads import comes in
-                    // through, and it takes closed readings without complaint.
                     s.record_reading(
                         books[book],
                         Some(from),
@@ -1988,17 +1607,6 @@ mod props {
     }
 
     proptest! {
-        /// A day's `local` pages are the sum of the forward moves made that
-        /// day, and never anything else.
-        ///
-        /// A property rather than more examples because the rule is arithmetic
-        /// and the interesting inputs are the ones a hand-written case does not
-        /// think of: a correction backwards, a repeat of the same number, a
-        /// first page with nothing before it. Each of those has its own way of
-        /// producing a plausible-looking wrong total — a negative delta, a
-        /// double count, a fabricated `Some(42)` on the first entry — and all
-        /// three are invisible in an example where the reader only ever moves
-        /// forward by a comfortable amount.
         #[test]
         fn a_days_pages_are_the_forward_moves_of_that_day(
             pages in proptest::collection::vec(0i64..500, 1..12),
@@ -2009,9 +1617,6 @@ mod props {
                     .await.unwrap();
                 let r = s.open_reading(b, Some(JAN5_UTC), "manual").await.unwrap();
 
-                // The delta needs two points, so the first entry establishes
-                // the position and contributes nothing — which is exactly what
-                // the expected total below has to agree with.
                 let mut expected = 0i64;
                 let mut prev: Option<i64> = None;
                 for p in &pages {
@@ -2026,8 +1631,6 @@ mod props {
                 let local: Vec<_> = row.iter().filter(|e| e.source == SOURCE_LOCAL).collect();
                 prop_assert_eq!(local.len(), 1, "one book, one day, one local row");
                 if expected == 0 {
-                    // Nothing moved forward. That is absence, not zero pages —
-                    // the same rule the aggregates hold to.
                     prop_assert_eq!(local[0].pages, None);
                 } else {
                     prop_assert_eq!(local[0].pages, Some(expected));
@@ -2038,15 +1641,6 @@ mod props {
             })?;
         }
 
-        /// Refilling is idempotent, and the fillers commute.
-        ///
-        /// A property rather than more examples because the rule is general and
-        /// the interesting input is the *overlap*: whichever evidence happens to
-        /// share a `(book, day, source)` decides whether the merge is exercised
-        /// at all, and three hand-picked libraries are three that happened to
-        /// overlap the way the author expected. Order-independence is asserted
-        /// beside repeat-stability because the merge only earns "run the
-        /// fillers in any order" if `confidence` never ratchets back down.
         #[test]
         fn refilling_is_idempotent_and_order_independent(
             ev in proptest::collection::vec(evidence(), 0..14),
@@ -2061,7 +1655,6 @@ mod props {
                 prop_assert_eq!(again.updated(), 0, "a refill rewrote an unchanged row");
                 prop_assert_eq!(snapshot(&a).await, once.clone());
 
-                // The same evidence, the fillers run backwards, twice over.
                 let b = library(&ev).await;
                 for _ in 0..2 {
                     b.fill_events_from_readings().await.unwrap();
@@ -2070,8 +1663,7 @@ mod props {
                 }
                 let reversed = snapshot(&b).await;
 
-                // `created_at` is a wall clock and the two libraries were built
-                // moments apart; everything the fillers *decide* must agree.
+                // `created_at` is a wall clock, so compare only what the fillers decide.
                 prop_assert_eq!(reversed.len(), once.len());
                 for (x, y) in reversed.iter().zip(once.iter()) {
                     prop_assert_eq!(&x.day, &y.day);
@@ -2086,14 +1678,6 @@ mod props {
             })?;
         }
 
-        /// Absent is not zero, in both directions, over any library.
-        ///
-        /// `minutes` is `None` **exactly when** no event in the period carries
-        /// one, and `Some(n)` is the sum of those that do — so a period whose
-        /// every event came from the vault reports no minutes, while a period
-        /// holding a single measured `0` reports `Some(0)`. A property because
-        /// the failure is one `unwrap_or(0)` away and reads as correct in every
-        /// example where some device data happens to exist.
         #[test]
         fn minutes_are_absent_exactly_when_nothing_measured_them(
             ev in proptest::collection::vec(evidence(), 0..14),
@@ -2123,8 +1707,6 @@ mod props {
                 }
                 prop_assert_eq!(sum.pages, None, "no filler here supplies pages");
 
-                // And the day count is the set of days, however many sources
-                // spoke on each of them.
                 let mut days: Vec<&str> = events.iter().map(|e| e.day.as_str()).collect();
                 days.sort_unstable();
                 days.dedup();
@@ -2137,20 +1719,6 @@ mod props {
             })?;
         }
 
-        /// The months regroup the days — except for `books`, which is the one
-        /// field that cannot be recovered from them.
-        ///
-        /// A property rather than more examples because the interesting input
-        /// is the *shape of the overlap*: whether a book appears on one day of
-        /// a month or on nine, and whether a month's measured days sit beside
-        /// unmeasured ones, is what decides whether summing the days happens to
-        /// give the right answer. Hand-picked libraries are hand-picked to be
-        /// ones where it does.
-        ///
-        /// Three claims, and the third is deliberately an inequality rather
-        /// than an equation: `books` is asserted **exactly** against the events
-        /// and only *bounded* by the days, because there is no arithmetic over
-        /// `activity_by_day` that yields it — which is the claim itself.
         #[test]
         fn months_regroup_the_days_and_books_is_the_field_that_does_not(
             ev in proptest::collection::vec(evidence(), 0..14),
@@ -2174,8 +1742,6 @@ mod props {
                 let by_day = s.activity_by_day(&range).await.unwrap();
                 let months = s.activity_by_month(&range).await.unwrap();
 
-                // 1. The months are exactly the months of the days, in order,
-                //    and no empty month is invented between two full ones.
                 let mut want: Vec<String> =
                     by_day.iter().map(|d| d.day[..7].to_string()).collect();
                 want.dedup();
@@ -2188,8 +1754,6 @@ mod props {
                     let days: Vec<&DayActivity> =
                         by_day.iter().filter(|d| d.day.starts_with(&m.month)).collect();
 
-                    // 2. Days and minutes are sums of the days — and `None`
-                    //    survives the sum rather than becoming zero.
                     prop_assert_eq!(m.activity_days, days.len() as i64);
                     let measured: Vec<i64> = days.iter().filter_map(|d| d.minutes).collect();
                     if measured.is_empty() {
@@ -2201,8 +1765,6 @@ mod props {
                         prop_assert_eq!(m.minutes, Some(measured.iter().sum::<i64>()));
                     }
 
-                    // 3. `books` is distinct over the month, which the days
-                    //    bound from both sides and determine from neither.
                     let mut books: Vec<i64> = events.iter()
                         .filter(|e| e.day.starts_with(&m.month))
                         .map(|e| e.book_id)

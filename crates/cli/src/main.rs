@@ -19,9 +19,7 @@ use clap::{Parser, Subcommand};
     about = "Reading companion: search books, track progress, keep notes, import KOReader highlights"
 )]
 struct Cli {
-    /// Data directory root (default: BOOKMOLE_DATA_DIR env, else the
-    /// platform data dir — ~/Library/Application Support/bookmole on macOS,
-    /// $XDG_DATA_HOME/bookmole or ~/.local/share/bookmole on Linux)
+    /// Data directory root. Defaults to BOOKMOLE_DATA_DIR, else the platform data directory.
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
 
@@ -370,26 +368,18 @@ enum KoCmd {
     /// Wait for a reader to be plugged in and scan it. Read-only, ctrl-c to stop
     Watch,
     /// Import measured reading time from the reader's own statistics
-    ///
-    /// A verb of its own, and deliberately not part of `sync`: arrival is
-    /// read-only, and a scan that quietly imported months of timing data would
-    /// not be read-only in spirit. You ask for this by name.
     Stats {
         /// The mount to read `statistics.sqlite3` from
         path: PathBuf,
     },
     /// Install, inspect or remove bookmole's plugin on a reader
-    ///
-    /// Never automatic: plugging a reader in imports from it, read-only, and
-    /// putting something *onto* it is always something you asked for.
     Plugin {
         #[command(subcommand)]
         cmd: PluginCmd,
     },
     /// Open the door for a paired reader to push over the LAN
     ///
-    /// Off by default and never automatic. Nothing is bound until you ask, so
-    /// with the door shut there is no service to find and nothing to leak.
+    /// Off by default: nothing is bound until you ask.
     Listen {
         /// How long to stay open. `0` means until ctrl-c
         #[arg(long, default_value_t = 5)]
@@ -397,18 +387,15 @@ enum KoCmd {
     },
     /// Fetch from a paired reader over the LAN, while its window is open
     ///
-    /// The other direction from `ko listen`. On the reader first — Tools ->
-    /// bookmole -> Let a computer fetch highlights — then run this.
+    /// On the reader first: Tools -> bookmole -> Let a computer fetch highlights.
     Fetch {
         /// The reader: its device id, or enough of the start of one
         device: String,
     },
     /// Pair with a reader over wifi, using the code on its screen
     ///
-    /// For a reader that already has the plugin. On it, choose Tools ->
-    /// bookmole -> Link a computer over wifi, and give this the code it
-    /// shows. The code is never sent over the network; it works once, for two
-    /// minutes.
+    /// The reader needs the plugin: Tools -> bookmole -> Link a computer over wifi.
+    /// The code is never sent over the network; it works once, for two minutes.
     Pair {
         /// The code on the reader's screen. Case and hyphens do not matter
         code: String,
@@ -452,9 +439,7 @@ enum PluginCmd {
     },
     /// Give a paired reader a name of your own
     ///
-    /// The default is the mount's directory name — `KOBOeReader`, `Kindle` —
-    /// which describes a filesystem rather than the thing on your bedside
-    /// table. An empty name puts the default back.
+    /// An empty name puts the default back.
     Rename {
         /// The device id, or enough of its start to be unambiguous
         device: String,
@@ -463,9 +448,7 @@ enum PluginCmd {
     },
     /// Forget a reader you do not have in hand
     ///
-    /// Our side only. `uninstall` is exact — it takes the files off the device
-    /// — so it needs the reader plugged in; this is for one that has been sold,
-    /// lost or reformatted, and it leaves the plugin where it is.
+    /// Our side only; the plugin is left on the device.
     Forget {
         /// The device id, or enough of its start to be unambiguous
         device: String,
@@ -500,17 +483,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet);
 
-    // `config` must not touch the engine: it would create a whole library
-    // just to store a key.
+    // `config` must not open the engine: that would create a library just to store a key.
     if let Cmd::Config { cmd } = cli.cmd {
         return commands::config::run(cmd, cli.google_api_key.as_deref()).await;
     }
 
-    // One rule for every frontend: flag, then BOOKMOLE_DATA_DIR, then the
-    // platform data dir. Never the cwd (`crates/engine/src/data_dir.rs`).
     let data_root = bookmole::data_dir::resolve(cli.data_dir.as_deref())?;
     let mut config = EngineConfig::rooted_at(data_root);
-    // Key precedence: --google-api-key flag / env (merged by clap) > config file.
     config.google_api_key = cli
         .google_api_key
         .clone()
@@ -525,8 +504,6 @@ async fn main() -> Result<()> {
         panic!("--panic-now: deliberate crash to exercise the crash hook");
     }
     let engine = Engine::open(config).await?;
-    // A library in a synced folder opens anyway; this says so once, on stderr,
-    // where a script parsing stdout never sees it (`location.rs`).
     if !cli.quiet
         && let Some(folder) = engine.library_location().cloud_folder
     {
@@ -601,8 +578,6 @@ async fn main() -> Result<()> {
             highlights,
             limit,
         } => {
-            // Neither flag is **both**, the way `BookFilter`'s `None` is not
-            // asking rather than asking for nothing.
             let source = match (notes, highlights) {
                 (true, _) => Some(bookmole::SearchSource::Note),
                 (_, true) => Some(bookmole::SearchSource::Highlight),

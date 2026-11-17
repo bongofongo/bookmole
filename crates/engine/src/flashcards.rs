@@ -1,7 +1,5 @@
 use crate::storage::FlashcardRow;
 
-/// If a highlight is a single word (after trimming edge punctuation and
-/// quotes), return the cleaned word — it's a flashcard candidate.
 pub fn single_word(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.split_whitespace().count() != 1 {
@@ -18,8 +16,6 @@ fn escape_tsv(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
 }
 
-/// Anki-importable TSV: word, context, book title. Header directives tell
-/// Anki's importer the separator and to treat fields as plain text.
 pub fn export_tsv(cards: &[FlashcardRow]) -> String {
     let mut out = String::from("#separator:tab\n#html:false\n");
     for c in cards {
@@ -33,10 +29,6 @@ pub fn export_tsv(cards: &[FlashcardRow]) -> String {
     out
 }
 
-// ---- Anki, properly ---------------------------------------------------------
-
-/// One Anki export, before anything is written: the file's text, how many
-/// cards went into it, and a name for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnkiExport {
     pub text: String,
@@ -44,49 +36,28 @@ pub struct AnkiExport {
     pub filename: String,
 }
 
-/// An Anki export the engine wrote itself. `path` is `None` when no card went
-/// out and so no file was written.
+/// `path` is `None` when no card went out and no file was written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedAnkiExport {
     pub path: Option<std::path::PathBuf>,
     pub count: usize,
 }
 
-/// The deck every card lands under. Anki reads `::` as a sub-deck, so each
-/// book becomes a child of this one rather than a sibling of the user's decks.
+/// `::` is Anki's sub-deck separator, so each book becomes a child of this deck.
 pub const ANKI_DECK_ROOT: &str = "bookmole";
 
-/// The tag every exported note carries, so a reader can find them all in
-/// Anki's browser with one search (`tag:bookmole`).
 pub const ANKI_TAG: &str = "bookmole";
 
-/// One card on its way to Anki: the row, plus the book's authors in display
-/// order for the citation line. A `FlashcardRow` carries only the title, and
-/// widening its query for this one caller would change the shape every other
-/// list of cards reads.
 #[derive(Debug, Clone)]
 pub struct AnkiCard<'a> {
     pub card: &'a FlashcardRow,
     pub authors: &'a [String],
 }
 
-/// The note's GUID: stable for a card across every export from this library,
-/// so Anki *updates* a note it has seen instead of adding a second copy.
-///
-/// `bookmole-<card id>-<first 8 hex of sha256(word)>`. Two halves, each
-/// covering the other's weakness:
-///
-/// - **The id survives a merge.** `merge_books` moves a card by rewriting its
-///   `book_id`, so a GUID built from `(book_id, word)` would change the moment
-///   two editions were folded together, and the next import would duplicate
-///   every card the merge moved.
-/// - **The word guards against a reused id.** `flashcards.id` is a plain
-///   `INTEGER PRIMARY KEY` (no `AUTOINCREMENT`, `0001_init.sql`), so SQLite may
-///   hand a deleted card's id to the next one. On its own that would make Anki
-///   silently overwrite an old note with an unrelated word; with the word's
-///   hash in the GUID a reused id mints a new note instead.
-///
-/// ASCII, no separator, no quote, so it never needs escaping.
+/// Stable GUID `bookmole-<card id>-<first 8 hex of sha256(word)>` so Anki updates rather than
+/// duplicates.
+/// The id survives `merge_books` (which rewrites `book_id`); the word hash guards against SQLite
+/// reusing a deleted id.
 pub fn anki_guid(card: &FlashcardRow) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(card.word.as_bytes());
@@ -94,13 +65,9 @@ pub fn anki_guid(card: &FlashcardRow) -> String {
     format!("bookmole-{}-{short}", card.id)
 }
 
-/// HTML-escape a field Anki will read with `#html:true`.
-///
-/// Every character Anki's parser could misread is neutralised here rather than
-/// quoted: `"` becomes `&quot;` so no field ever *starts* a CSV quoted field;
-/// a tab (the separator) becomes a space; newlines become `<br>`; and a `#` at
-/// the very start becomes `&#35;`, because a row whose first byte is `#` is a
-/// comment line to Anki's reader and the card would vanish without a word.
+/// HTML-escapes a field for `#html:true`: `"` becomes `&quot;`, tab a space, newline `<br>`, and a
+/// leading `#`
+/// becomes `&#35;`, since a row starting with `#` is an Anki comment line.
 pub fn anki_html(s: &str) -> String {
     let s = s.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = String::with_capacity(s.len() + 8);
@@ -120,15 +87,9 @@ pub fn anki_html(s: &str) -> String {
     out
 }
 
-/// A book's deck: `bookmole::<title>`.
-///
-/// Deck names are **not** HTML (Anki takes the column as a name), so this is
-/// plain text with three things neutralised: any run of two or more colons
-/// collapses to one, because `::` would split *Foo::Bar* into a sub-deck the
-/// reader never made; tabs, newlines and other control characters become a
-/// space, because they would break the row; and `"` becomes `'`, because a deck
-/// column starting with a quote would open a quoted field. An empty title
-/// falls back to `book <id>` — a deck named only `bookmole::` is the root.
+/// `bookmole::<title>`. Deck names are plain text: runs of colons collapse to one (`::` would make
+/// a sub-deck),
+/// control characters become spaces, `"` becomes `'`, and an empty title falls back to `book <id>`.
 pub fn anki_deck(card: &FlashcardRow) -> String {
     let mut clean = String::with_capacity(card.book_title.len());
     let mut last_colon = false;
@@ -159,8 +120,6 @@ pub fn anki_deck(card: &FlashcardRow) -> String {
     }
 }
 
-/// A tag-safe slug: lowercase letters and digits (any script), everything else
-/// one `-`. Anki splits a tag column on spaces, so a tag can never hold one.
 fn slug(s: &str) -> String {
     let mut out = String::new();
     for ch in s.chars() {
@@ -173,7 +132,6 @@ fn slug(s: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
-/// `bookmole bookmole::<book slug>` — the library tag and the book's.
 pub fn anki_tags(card: &FlashcardRow) -> String {
     let book = slug(&card.book_title);
     let book = if book.is_empty() {
@@ -184,7 +142,6 @@ pub fn anki_tags(card: &FlashcardRow) -> String {
     format!("{ANKI_TAG} {ANKI_TAG}::{book}")
 }
 
-/// The back of the card: the passage, then a citation line.
 fn anki_back(card: &FlashcardRow, authors: &[String]) -> String {
     let mut cite = anki_html(card.book_title.trim());
     let authors: Vec<&str> = authors
@@ -211,9 +168,8 @@ fn anki_back(card: &FlashcardRow, authors: &[String]) -> String {
     }
 }
 
-/// The header block, verbatim, in the order Anki's manual lists them
-/// (docs.ankiweb.net, *Importing → Text Files → File Headers*, Anki 2.1.54+).
-/// Columns are 1-indexed: Front, Back, Deck, Tags, GUID.
+/// Anki's file-header directives in the manual's order; columns are 1-indexed: Front, Back, Deck,
+/// Tags, GUID.
 pub const ANKI_HEADER: &str = "#separator:tab\n\
 #html:true\n\
 #notetype:Basic\n\
@@ -221,8 +177,6 @@ pub const ANKI_HEADER: &str = "#separator:tab\n\
 #tags column:4\n\
 #guid column:5\n";
 
-/// Anki's text-import format with a note per card: Front = the word, Back =
-/// the passage plus *title — author*, then deck, tags and a stable GUID.
 pub fn export_anki(cards: &[AnkiCard<'_>]) -> String {
     let mut out = String::from(ANKI_HEADER);
     for AnkiCard { card, authors } in cards {
@@ -240,15 +194,13 @@ pub fn export_anki(cards: &[AnkiCard<'_>]) -> String {
     out
 }
 
-/// A filename for one export: `bookmole-anki[-<book>]-<stamp>.txt`.
-///
-/// The stamp is the caller's, so this stays pure. A new name per export rather
-/// than one file overwritten: exporting marks cards, so overwriting a file
-/// nobody had imported would lose the cards it held.
+/// `bookmole-anki[-<book>]-<stamp>.txt`. The stamp is the caller's to keep this pure; each export
+/// gets a new name
+/// since exporting marks cards and overwriting an unimported file would lose them.
 pub fn anki_filename(book_title: Option<&str>, stamp: &str) -> String {
     match book_title.map(slug).filter(|s| !s.is_empty()) {
         Some(book) => {
-            // Bounded, so a 220-character title still makes a usable name.
+            // Bounded so a very long title still makes a usable name.
             let book: String = book.chars().take(48).collect();
             let book = book.trim_end_matches('-');
             format!("bookmole-anki-{book}-{stamp}.txt")
@@ -359,7 +311,6 @@ mod tests {
             row[1],
             "line one<br>line two &lt;i&gt;x&lt;/i&gt; &amp; &quot;y&quot;<br><br><small>A &amp; B</small>"
         );
-        // The deck is a name, not HTML: an ampersand stays one.
         assert_eq!(row[2], "bookmole::A & B");
     }
 
@@ -367,12 +318,10 @@ mod tests {
     fn anki_deck_neutralises_double_colons_tabs_and_quotes() {
         let c = card(1, "w", None, "Part::One:::Two\tThree \"Q\"");
         assert_eq!(anki_deck(&c), "bookmole::Part:One:Two Three 'Q'");
-        // A single colon is ordinary punctuation and survives.
         assert_eq!(
             anki_deck(&card(1, "w", None, "Dune: Messiah")),
             "bookmole::Dune: Messiah"
         );
-        // Nothing but colons and space: the book's id stands in.
         assert_eq!(anki_deck(&card(1, "w", None, " :: ")), "bookmole::book 7");
     }
 
@@ -397,8 +346,6 @@ mod tests {
         assert_eq!(row[1], "<small>Middlemarch</small>");
     }
 
-    /// The context is the card's own copy (captured with it), so a card whose
-    /// highlight has been dropped — or never existed — still exports whole.
     #[test]
     fn anki_card_whose_highlight_is_gone_keeps_its_context() {
         let mut c = card(4, "ghost", Some("still here"), "B");
@@ -418,11 +365,10 @@ mod tests {
     fn anki_guid_is_stable_and_word_sensitive() {
         let a = card(9, "mot", Some("one"), "Book");
         let mut moved = a.clone();
-        moved.book_id = 99; // a merge rewrites book_id
+        moved.book_id = 99;
         moved.book_title = "Other edition".into();
         moved.context = Some("edited".into());
         assert_eq!(anki_guid(&a), anki_guid(&moved));
-        // The same id reused for a different word is a different note.
         assert_ne!(anki_guid(&a), anki_guid(&card(9, "autre", None, "Book")));
         let g = anki_guid(&a);
         let hash = g.strip_prefix("bookmole-9-").expect("prefix");
@@ -464,10 +410,6 @@ mod props {
     }
 
     proptest! {
-        /// Anki splits on tabs and newlines, so a card whose text contains
-        /// either would silently become a malformed row — or two. `escape_tsv`
-        /// handles this today; this pins it, because the failure mode is a
-        /// corrupted import that looks fine until you open the deck.
         #[test]
         fn every_exported_row_has_exactly_three_fields(
             cards in proptest::collection::vec(
@@ -482,8 +424,6 @@ mod props {
             let tsv = export_tsv(&rows);
 
             let lines: Vec<&str> = tsv.lines().collect();
-            // Two directive lines, then one line per card — no more, which is
-            // what proves nothing smuggled in a newline.
             prop_assert_eq!(lines.len(), 2 + rows.len(), "row count changed: {:?}", tsv);
             prop_assert!(lines[0].starts_with('#') && lines[1].starts_with('#'));
 
@@ -496,9 +436,6 @@ mod props {
             }
         }
 
-        /// The Anki twin of the pin above: whatever a card holds, every row is
-        /// one line of exactly five tab-separated fields, and no field opens a
-        /// CSV quoted field (Anki's reader would swallow the separators).
         #[test]
         fn every_anki_row_has_exactly_five_fields(
             cards in proptest::collection::vec(
@@ -529,8 +466,6 @@ mod props {
             }
         }
 
-        /// What `single_word` promises its one caller (the KOReader import,
-        /// which turns the result straight into a flashcard).
         #[test]
         fn a_single_word_is_really_a_single_clean_word(s in ".{0,40}") {
             if let Some(w) = single_word(&s) {
@@ -539,14 +474,12 @@ mod props {
                     !w.chars().any(char::is_whitespace),
                     "whitespace in {:?} from {:?}", w, s
                 );
-                // Edge punctuation is stripped from both ends.
                 prop_assert!(w.chars().next().unwrap().is_alphanumeric(), "{:?}", w);
                 prop_assert!(w.chars().last().unwrap().is_alphanumeric(), "{:?}", w);
                 prop_assert!(s.contains(&w), "{:?} is not a substring of {:?}", w, s);
             }
         }
 
-        /// Anything with a space in it is a passage, not a vocabulary word.
         #[test]
         fn multi_word_text_is_never_a_flashcard(a in "[a-z]{1,8}", b in "[a-z]{1,8}") {
             prop_assert_eq!(single_word(&format!("{a} {b}")), None);

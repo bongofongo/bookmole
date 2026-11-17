@@ -1,46 +1,32 @@
-//! The device-scan pre-filter cache (`sidecar_seen`, migration `0006`).
-//!
-//! Every column is something the *file* said. Nothing here is a verdict about
-//! the library — see the migration's header for why that line matters.
+//! The device-scan pre-filter cache: every column is something the file said, never a verdict about
+//! the library.
 
 use sqlx::Row;
 
 use super::Storage;
 use crate::error::Result;
 
-/// What one sidecar file said, last time it was read.
-///
-/// `size` and `mtime` are the freshness key; the rest is the part of a parse a
-/// scan actually needs. Deliberately not a `KoSidecar`: the highlights are the
-/// expensive half and are never stored, because storing them would make this a
-/// second copy of `highlights` that nothing keeps in step.
+/// `size` and `mtime` are the freshness key. Highlights are deliberately not stored: that would be
+/// a second copy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidecarFacts {
     pub size: i64,
-    /// Nanoseconds since the epoch. See the migration.
+    /// Nanoseconds since the epoch.
     pub mtime: i64,
     pub partial_md5: Option<String>,
-    /// How many highlights the file yielded.
     pub entry_count: i64,
-    /// The file's annotations through `DeviceDigest`. See the migration for why
-    /// a count alone was not enough.
+    /// The file's annotations through `DeviceDigest`; a count alone could not detect an edit.
     pub entry_digest: String,
-    /// `doc_props.title` — the value the matcher sees, not a prettier one. A
-    /// cache hit has to reproduce the same match a fresh parse would.
+    /// `doc_props.title` as the matcher sees it, so a cache hit reproduces a fresh parse's match.
     pub title: Option<String>,
     pub authors: Option<String>,
     pub ko_percent: Option<f64>,
-    /// [`crate::koreader::KoStatus`] as written by the device. Kept as text so
-    /// a status we do not model round-trips unchanged.
+    /// Kept as text so a status we do not model round-trips unchanged.
     pub ko_status: Option<String>,
 }
 
 impl Storage {
-    /// What this path said last time, if we have read it before.
-    ///
-    /// Returns the row whatever its `size`/`mtime` — deciding whether it is
-    /// still fresh is the caller's, because the caller is the one holding the
-    /// `stat`.
+    /// Returns the row whatever its `size`/`mtime`; freshness is the caller's call.
     pub async fn sidecar_facts(&self, path: &str) -> Result<Option<SidecarFacts>> {
         let row = sqlx::query(
             "SELECT size, mtime, partial_md5, entry_count, entry_digest, title, authors,
@@ -63,13 +49,8 @@ impl Storage {
         }))
     }
 
-    /// Record what a sidecar said. Overwrites in full rather than merging: a
-    /// sidecar is the complete state of its book, so a field that has gone away
-    /// has gone away — the same rule `refresh_device_fields` follows, and for
-    /// the same reason.
-    ///
-    /// `seen_at` is the scan's own token, not the clock. See
-    /// [`Storage::forget_sidecars_under`].
+    /// Overwrites in full: a sidecar is the complete state, so a vanished field is gone.
+    /// `seen_at` is the scan's token, not the clock.
     pub async fn record_sidecar_facts(
         &self,
         path: &str,
@@ -109,10 +90,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Stamp a row as seen without touching what the file said.
-    ///
-    /// A cache *hit* still has to say it was seen, or the prune below would
-    /// delete exactly the rows that are doing their job.
+    /// A cache hit must still be stamped seen, or the prune would delete the rows doing their job.
     pub async fn touch_sidecar_seen(&self, path: &str, seen_at: i64) -> Result<()> {
         sqlx::query("UPDATE sidecar_seen SET last_seen = ? WHERE path = ?")
             .bind(seen_at)
@@ -122,25 +100,9 @@ impl Storage {
         Ok(())
     }
 
-    /// Drop cache rows under `root` that this scan did not see — the sidecars
-    /// that have been deleted from the device since.
-    ///
-    /// Scoped to `root` on purpose: a scan of one mount must not forget another
-    /// device that simply is not plugged in.
-    ///
-    /// **`seen_at` is a token, and the comparison is `<>`, not `<`.** The
-    /// obvious "delete anything older than this scan started" is wrong at
-    /// second resolution: a scan that finishes inside the same second as the
-    /// one before it stamps rows with a value that is not *less than* its own
-    /// start, so nothing is ever pruned — and the whole prune quietly does
-    /// nothing without ever failing. The scan passes one nanosecond-resolution
-    /// token to every write it makes and deletes whatever does not carry it.
-    ///
-    /// `substr(path, 1, n) = root` rather than `LIKE root || '%'`, because a
-    /// mount name is user-supplied text and `%`/`_` in it would silently widen
-    /// a `LIKE` into deleting rows it was never meant to. The separator is
-    /// appended here for the neighbouring reason: a bare `/mnt/a` prefix also
-    /// matches `/mnt/abc`.
+    /// Drops rows under `root` that this scan did not see; other mounts' rows are left alone.
+    /// `seen_at` is a token compared with `<>`, not `<`: at second resolution consecutive scans tie.
+    /// The prefix test uses `substr`, not `LIKE`, since mount names may contain `%` or `_`.
     pub async fn forget_sidecars_under(&self, root: &str, seen_at: i64) -> Result<u64> {
         let prefix = format!("{}/", root.trim_end_matches('/'));
         let done =
@@ -186,7 +148,6 @@ mod tests {
             .unwrap();
         assert_eq!(s.sidecar_facts("/x").await.unwrap(), Some(facts(3)));
 
-        // Not a merge: the whole row is what the file now says.
         let mut second = facts(4);
         second.ko_status = None;
         second.title = None;
@@ -206,7 +167,6 @@ mod tests {
         for p in ["/mnt/a/one.lua", "/mnt/a/two.lua", "/mnt/b/three.lua"] {
             s.record_sidecar_facts(p, &facts(1), FIRST).await.unwrap();
         }
-        // One of them is seen again by "this scan".
         s.touch_sidecar_seen("/mnt/a/one.lua", SECOND)
             .await
             .unwrap();
@@ -220,9 +180,6 @@ mod tests {
         );
     }
 
-    /// The reason the prune compares tokens rather than times: two scans inside
-    /// one clock second must still be able to tell each other apart, and at
-    /// second resolution "older than this scan started" never fires.
     #[tokio::test]
     async fn a_prune_is_not_defeated_by_two_scans_in_the_same_second() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -230,7 +187,6 @@ mod tests {
         s.record_sidecar_facts("/mnt/a/gone.lua", &facts(1), one_second)
             .await
             .unwrap();
-        // The next scan starts inside that same second and sees nothing.
         assert_eq!(
             s.forget_sidecars_under("/mnt/a", one_second).await.unwrap(),
             0,
@@ -244,8 +200,6 @@ mod tests {
         );
     }
 
-    /// `/mnt/a` is not a prefix of `/mnt/abc` in any sense that matters here,
-    /// and treating it as one would delete a neighbouring mount's cache.
     #[tokio::test]
     async fn a_sibling_mount_with_a_longer_name_is_not_under_this_root() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -256,9 +210,6 @@ mod tests {
         assert!(s.sidecar_facts("/mnt/abc/one.lua").await.unwrap().is_some());
     }
 
-    /// A mount is named by the user, and `%` is a legal character in a volume
-    /// name. Under a `LIKE` prefix that is a wildcard, and pruning `/mnt/%`
-    /// would take `/mnt/b` with it.
     #[tokio::test]
     async fn a_wildcard_in_a_mount_name_does_not_widen_the_prune() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();

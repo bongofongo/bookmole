@@ -1,9 +1,5 @@
-//! Reflection, review and citation.
-//!
-//! Two objects, one command shape. A **reflection** is private, opens mid-book
-//! and accretes; a **review** is public prose plus a rating. They never share a
-//! body — a public review is a rewrite for a different audience, not a subset of
-//! private thinking — so each is opened and edited on its own.
+//! Reflection, review and citation. A reflection is private; a review is public prose plus a
+//! rating; they never share a body.
 
 use anyhow::{Result, bail};
 use bookmole::{CreatedNote, Engine, EngineError, NoteKind, Reading};
@@ -16,11 +12,8 @@ pub struct ReflectOpts<'a> {
     /// Which reading, as `show` numbers them (1 = the first). Omitted, the
     /// current one.
     pub reading: Option<usize>,
-    /// Print the text and stop, without opening an editor.
     pub show: bool,
-    /// Open (or create) it, but leave the body alone.
     pub no_edit: bool,
-    /// Reviews only: the rating, on the active scale.
     pub rating: Option<f64>,
 }
 
@@ -46,9 +39,7 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
         None => None,
     };
 
-    // `--show` must not write. Opening one creates a reading when the book has
-    // none, which is right when the user is sitting down to write and wrong
-    // when they only asked to look.
+    // `--show` must not write: opening creates a reading when the book has none.
     if opts.show {
         return show_only(engine, &readings, reading_id, kind).await;
     }
@@ -59,8 +50,6 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
     };
     let record = engine.get_note(note.id).await?.expect("just opened");
 
-    // Name the reading, not just the book: with rereads a book carries several,
-    // and each gets its own pair.
     let readings = engine.list_readings(book_id).await?;
     if let Some(rid) = record.reading_id
         && let Some(i) = readings.iter().position(|r| r.id == rid)
@@ -85,8 +74,6 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
         match engine.goodreads_rating(note.id).await {
             Ok(Some(g)) => println!("rated {value} → goodreads {g}"),
             Ok(None) => println!("rated {value}"),
-            // Never rounded, always reported: Goodreads takes 0–5 in quarters,
-            // and what a point of the user's own scale means there is theirs to say.
             Err(EngineError::UnmappedRating { value, scale }) => {
                 println!("rated {value}");
                 println!(
@@ -97,23 +84,17 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
         }
     }
 
-    // Re-read from the vault rather than echoing what the editor returned: the
-    // file is the source of the body, and this is where that shows.
     let body = engine.note_body(&record)?;
     print_note(&note, &body);
     Ok(())
 }
 
-/// The read-only half of `reflect`/`review`: print what is there, and name the
-/// command that starts one when there is not.
 async fn show_only(
     engine: &Engine,
     readings: &[Reading],
     reading_id: Option<i64>,
     kind: NoteKind,
 ) -> Result<()> {
-    // The current reading: the open one, else the most recent — the same rule
-    // `Book`'s progress projections follow.
     let current = reading_id.or_else(|| {
         readings
             .iter()
@@ -162,7 +143,6 @@ fn print_body(body: &str) {
     }
 }
 
-/// Turn the number `show` prints ("reading 2/3") into a reading id.
 fn nth_reading(readings: &[Reading], nth: usize) -> Result<i64> {
     if readings.is_empty() {
         bail!("this book has no readings yet — `bookmole progress <book> <page>` starts one");
@@ -176,11 +156,7 @@ fn nth_reading(readings: &[Reading], nth: usize) -> Result<i64> {
     }
 }
 
-/// Cite a highlight from a note — or, with no highlight, list what it cites.
-///
-/// By reference: the citation survives a device refresh rewriting the
-/// highlight's text-adjacent device fields, and "which highlights did I use?"
-/// stays a query.
+/// Cite a highlight from a note, or with no highlight list what it cites. Cites by reference.
 pub async fn cite(engine: &Engine, note_id: i64, highlight_id: Option<i64>) -> Result<()> {
     let Some(note) = engine.get_note(note_id).await? else {
         bail!("no note #{note_id} — try `bookmole notes`");

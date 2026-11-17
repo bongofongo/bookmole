@@ -1,25 +1,6 @@
-//! Lists (migration `0028`): every rule the engine owns about them.
-//!
-//! A book is on a list at most once (adding it again returns the existing
-//! entry unchanged); every write stamps the list's `updated_at`; `merge_books`
-//! repoints entries, keeping the earlier position and joining both notes; and
-//! deleting a book renumbers the lists its entries were removed from, since
-//! the cascade cannot.
-//!
-//! **Positions are exactly `0..n` after every write.** The unique
-//! `(list_id, position)` index means a renumber cannot simply `UPDATE` rows one
-//! at a time, so [`renumber`] shifts the whole list out of range first (negative
-//! positions) and then writes the final ones: two passes, one transaction.
-//!
-//! **Privacy.** Names, descriptions and notes are the reader's own writing. This
-//! file emits no tracing of them at all.
-//!
-//! **Two questions each asked in exactly one place**, so a change to either is
-//! one line. [`YEAR_SQL`] is the year the timeline and the *Published* sort
-//! read, today `books.first_published` (migration `0029`), falling back to
-//! `publish_year` (an edition's year, often) with `ListEntry::year_is_edition`
-//! saying so. "Is this book in your library" is [`in_library_sql`] (the copies
-//! model); every count and the `EntryShow` filter go through it.
+//! Lists: a book is on a list at most once and positions are exactly `0..n` after every write.
+//! Deleting a book must renumber its lists, which the cascade cannot; renumbering parks rows at
+//! negative positions first because of the unique `(list_id, position)` index.
 
 use sqlx::{Row, SqliteConnection};
 
@@ -32,17 +13,12 @@ use crate::lists::{
     ShelfSuggestion, TIMELINE_MIN_DATED,
 };
 
-/// The year a book is placed at on a Timeline. **The one place** this is read.
-/// First publication when a source stated it, else the edition's year.
+/// The only place a book's timeline year is decided.
 const YEAR_SQL: &str = "COALESCE(books.first_published, books.publish_year)";
 
-/// True when [`YEAR_SQL`] fell back to an edition's year.
 const YEAR_IS_EDITION_SQL: &str =
     "(books.first_published IS NULL AND books.publish_year IS NOT NULL)";
 
-/// The column the in-library question ([`in_library_sql`]) is
-/// asked of in every list query: each one has `books` in scope. No column is
-/// added for it, because that would be a second answer to that question.
 const IN_LIBRARY_BOOK: &str = "books.id";
 
 /// The only source whose shelves are offered. Calibre's tags are never suggested.
@@ -50,7 +26,6 @@ const SHELF_SOURCE: &str = "goodreads";
 
 const LIST_COLUMNS: &str = "id, name, description, source, source_ref, created_at, updated_at";
 
-/// `None` for empty or whitespace-only text; the rest unchanged.
 fn blank_to_none(s: Option<&str>) -> Option<String> {
     s.filter(|s| !s.trim().is_empty()).map(str::to_owned)
 }
@@ -87,8 +62,6 @@ fn row_to_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ListEntry> {
     })
 }
 
-/// The `SELECT … FROM books … JOIN entries` every entry read shares, ending in
-/// `WHERE e.list_id = ?`.
 fn entry_select() -> String {
     let in_lib = in_library_sql(IN_LIBRARY_BOOK);
     format!(
@@ -121,7 +94,6 @@ async fn book_exists(conn: &mut SqliteConnection, id: i64) -> Result<()> {
         .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
 }
 
-/// Stamp `updated_at`. Every write to a list or its entries calls this.
 async fn touch(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     sqlx::query("UPDATE book_lists SET updated_at = ? WHERE id = ?")
         .bind(now_unix())
@@ -131,11 +103,8 @@ async fn touch(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Rewrite a list's positions to `0..ids.len()` in the order given.
-///
-/// Two passes because of the unique `(list_id, position)` index: moving a row
-/// into a slot another row still holds would fail mid-way. Pass one parks every
-/// row at a negative position, which no final position can equal.
+/// Two passes: rows park at negative positions first, since the unique `(list_id, position)`
+/// index forbids moving a row into a slot another still holds.
 async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
     sqlx::query("UPDATE book_list_entries SET position = -position - 1 WHERE list_id = ?")
         .bind(list_id)
@@ -161,15 +130,13 @@ async fn entry_order(conn: &mut SqliteConnection, list_id: i64) -> Result<Vec<i6
     .await?)
 }
 
-/// Close the gaps in one list, keeping its order, and stamp it.
 async fn compact(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     let ids = entry_order(&mut *conn, list_id).await?;
     renumber(&mut *conn, list_id, &ids).await?;
     touch(conn, list_id).await
 }
 
-/// `delete_book`'s half: lists the book is on, read **before** the delete (the
-/// cascade leaves nothing to ask afterwards).
+/// Read before the delete; the cascade leaves nothing to ask afterwards.
 pub(super) async fn lists_of_book(conn: &mut SqliteConnection, book_id: i64) -> Result<Vec<i64>> {
     Ok(
         sqlx::query_scalar("SELECT list_id FROM book_list_entries WHERE book_id = ?")
@@ -179,7 +146,6 @@ pub(super) async fn lists_of_book(conn: &mut SqliteConnection, book_id: i64) -> 
     )
 }
 
-/// `delete_book`'s other half: renumber the lists the cascade left with a gap.
 pub(super) async fn compact_lists(conn: &mut SqliteConnection, list_ids: &[i64]) -> Result<()> {
     for id in list_ids {
         compact(&mut *conn, *id).await?;
@@ -187,12 +153,8 @@ pub(super) async fn compact_lists(conn: &mut SqliteConnection, list_ids: &[i64])
     Ok(())
 }
 
-/// `merge_books`' step: every entry of `src` becomes an entry of `dst`.
-///
-/// On a list holding both, the entry with the **earlier position** survives, the
-/// notes are joined (earlier entry's first) with a blank line rather than one
-/// being dropped, and the earlier `added_at` is kept. Then each touched list is
-/// renumbered.
+/// On a list holding both, the earlier position survives, notes are joined, earlier `added_at`
+/// kept.
 pub(super) async fn repoint_entries(conn: &mut SqliteConnection, src: i64, dst: i64) -> Result<()> {
     let theirs = sqlx::query(
         "SELECT list_id, position, note, added_at FROM book_list_entries WHERE book_id = ?",
@@ -260,8 +222,6 @@ pub(super) async fn repoint_entries(conn: &mut SqliteConnection, src: i64, dst: 
 }
 
 impl Storage {
-    // ---- lists -------------------------------------------------------------
-
     pub async fn create_list(&self, name: &str, description: Option<&str>) -> Result<BookList> {
         let name = clean_name(name)?;
         let now = now_unix();
@@ -312,7 +272,6 @@ impl Storage {
         self.get_list(id).await
     }
 
-    /// Delete a list. Its entries go by cascade; the books are untouched.
     pub async fn delete_list(&self, id: i64) -> Result<()> {
         let done = sqlx::query("DELETE FROM book_lists WHERE id = ?")
             .bind(id)
@@ -324,7 +283,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Every list with its counts and the first `preview` books by position.
     pub async fn list_summaries(&self, sort: ListSort, preview: usize) -> Result<Vec<ListSummary>> {
         let order = match sort {
             ListSort::Name => "name COLLATE NOCASE ASC, id ASC",
@@ -370,9 +328,7 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
-    // ---- entries -----------------------------------------------------------
-
-    /// A list's entries. `sort` is a view: it never rewrites `position`.
+    /// `sort` is a view: it never rewrites `position`.
     pub async fn list_entries(
         &self,
         list_id: i64,
@@ -417,9 +373,7 @@ impl Storage {
         row.as_ref().map(row_to_entry).transpose()
     }
 
-    /// Put a book on a list, at the end. **Idempotent:** a book already on the
-    /// list comes back exactly as it is — its note is not replaced and the list
-    /// is not stamped.
+    /// Idempotent: a book already on the list comes back unchanged, its note kept, the list unstamped.
     pub async fn add_to_list(
         &self,
         list_id: i64,
@@ -455,9 +409,6 @@ impl Storage {
         entry.ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))
     }
 
-    /// Take a book off a list and renumber. A book that is not on the list is a
-    /// no-op (removing twice equals removing once); an unknown list or book is
-    /// `NotFound`.
     pub async fn remove_from_list(&self, list_id: i64, book_id: i64) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         list_exists(&mut tx, list_id).await?;
@@ -474,8 +425,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Move a book to 0-based position `to` (clamped to the last place) and
-    /// renumber. The book must be on the list.
+    /// `to` is clamped to the last place; the book must be on the list.
     pub async fn move_in_list(&self, list_id: i64, book_id: i64, to: usize) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         list_exists(&mut tx, list_id).await?;
@@ -493,7 +443,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Set or clear (`None`, empty, whitespace-only) a book's note on a list.
     pub async fn set_list_note(
         &self,
         list_id: i64,
@@ -519,7 +468,6 @@ impl Storage {
         Ok(())
     }
 
-    /// The lists a book is on: "No. 1 of 6".
     pub async fn lists_for_book(&self, book_id: i64) -> Result<Vec<ListMembership>> {
         let mut conn = self.pool().acquire().await?;
         book_exists(&mut conn, book_id).await?;
@@ -545,8 +493,7 @@ impl Storage {
             .collect()
     }
 
-    /// The list laid along a line: dated books then undated, each in the list's
-    /// own order. `ready` once [`TIMELINE_MIN_DATED`] books have a year.
+    /// Dated books then undated, each in list order; `ready` once `TIMELINE_MIN_DATED` have a year.
     pub async fn list_timeline(&self, list_id: i64) -> Result<ListTimeline> {
         let entries = self
             .list_entries(list_id, EntryShow::All, EntrySort::Yours)
@@ -560,10 +507,6 @@ impl Storage {
         })
     }
 
-    // ---- Goodreads shelves -------------------------------------------------
-
-    /// One suggestion per distinct Goodreads tag that has no kept list and has
-    /// not been dismissed. Most books first, then tag.
     pub async fn shelf_suggestions(&self, preview: usize) -> Result<Vec<ShelfSuggestion>> {
         let rows = sqlx::query(
             "SELECT bt.tag AS tag, count(*) AS n FROM book_tags bt \
@@ -592,8 +535,6 @@ impl Storage {
         Ok(out)
     }
 
-    /// The shelf as the reader wrote it: the first non-blank `raw` stored for
-    /// the tag, else the tag.
     async fn shelf_name(&self, tag: &str) -> Result<String> {
         let raw: Option<String> = sqlx::query_scalar(
             "SELECT raw FROM book_tags WHERE source = ? AND tag = ? \
@@ -606,9 +547,7 @@ impl Storage {
         Ok(raw.unwrap_or_else(|| tag.to_owned()))
     }
 
-    /// A shelf's books in the order the CSV listed them: `book_tags` is a rowid
-    /// table written row by row during import, so rowid is CSV order for a
-    /// first import. Title order breaks any tie.
+    /// CSV order via rowid (`book_tags` is written row by row on import); title breaks ties.
     async fn shelf_books(&self, tag: &str, limit: Option<usize>) -> Result<Vec<Book>> {
         let sql = format!(
             "SELECT {BOOK_COLUMNS} {BOOK_FROM} \
@@ -626,9 +565,7 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
-    /// Turn a shelf into a `goodreads` list holding a **copy** of its books.
-    /// Keeping twice returns the list the first keep made. A source other than
-    /// `goodreads` is invalid input; a tag no book carries is `NotFound`.
+    /// Holds a copy of the shelf's books; keeping twice returns the first list. Only `goodreads`.
     pub async fn keep_shelf(&self, source: &str, tag: &str) -> Result<BookList> {
         if source != SHELF_SOURCE {
             return Err(EngineError::InvalidInput(format!(
@@ -679,7 +616,7 @@ impl Storage {
         self.get_list(id).await
     }
 
-    /// "Not now". Idempotent; the tag need not exist.
+    /// Idempotent; the tag need not exist.
     pub async fn dismiss_shelf(&self, source: &str, tag: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO dismissed_shelves (source, tag, dismissed_at) VALUES (?, ?, ?) \
@@ -715,8 +652,6 @@ mod props {
     }
 
     proptest! {
-        /// Whatever is added, moved and removed, in whatever order, a list's
-        /// positions are exactly `0..n` and its order is the model's.
         #[test]
         fn any_sequence_leaves_positions_exactly_zero_to_n(
             ops in proptest::collection::vec(op(), 0..40)

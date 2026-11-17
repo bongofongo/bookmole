@@ -1,6 +1,5 @@
-//! Preview: PDF annotations imported as highlights (`src/preview.rs`, origin
-//! `preview`). The fixtures are assembled as bytes by `synthetic_annotated_pdf`, not by
-//! `lopdf`, so the parser does not build its own goldens. Offline.
+//! Preview: PDF annotations imported as highlights. Fixtures are assembled as raw bytes, not by
+//! `lopdf`, so the parser does not build its own goldens.
 
 mod common;
 use std::path::Path;
@@ -17,7 +16,6 @@ use common::{engine, seed_book};
 
 const LINE: &str = "The quick brown fox jumps over the lazy dog";
 
-/// A quad over characters `from..to` of a Courier-12 line at (72, 700).
 fn quad(from: usize, to: usize) -> String {
     let (x0, x1) = (72.0 + 7.2 * from as f64, 72.0 + 7.2 * to as f64);
     format!("{x0:.1} 712 {x1:.1} 712 {x0:.1} 697 {x1:.1} 697")
@@ -48,7 +46,6 @@ fn page_one(sticky_note: &str) -> SyntheticPage {
             ),
             "/Subtype /FreeText /Rect [50 500 250 530] /NM (nm-free) /Contents (typed on the page)"
                 .into(),
-            // Not a highlight at all.
             "/Subtype /Link /Rect [0 0 10 10]".into(),
         ],
     }
@@ -58,9 +55,7 @@ fn page_two() -> SyntheticPage {
     SyntheticPage {
         lines: vec![(72.0, 700.0, 2, "set in helvetica with no widths".into())],
         annots: vec![
-            // Over text we cannot measure.
             markup("Highlight", 0, 8, "/NM (nm-unmeasured) /Contents (scanned)"),
-            // Over nothing at all.
             "/Subtype /Highlight /Rect [72 300 150 315] /QuadPoints [72 315 150 315 72 300 150 300]".into(),
         ],
     }
@@ -84,7 +79,6 @@ async fn one_of_each_annotation_becomes_a_preview_highlight() {
     let p = write(tmp.path(), "a.pdf", &fixture("remember this"));
 
     let sum = import_pdf_annotations(s, book, None, &p).await.unwrap();
-    // 5 on page one + 2 on page two; the Link is not a highlight.
     assert_eq!(
         (sum.inserted, sum.updated, sum.unchanged, sum.unparsed),
         (7, 0, 0, 0)
@@ -113,12 +107,10 @@ async fn one_of_each_annotation_becomes_a_preview_highlight() {
     assert!(!high.text_unavailable);
     assert_eq!(high.origin_note.as_deref(), Some("why the fox"));
     assert_eq!(high.page, Some(1));
-    // 2026-01-05 21:14:08 at +01:00 is 20:14:08 UTC.
     assert_eq!(high.ko_datetime.as_deref(), Some("2026-01-05 20:14:08"));
     assert_eq!(by("nm-under").text, "lazy dog");
     assert_eq!(by("nm-strike").text, "quick");
 
-    // A sticky note and free text are note-only rows: no passage, nothing missing.
     for (nm, note) in [
         ("nm-sticky", "remember this"),
         ("nm-free", "typed on the page"),
@@ -130,7 +122,6 @@ async fn one_of_each_annotation_becomes_a_preview_highlight() {
         assert_eq!(r.page, Some(1));
     }
 
-    // `Highlight` does not expose colour or position; the pure half does.
     let built = highlights_of(&scan_pdf_annotations(&p).unwrap(), None);
     let b = |nm: &str| {
         built
@@ -165,7 +156,6 @@ async fn words_that_cannot_be_read_keep_the_highlight() {
         assert_eq!(r.text, "");
         assert_eq!(r.pos_kind, Some(PosKind::PdfRect));
     }
-    // Its note survives even though its words did not.
     assert!(
         rows.iter()
             .any(|r| r.text_unavailable && r.origin_note.as_deref() == Some("scanned"))
@@ -242,7 +232,6 @@ async fn without_a_name_identity_is_page_kind_and_rounded_rect() {
     };
     let p = write(tmp.path(), "a.pdf", &mk(0.0, "one"));
     import_pdf_annotations(s, book, None, &p).await.unwrap();
-    // Sub-point jitter and a new note: the same highlight.
     write(tmp.path(), "a.pdf", &mk(0.2, "two"));
     let sum = import_pdf_annotations(s, book, None, &p).await.unwrap();
     assert_eq!((sum.inserted, sum.updated), (0, 1));
@@ -318,7 +307,6 @@ async fn rescan_skips_an_unchanged_mtime_and_keeps_one_copy_on_changed_bytes() {
         .last_hash
         .clone();
 
-    // mtime as recorded: not read.
     let r = rescan_path_place(s, copy, &reference).await.unwrap();
     assert_eq!(r.outcome, RescanOutcome::Unchanged);
     assert!(
@@ -328,7 +316,6 @@ async fn rescan_skips_an_unchanged_mtime_and_keeps_one_copy_on_changed_bytes() {
             .is_empty()
     );
 
-    // Preview rewrites the file: same place, new bytes, new mtime.
     write(tmp.path(), "a.pdf", &fixture("after"));
     bump_mtime(&p, 100);
     let r = rescan_path_place(s, copy, &reference).await.unwrap();
@@ -349,7 +336,6 @@ async fn rescan_skips_an_unchanged_mtime_and_keeps_one_copy_on_changed_bytes() {
         .unwrap();
     assert!(rows.iter().all(|r| r.copy_id == Some(copy)));
 
-    // And now the recorded mtime matches again.
     let r = rescan_path_place(s, copy, &reference).await.unwrap();
     assert_eq!(r.outcome, RescanOutcome::Unchanged);
 }
@@ -369,7 +355,6 @@ async fn a_missing_file_marks_the_place_and_leaves_the_copy() {
     assert!(c.places[0].missing_since.is_some());
     assert_eq!(s.copies_for_book(book).await.unwrap().len(), 1);
 
-    // It turning up again clears the fact.
     write(tmp.path(), "a.pdf", &fixture("n"));
     bump_mtime(&p, 100);
     let r = rescan_path_place(s, copy, &reference).await.unwrap();
@@ -405,7 +390,6 @@ async fn a_removed_annotation_is_removed_unless_it_carries_ours() {
         .await
         .unwrap();
 
-    // The file now holds only the first highlight (+ page two).
     let mut one = page_one("n");
     one.annots.truncate(1);
     write(
@@ -416,7 +400,6 @@ async fn a_removed_annotation_is_removed_unless_it_carries_ours() {
     let sum = import_pdf_annotations(s, book, Some(copy), &p)
         .await
         .unwrap();
-    // strike-out, sticky and free text go; the underline carries an annotation.
     assert_eq!(sum.removed, 3);
     let kept: Vec<_> = sum
         .diagnostics
@@ -534,7 +517,6 @@ async fn hostile_files_degrade_to_a_diagnostic_and_remove_nothing() {
             ));
         }
     }
-    // A file that is not there at all is a diagnostic too.
     let sum = import_pdf_annotations(s, book, Some(copy), &tmp.path().join("nope.pdf"))
         .await
         .unwrap();
@@ -542,7 +524,6 @@ async fn hostile_files_degrade_to_a_diagnostic_and_remove_nothing() {
         sum.diagnostics[0].kind,
         DiagnosticKind::PdfUnreadable { .. }
     ));
-    // Nothing was removed by any of it.
     assert_eq!(
         s.imported_highlights(book, HighlightOrigin::Preview)
             .await
@@ -552,10 +533,6 @@ async fn hostile_files_degrade_to_a_diagnostic_and_remove_nothing() {
     );
 }
 
-// ---- two copies of one book -------------------------------------------------
-
-/// One named highlight and one unnamed underline, at the same places in every
-/// file built from it.
 fn twin(note: &str) -> SyntheticPage {
     SyntheticPage {
         lines: vec![(72.0, 700.0, 1, LINE.into())],
@@ -619,7 +596,6 @@ async fn two_copies_annotated_at_the_same_place_are_two_highlights() {
     assert_eq!(rows_of(ca).await.len(), 2);
     assert_eq!(rows_of(cb).await.len(), 2);
 
-    // B's notes change: only B's rows follow.
     write(
         tmp.path(),
         "b.pdf",
@@ -646,7 +622,6 @@ async fn two_copies_annotated_at_the_same_place_are_two_highlights() {
         .unwrap();
     assert_eq!(counts(&a), (0, 0, 2, 0));
 
-    // B loses both annotations: B's rows go, A's stay.
     write(
         tmp.path(),
         "b.pdf",
@@ -684,7 +659,6 @@ async fn a_merged_copy_re_imports_both_files_without_duplicating_or_removing() {
         .await
         .unwrap();
 
-    // Told they are one copy, which now has two `path` places.
     s.merge_copies(ca, cb).await.unwrap();
     for p in [&pb, &pa] {
         let sum = import_pdf_annotations(s, book, Some(ca), p).await.unwrap();
@@ -700,8 +674,8 @@ async fn a_merged_copy_re_imports_both_files_without_duplicating_or_removing() {
     };
     assert_eq!(all().await.len(), 4);
 
-    // With two files behind one copy there is no telling which file a row came
-    // from, so a file that lost its annotations removes nothing.
+    // With two files behind one copy a row's source file is unknown, so a file that lost its
+    // annotations removes nothing.
     write(
         tmp.path(),
         "a.pdf",
@@ -734,14 +708,11 @@ async fn a_first_import_with_no_copy_is_claimed_by_the_copy() {
     assert!(rows.iter().all(|r| r.copy_id == Some(copy)));
 }
 
-// ---- hostile files: the caps ------------------------------------------------
-
 #[tokio::test]
 async fn a_run_past_the_glyph_cap_leaves_its_page_text_unavailable() {
     let (tmp, e) = engine().await;
     let s = e.storage();
     let book = seed_book(&e, "A").await;
-    // One string longer than the whole page's glyph cap (400 000).
     let hostile = SyntheticPage {
         lines: vec![
             (72.0, 700.0, 1, LINE.into()),
@@ -772,17 +743,13 @@ async fn a_run_past_the_glyph_cap_leaves_its_page_text_unavailable() {
             .find(|r| r.origin_id.as_deref() == Some(nm))
             .unwrap()
     };
-    // The page's words were not all read, so no quad on it can be said to
-    // hold all of its own: kept, with its note, and no words rather than some.
     let long = by("nm-long");
     assert!(long.text_unavailable);
     assert_eq!(long.text, "");
     assert_eq!(long.origin_note.as_deref(), Some("kept"));
-    // Another page is not affected.
     assert_eq!(by("nm-high").text, "brown fox");
 }
 
-/// Every number in `pos0` after its `p{page}:{tag}:` prefix.
 fn pos0_numbers(pos0: &str) -> Vec<f64> {
     let nums = pos0.splitn(3, ':').nth(2).unwrap();
     nums.split(',')
@@ -807,24 +774,21 @@ async fn non_finite_and_far_off_coordinates_never_reach_a_place() {
     let (tmp, e) = engine().await;
     let s = e.storage();
     let book = seed_book(&e, "A").await;
-    // `lopdf` reads a real as f32, so fifty digits are an infinity; 1e20 is
-    // finite but nowhere near a 612 x 792 page.
+    // `lopdf` reads a real as f32, so fifty digits are an infinity; 1e20 is finite but
+    // nowhere near a 612 x 792 page.
     let inf = format!("1{}.0", "0".repeat(50));
     let huge = "100000000000000000000.0";
     let page = SyntheticPage {
         lines: vec![(72.0, 700.0, 1, LINE.into())],
         annots: vec![
-            // Nothing finite at all: nothing to place it by.
             format!(
                 "/Subtype /Highlight /Rect [{inf} 697 -{inf} 712] \
                  /QuadPoints [{inf} 712 {inf} 712 -{inf} 697 {inf} 697]"
             ),
-            // Its quads are off the page; its /Rect is not.
             format!(
                 "/Subtype /Highlight /NM (huge-quads) /Rect [144 697 208.8 712] \
                  /QuadPoints [{huge} 712 -{huge} 712 144 697 208.8 697]"
             ),
-            // Its /Rect is off the page; its quads are not.
             format!(
                 "/Subtype /Highlight /NM (huge-rect) /Rect [-{huge} 697 {huge} 712] \
                  /QuadPoints [{}]",
@@ -858,7 +822,6 @@ async fn non_finite_and_far_off_coordinates_never_reach_a_place() {
     );
     assert_eq!(b("inf-note").pos0.as_deref(), Some("p1:t:"));
 
-    // A scan built by hand cannot smuggle one in either.
     let hand = PdfScan {
         annotations: vec![
             PdfAnnotation {
@@ -915,7 +878,6 @@ async fn a_file_past_the_quad_budget_stops_there_and_counts_the_rest() {
     };
     let p = write(tmp.path(), "many.pdf", &synthetic_annotated_pdf(&[page]));
     let scan = scan_pdf_annotations(&p).unwrap();
-    // 195 x 256 = 49 920 fit; the 196th would cross the budget.
     assert_eq!((scan.annotations.len(), scan.unparsed), (195, 5));
     let total: usize = scan.annotations.iter().map(|a| a.quads.len()).sum();
     assert!(total <= 50_000);
@@ -924,10 +886,6 @@ async fn a_file_past_the_quad_budget_stops_there_and_counts_the_rest() {
     assert_eq!((sum.inserted, sum.unparsed), (195, 5));
 }
 
-/// From a security review: after a scan cut short, the file's list of
-/// annotations is not authoritative. A highlight imported from a full scan
-/// that a later scan never reached (here: the quad budget ran out before it)
-/// must survive, and the import says why nothing was removed.
 #[tokio::test]
 async fn rows_from_a_full_scan_survive_a_later_capped_scan() {
     let (tmp, e) = engine().await;
@@ -959,8 +917,6 @@ async fn rows_from_a_full_scan_survive_a_later_capped_scan() {
         "a complete scan says nothing"
     );
 
-    // 196 unnamed highlights in front of it: 195 fit the 50 000-quad budget,
-    // and neither the 196th nor `x-marks` is read.
     let filler = format!("/Subtype /Highlight /Rect [144 697 208.8 712] /QuadPoints [{quads}]");
     let mut annots = vec![filler; 196];
     annots.push(marked);
@@ -992,12 +948,6 @@ async fn rows_from_a_full_scan_survive_a_later_capped_scan() {
     );
 }
 
-// ---- the facade (`Engine::import_preview_file` / `import_preview_annotations`) ----
-
-/// A PDF the reader points at becomes a file of the book through *add a file*
-/// (one copy with one `path` place) and is imported at once; the book-wide
-/// rescan is then mtime-gated, re-reads the file when Preview rewrites it, and
-/// marks a vanished file missing. Bad paths are typed errors.
 #[tokio::test]
 async fn the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs() {
     use bookmole::EngineError;
@@ -1022,19 +972,16 @@ async fn the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs() {
         .unwrap();
     assert!(rows.iter().all(|r| r.copy_id == Some(copies[0].id)));
 
-    // Named again: the same copy, read again, nothing new.
     let again = e.import_preview_file(book, &p).await.unwrap();
     assert_eq!(counts(&again), (0, 0, 7, 0));
     assert_eq!(s.copies_for_book(book).await.unwrap().len(), 1);
 
-    // The book-wide rescan: the place's mtime is the file's, so it is not read.
     let r = e.import_preview_annotations(book).await.unwrap();
     assert_eq!(r.places.len(), 1);
     assert_eq!(r.places[0].copy_id, copies[0].id);
     assert_eq!(r.places[0].outcome, RescanOutcome::Unchanged);
     assert_eq!(r.totals.inserted, 0);
 
-    // Preview rewrites it: read again, the edited sticky note refreshed.
     write(tmp.path(), "a.pdf", &fixture("second"));
     bump_mtime(&p, 100);
     let r = e.import_preview_annotations(book).await.unwrap();
@@ -1042,12 +989,10 @@ async fn the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs() {
     assert_eq!((r.totals.updated, r.totals.unchanged), (1, 6));
     assert!(r.totals.diagnostics.is_empty());
 
-    // Gone: the place is marked, and nothing is an error.
     std::fs::remove_file(&p).unwrap();
     let r = e.import_preview_annotations(book).await.unwrap();
     assert_eq!(r.places[0].outcome, RescanOutcome::Missing);
 
-    // Typed refusals, checked before anything is written.
     let missing = e
         .import_preview_file(book, &tmp.path().join("nope.pdf"))
         .await;
@@ -1074,7 +1019,6 @@ async fn the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs() {
         "{nobody:?}"
     );
 
-    // A file that is already another book's copy is not this one's.
     let other = seed_book(&e, "B").await;
     let theirs = write(tmp.path(), "b.pdf", &fixture("third"));
     e.import_preview_file(book, &theirs).await.unwrap();
@@ -1086,19 +1030,12 @@ async fn the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs() {
     assert!(s.copies_for_book(other).await.unwrap().is_empty());
 }
 
-// ---- adding a PDF as a file reads the annotations already in it ----------------
-
-/// The place records the file's mtime when the file is added, and the rescan is
-/// gated on it — so a PDF annotated *before* it was added is read then, through
-/// both ways a file comes in (*add a file to this book* and a plain file import),
-/// and the later rescan has nothing new to say about it.
 #[tokio::test]
 async fn adding_an_annotated_pdf_as_a_file_reads_its_annotations() {
     use bookmole::{FileImportOptions, FileOutcome};
     let (tmp, e) = engine().await;
     let s = e.storage();
 
-    // Add a file to this book.
     let book = seed_book(&e, "A").await;
     let p = write(tmp.path(), "a.pdf", &fixture("already there"));
     let report = e.add_file_to_book(book, &p).await.unwrap();
@@ -1116,7 +1053,6 @@ async fn adding_an_annotated_pdf_as_a_file_reads_its_annotations() {
     assert_eq!(r.places[0].outcome, RescanOutcome::Unchanged);
     assert_eq!(counts(&r.totals), (0, 0, 0, 0));
 
-    // A plain file import, which here makes the book from the file.
     let q = write(tmp.path(), "a-second-book.pdf", &fixture("also there"));
     let report = e
         .import_file(&q, FileImportOptions { new: true })
@@ -1132,8 +1068,6 @@ async fn adding_an_annotated_pdf_as_a_file_reads_its_annotations() {
     let r = e.import_preview_annotations(made).await.unwrap();
     assert_eq!(r.places[0].outcome, RescanOutcome::Unchanged);
 
-    // The file added again with new bytes at the same place is the same copy,
-    // and the edited note is read then rather than skipped by the gate.
     write(tmp.path(), "a.pdf", &fixture("edited before the re-add"));
     e.add_file_to_book(book, &p).await.unwrap();
     let rows = s
@@ -1146,19 +1080,12 @@ async fn adding_an_annotated_pdf_as_a_file_reads_its_annotations() {
             .any(|r| r.origin_note.as_deref() == Some("edited before the re-add"))
     );
 
-    // `import_preview_file` reads once, so its report is about that read.
     let fresh = seed_book(&e, "C").await;
     let named = write(tmp.path(), "c.pdf", &fixture("named"));
     let sum = e.import_preview_file(fresh, &named).await.unwrap();
     assert_eq!(counts(&sum), (7, 0, 0, 0));
 }
 
-// ---- relocating a PDF that moved (`Engine::relocate_copy_file`) ---------------
-
-/// A PDF that moved (and was annotated again on the way) is found: the copy
-/// keeps its highlights, the new path is its place, the old is gone, and the
-/// annotations at the new place are read into the same copy — so a frontend
-/// listing a book's copies can say when Preview's highlights were last read in.
 #[tokio::test]
 async fn finding_a_moved_pdf_reads_its_annotations_into_the_same_copy() {
     let (tmp, e) = engine().await;
@@ -1197,7 +1124,6 @@ async fn finding_a_moved_pdf_reads_its_annotations_into_the_same_copy() {
         "the annotations at the new place were read"
     );
 
-    // mtime recorded: the book-wide rescan has nothing new to read.
     let r = e.import_preview_annotations(book).await.unwrap();
     assert_eq!(r.places.len(), 1);
     assert_eq!(r.places[0].outcome, RescanOutcome::Unchanged);

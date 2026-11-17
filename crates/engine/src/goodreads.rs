@@ -1,29 +1,5 @@
-//! Goodreads CSV, in and out.
-//!
-//! The API died in December 2020, so the CSV is the interface — and it is the
-//! better one anyway: it is a file the user owns, it carries the whole shelf,
-//! and it works when Goodreads does not.
-//!
-//! Four things here are decisions rather than mechanics, and each is argued at
-//! the place it happens:
-//!
-//! * **Excel armour.** `ISBN` and `ISBN13` arrive as `="0990000028"`, which is
-//!   how a spreadsheet is stopped from eating the leading zero. It is stripped
-//!   and then put through [`normalize_isbn`] like every other ISBN entering the
-//!   system — see [`strip_armour`].
-//! * **One matcher.** ISBN-13 → ISBN-10 → the same title+author scan a KOReader
-//!   sidecar gets ([`crate::matching`], through [`koreader::scores_for`]), with
-//!   the same `AUTO_MATCH` / `CANDIDATE_MIN` bands and the CSV's own `Author`
-//!   column on the veto side. A second fuzzy matcher would be a second answer to
-//!   "is this the book I already have", and the one that disagreed would be the
-//!   one that made the duplicate.
-//! * **`Exclusive Shelf` is readings, not a status column** — `read` is a
-//!   finished reading, `currently-reading` an open one, and `to-read` is *a book
-//!   with no reading at all*. That last one is why `to-read` needs no collection
-//!   to live in.
-//! * **`My Rating` is stored raw against the `goodreads` scale.** Never reversed
-//!   through `rating_map` onto the user's own scale: the map is many-to-one, so
-//!   its inverse is a guess, and the pair that has to survive is (value, scale).
+//! Goodreads CSV import and export. ISBNs lose Excel armour then go through `normalize_isbn`; `My
+//! Rating` is stored raw on the `goodreads` scale.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,28 +20,18 @@ use crate::storage::NoteScope;
 use crate::storage::{STATUS_FINISHED, STATUS_READING, Source, Storage};
 use crate::{Engine, storage};
 
-/// The `source` these rows are recorded under, in `external_ids`, `book_tags`
-/// and `readings.source` alike. One string, so a later "forget everything
-/// Goodreads told me" is one predicate.
+/// The `source` recorded on every row this import writes, so one predicate can forget them all.
 pub const SOURCE: &str = "goodreads";
 
-/// The seeded scale (migration `0009`): 0–5 in quarters since `0026`, identity map.
 pub const SCALE: &str = "goodreads";
 
-/// Goodreads writes dates as `YYYY/MM/DD`, and reads them back the same way.
 const DATE: &[BorrowedFormatItem<'static>] = format_description!("[year]/[month]/[day]");
 
-// ---- the row ---------------------------------------------------------------
-
-/// Which of Goodreads' three exclusive shelves a row sits on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shelf {
     Read,
     CurrentlyReading,
     ToRead,
-    /// A shelf name Goodreads is not known to write. Carried rather than
-    /// guessed at, and it changes no reading state — the same treatment
-    /// `KoStatus::Other` gets.
     Other(String),
 }
 
@@ -80,21 +46,15 @@ impl Shelf {
     }
 }
 
-/// One data row, reduced to the fields this import acts on.
 #[derive(Debug, Clone, Default)]
 pub struct GoodreadsRow {
-    /// 1-based data row (the header is not counted), so a diagnostic can name
-    /// the line the user has to go and look at.
     pub row: usize,
     pub external_id: Option<String>,
     pub title: Option<String>,
     pub authors: Vec<String>,
     pub isbn_10: Option<String>,
     pub isbn_13: Option<String>,
-    /// `None` means the cell was empty; `Some(0)` means Goodreads wrote a
-    /// literal `0`, which is its encoding of *unrated*. **Neither is a rating**
-    /// — and conflating them into `0.0` would store a real value on a 0–5 scale
-    /// meaning "rated zero stars", which is not what either cell said.
+    /// `None` is an empty cell; `Some(0)` is Goodreads' encoding of unrated. Neither is a rating.
     pub my_rating: Option<f64>,
     pub publisher: Option<String>,
     pub page_count: Option<i64>,
@@ -105,7 +65,7 @@ pub struct GoodreadsRow {
     pub exclusive_shelf: Option<Shelf>,
     pub review: Option<String>,
     pub private_notes: Option<String>,
-    /// Goodreads' `Read Count`, defaulted to 1 when the column is absent.
+    /// Defaults to 1 when the column is absent.
     pub read_count: i64,
 }
 
@@ -114,13 +74,8 @@ impl GoodreadsRow {
         self.title.as_deref().unwrap_or("(untitled)")
     }
 
-    /// How many readings this row describes.
-    ///
-    /// A row with **no** `Exclusive Shelf` — which is what our own export
-    /// produces, since Goodreads' importer does not read that column — falls
-    /// back to "a `Date Read` means it was read". Without that, exporting and
-    /// re-importing would quietly drop every reading, and the round trip this
-    /// module is judged by would be stable only in the trivial sense.
+    /// With no `Exclusive Shelf` (our own export omits it), a `Date Read` means it was read,
+    /// so export then import keeps every reading.
     fn wanted_readings(&self) -> i64 {
         match &self.exclusive_shelf {
             Some(Shelf::ToRead) => 0,
@@ -135,15 +90,8 @@ impl GoodreadsRow {
     }
 }
 
-// ---- parsing ---------------------------------------------------------------
-
-/// Strip Goodreads' Excel armour: `="0990000028"` → `0990000028`.
-///
-/// The armour exists because a spreadsheet opening a bare `0990000028` helpfully
-/// turns it into a number and eats the leading zero. The `=` makes it a formula
-/// yielding a string instead. It is not CSV quoting — the csv reader hands the
-/// field over with the `="…"` intact — so it has to come off here, before
-/// [`normalize_isbn`] ever sees it.
+/// Strips Excel armour (`="0990000028"`). The csv reader leaves it intact, so it must come off
+/// before `normalize_isbn`.
 fn strip_armour(raw: &str) -> Option<&str> {
     let s = raw.trim();
     let s = s.strip_prefix('=').unwrap_or(s);
@@ -156,14 +104,11 @@ fn strip_armour(raw: &str) -> Option<&str> {
 }
 
 fn cell(raw: &str) -> Option<String> {
-    // `inert_cell`'s guard undone, so our own export re-imports as the text
-    // that went out rather than gaining a quote on every round trip.
+    // Undoes `inert_cell`'s guard so our own export re-imports unchanged.
     let s = uninert_cell(raw.trim());
     (!s.is_empty()).then(|| s.to_string())
 }
 
-/// `YYYY/MM/DD` at UTC midnight. Also accepts `YYYY-MM-DD`, which is what a
-/// spreadsheet hands back after a round trip through its own date formatting.
 fn parse_date(raw: &str) -> Option<i64> {
     let s = raw.trim().replace('-', "/");
     time::Date::parse(&s, DATE)
@@ -177,18 +122,10 @@ fn format_date(unix: i64) -> Option<String> {
         .and_then(|d| d.date().format(DATE).ok())
 }
 
-/// Read a Goodreads CSV.
-///
-/// Columns are found **by header name**, and a missing column is "the export
-/// did not say" rather than an error: Goodreads' own importer documents a
-/// smaller set than its exporter writes, third-party tools write subsets, and a
-/// hard-coded column order would break on the first one of those. Only `Title`
-/// is required, and only because a row with no title is a row with nothing to
-/// match on.
+/// Columns are found by header name and a missing one is not an error; only `Title` is required.
 pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
     let mut reader = csv::ReaderBuilder::new()
-        // A review with a stray comma in it is a short row, and refusing the
-        // whole file over one is not a service to anyone.
+        // Flexible: a stray comma in a review makes a short row, not a refused file.
         .flexible(true)
         .from_path(path)
         .map_err(csv_err)?;
@@ -209,10 +146,8 @@ pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
     let mut out = Vec::new();
     for (n, record) in reader.records().enumerate() {
         let record = record.map_err(csv_err)?;
-        // Several columns have two spellings in the wild: Goodreads' *exporter*
-        // writes `My Review`, its *importer* documents `Review`, and our own
-        // export writes the importer's name — so a file we wrote has to be a
-        // file we can read.
+        // Some columns have two spellings (`My Review` from the exporter, `Review` from the importer);
+        // our own export uses the importer's, so both must be read.
         let get = |names: &[&str]| -> Option<&str> {
             names
                 .iter()
@@ -232,10 +167,7 @@ pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
         if let Some(a) = get("author").and_then(cell) {
             authors.push(a);
         }
-        // Goodreads separates additional authors with ", " and appends roles in
-        // brackets ("Constance Garnett (Translator)"). The role is dropped: we have
-        // a `translators` column and no way to tell from here which is which
-        // without parsing English.
+        // Bracketed roles ("(Translator)") are dropped: telling them apart would mean parsing English.
         for extra in get("additional authors").unwrap_or("").split(',') {
             if let Some(a) = cell(extra)
                 && !authors.contains(&a)
@@ -244,17 +176,11 @@ pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
             }
         }
 
-        // Both ISBN columns go through the same armour strip and the same
-        // checksum validation. A Goodreads export carries plenty of junk in
-        // these — `=""`, an ASIN, a 13-digit string that is not an ISBN — and
-        // `normalize_isbn` returning None is the right answer to all of it.
         let isbn = |name: &str| -> Option<String> {
             get(name).and_then(strip_armour).and_then(normalize_isbn)
         };
         let (mut isbn_10, mut isbn_13) = (isbn("isbn"), isbn("isbn13"));
-        // The columns are named, not trusted: an export with the two swapped
-        // (they do exist) would otherwise write a 13 into `isbn_10`, which is a
-        // UNIQUE column other lookups key on.
+        // Swapped columns are corrected: a 13-digit value in `isbn_10` would break its UNIQUE lookups.
         if isbn_10.as_ref().is_some_and(|s| s.len() == 13) {
             isbn_13 = isbn_13.or_else(|| isbn_10.take());
         }
@@ -306,9 +232,8 @@ pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
     Ok(out)
 }
 
-/// An unreadable file is [`EngineError::Io`] like any other; a malformed one is
-/// the user's input, not ours. Keeping the two apart is what lets
-/// `ErrorClass::from` classify it correctly without reading the message.
+/// An unreadable file stays `EngineError::Io`; malformed CSV is user input. Kept apart so
+/// `ErrorClass::from` classifies without reading the message.
 fn csv_err(e: csv::Error) -> EngineError {
     let rendered = e.to_string();
     match e.into_kind() {
@@ -317,22 +242,11 @@ fn csv_err(e: csv::Error) -> EngineError {
     }
 }
 
-// ---- the report ------------------------------------------------------------
-
-/// How a row found its book. Deliberately *not*
-/// [`MatchMethod`](crate::MatchMethod), which is KOReader's vocabulary for how a
-/// *sidecar* found one — the branches differ, and one enum covering both would
-/// have to carry variants that are unreachable from either caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoodreadsMatch {
-    /// An `external_ids` row already links this `Book Id` to a book. The only
-    /// branch that is not a guess, and what makes re-importing the same export
-    /// idempotent for books with no ISBN.
     ExternalId,
     Isbn,
     Title,
-    /// Nothing matched and nothing was close, so the book was created from the
-    /// row.
     New,
 }
 
@@ -347,19 +261,11 @@ impl std::fmt::Display for GoodreadsMatch {
     }
 }
 
-/// What happened to a row's prose — the same three answers for a review and for
-/// the private notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextOutcome {
-    /// The row carried none.
     Absent,
     Written,
-    /// Already here, byte for byte.
     Unchanged,
-    /// Already here and *different*. Ours is kept and a diagnostic says so —
-    /// the CSV is where the words came from, but the vault is where they live
-    /// now, and an import silently overwriting the user's own edit is the one
-    /// outcome that cannot be undone.
     KeptOurs,
 }
 
@@ -373,20 +279,11 @@ pub struct GoodreadsBookReport {
     pub tags_added: usize,
     pub review: TextOutcome,
     pub private_notes: TextOutcome,
-    /// The raw `My Rating` this import **wrote**, against the `goodreads`
-    /// scale. `None` covers an empty cell, an explicit `0` (Goodreads for
-    /// unrated), a rating already stored identically, and one the user has
-    /// since given on their own scale. Quarters since migration `0026`.
+    /// The raw rating written, on the `goodreads` scale; `None` if empty, zero, unchanged or the
+    /// user has rated it on their own scale.
     pub rating: Option<f64>,
 }
 
-/// A row we will not guess about.
-///
-/// Deliberately the same shape as
-/// [`UnmatchedSidecar`](crate::koreader::UnmatchedSidecar): a title, an
-/// identity the caller can act on, and the library books in the ambiguous band.
-/// Unmatched has to be a *decision*, not a dead end — which is only true if the
-/// report says what it probably is.
 #[derive(Debug)]
 pub struct UnmatchedRow {
     pub row: usize,
@@ -399,7 +296,6 @@ pub struct UnmatchedRow {
 #[derive(Debug, Default)]
 pub struct GoodreadsReport {
     pub dry_run: bool,
-    /// Data rows read from the file, whatever became of them.
     pub rows: usize,
     pub books: Vec<GoodreadsBookReport>,
     pub unmatched: Vec<UnmatchedRow>,
@@ -418,21 +314,11 @@ impl GoodreadsReport {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImportOptions {
     pub dry_run: bool,
-    /// Create a book for a row that landed in the candidate band instead of
-    /// reporting it. The same escape hatch `ko pull --new` has, for the same
-    /// reason: refusing is right by default and has to have a next move.
     pub create_ambiguous: bool,
 }
 
-// ---- import ----------------------------------------------------------------
-
-/// Import a Goodreads CSV export.
-///
-/// Takes the whole [`Engine`] rather than a [`Storage`]: a review is a note, and
-/// notes are a vault file plus a row plus an FTS entry plus its wikilink edges —
-/// all of which `Engine::open_review` already gets right, including the
-/// `idx_one_review` accretion that makes a second import find the first one's
-/// note.
+/// Takes the whole [`Engine`], not a [`Storage`]: a review is a note (vault file, row, FTS,
+/// links), which `Engine::open_review` already handles, including finding the prior note.
 pub async fn import(engine: &Engine, path: &Path, opts: ImportOptions) -> Result<GoodreadsReport> {
     let rows = parse_csv(path)?;
     let mut report = GoodreadsReport {
@@ -499,15 +385,11 @@ pub async fn import(engine: &Engine, path: &Path, opts: ImportOptions) -> Result
 
 enum Matched {
     Book(i64, GoodreadsMatch),
-    /// Nothing matched, but the library holds something close enough that
-    /// creating a book would probably be creating a duplicate.
     Ambiguous(Vec<MatchCandidate>),
     Nothing,
 }
 
-/// ISBN-13 → ISBN-10 → the shared title scan. In that order because it runs
-/// from the identity we are surest of to the one we are least sure of, and stops
-/// at the first that answers.
+/// ISBN-13, then ISBN-10, then the shared title scan: most certain identity first.
 async fn match_row(storage: &Storage, row: &GoodreadsRow) -> Result<Matched> {
     if let Some(id) = &row.external_id
         && let Some(book_id) = storage.book_for_external_id(SOURCE, id).await?
@@ -522,7 +404,6 @@ async fn match_row(storage: &Storage, row: &GoodreadsRow) -> Result<Matched> {
         }
     }
 
-    // One scan, both answers — see `calibre::match_book`.
     let scored =
         koreader::scores_for(storage, &Query::new(row.title.as_deref(), &row.authors)).await?;
     if let Some(s) = scored.first()
@@ -555,18 +436,13 @@ async fn create_book(storage: &Storage, row: &GoodreadsRow) -> Result<i64> {
             Some(Source::Goodreads),
         )
         .await?;
-    // `Date Added` is when the *user* added it, which is exactly what
-    // `books.created_at` means — and only for a book this import just created:
-    // for one we already had, when it arrived here is ours to know and the CSV
-    // has no standing to rewrite it.
+    // `Date Added` sets `created_at` only for a book this import just created.
     if let Some(added) = row.date_added {
         storage.set_book_created_at(book_id, added).await?;
     }
     Ok(book_id)
 }
 
-/// The read-only half, for `--dry-run`. It answers the same questions [`apply`]
-/// does and writes nothing.
 async fn preview(
     storage: &Storage,
     row: &GoodreadsRow,
@@ -633,14 +509,8 @@ async fn apply(
 
     let readings_added = reconcile_readings(storage, row, book_id, warnings).await?;
 
-    // A `to-read` row is a book that exists and wants reading,
-    // not one that is in the library, so it gets **no copy**. A row that was
-    // read (or is being read) and whose book has no copy gets one honest one:
-    // how it was had is not in the CSV, so `form` unsaid, `tenure` unrecorded,
-    // `have_now` unsaid. `learned_from = user`: there is no Goodreads variant
-    // (it would need a CHECK-constraint migration), and the CSV is the user's own
-    // export of their own shelf; `migration` would claim a back-fill that never
-    // ran. The book page then asks *how did you read it?*.
+    // `to-read` gets no copy. Otherwise a book with none gets one with form, tenure and have_now
+    // unset and `learned_from = user` (there is no Goodreads variant).
     if row.wanted_readings() > 0 && storage.copies_for_book(book_id).await?.is_empty() {
         storage
             .create_copy(&NewCopy::new(
@@ -657,12 +527,7 @@ async fn apply(
         .last()
         .map(|r| r.id);
 
-    // ---- review + rating ---------------------------------------------------
-    //
-    // A rating lives on a review, so a row that carries only `My Rating` opens
-    // one too — empty, and none the worse for it. Without that the rating would
-    // have nowhere to go and would vanish, which is what an export→import→export
-    // round trip notices first.
+    // A rating lives on a review, so a rating-only row opens an empty one; otherwise it is lost.
     let mut review = TextOutcome::Absent;
     let mut rating = None;
     let rated = row.my_rating.is_some_and(|r| r > 0.0);
@@ -683,12 +548,7 @@ async fn apply(
                 }
                 rating = apply_rating(engine, note.id, row, scale, warnings).await?;
             }
-            // A review anchors to a reading (`idx_one_review` is on
-            // `reading_id`), and a `to-read` row has none by design. Inventing
-            // one would make the library list say the user is reading a book
-            // they have not opened, so the prose is kept as an ordinary note
-            // instead — and the report says which, rather than the words
-            // silently landing somewhere else.
+            // A review anchors to a reading and `to-read` has none, so the prose becomes an ordinary note.
             None => {
                 if let Some(text) = &row.review {
                     let title = format!("Goodreads review: {}", row.display_title());
@@ -704,9 +564,8 @@ async fn apply(
         }
     }
 
-    // `Private Notes` are per-book prose that is neither a review nor a
-    // reflection. Folding them into either would put words in the user's
-    // reflection that they did not write there.
+    // Private notes are neither review nor reflection; folding them in would put words in the
+    // user's reflection they did not write.
     let mut private_notes = TextOutcome::Absent;
     if let Some(text) = &row.private_notes {
         let title = format!("Goodreads notes: {}", row.display_title());
@@ -725,27 +584,8 @@ async fn apply(
     })
 }
 
-/// `Read Count` becomes readings, and this is where the one genuine collision in
-/// this item lives.
-///
-/// The rule asked for is "only the most recent carries `Date Read`; the rest get
-/// NULL dates" — and `finished_at IS NULL` is precisely what *open* means, under
-/// a partial unique index (`idx_readings_one_open`) that permits exactly one open
-/// reading per book. Three readings with NULL end dates are not representable,
-/// and weakening that invariant to make an import fit would be the wrong trade
-/// by a wide margin.
-///
-/// So: `started_at` is NULL on every one of them (Goodreads' CSV has no start
-/// date at all, and inventing one is the thing this whole item refuses), and the
-/// earlier readings are closed at the **same date the row already carries**.
-/// That is a true upper bound rather than a fabrication — every earlier reading
-/// did end before the last one did — and it is the only date the file contains.
-/// Spacing them out to look plausible is what would be dishonest.
-///
-/// When the row carries no date at all, one reading is recorded open-shaped
-/// (migration `0005`'s back-fill made the same call: "an open reading the user
-/// can close" beats an invented date) and any remaining rereads are reported as
-/// a diagnostic instead of vanishing.
+/// `Read Count` becomes readings; only one may be open (`idx_readings_one_open`), so earlier ones
+/// close at the row's `Date Read` and every `started_at` is NULL. With no date, one open reading.
 async fn reconcile_readings(
     storage: &Storage,
     row: &GoodreadsRow,
@@ -756,9 +596,7 @@ async fn reconcile_readings(
     let have = storage.readings_from_source(book_id, SOURCE).await?.len() as i64;
     let mut missing = (want - have).max(0);
     if missing == 0 {
-        // The shelf may still have moved on the far side: a book that was
-        // `currently-reading` when we last imported and is `read` now has the
-        // right *number* of readings and the wrong end date.
+        // A book that was `currently-reading` and is now `read` has the right count but wrong end date.
         if let Some(when) = row.date_read
             && !row.is_currently_reading()
             && let Some(last) = storage.readings_from_source(book_id, SOURCE).await?.last()
@@ -772,7 +610,7 @@ async fn reconcile_readings(
     }
 
     if row.is_currently_reading() {
-        // Already reading it is already reading it, whoever recorded that.
+        // An existing active reading is left alone, whoever recorded it.
         if storage.active_reading(book_id).await?.is_some() {
             return Ok(0);
         }
@@ -795,8 +633,7 @@ async fn reconcile_readings(
             }
         }
         None => {
-            // Only one undated reading is representable, and only when the book
-            // has no other open reading.
+            // Only one undated reading is representable, and only with no other open reading.
             if storage.active_reading(book_id).await?.is_none() {
                 storage
                     .record_reading(book_id, None, None, STATUS_FINISHED, SOURCE)
@@ -830,15 +667,12 @@ async fn apply_rating(
     scale: &storage::RatingScale,
     warnings: &mut Vec<Diagnostic>,
 ) -> Result<Option<f64>> {
-    // 0 is Goodreads' encoding of *unrated*, and an empty cell said nothing at
-    // all. Neither is a rating, and storing either as `0.0` would put a real
-    // "zero stars" on the user's shelf.
+    // 0 means unrated and empty says nothing; neither is stored as a zero-star rating.
     let Some(value) = row.my_rating.filter(|r| *r > 0.0) else {
         return Ok(None);
     };
-    // Ours to refresh only while it is still ours. A rating the user has given
-    // on their own scale is a different number on a different axis, and the map
-    // is many-to-one so it cannot even be compared.
+    // Refreshed only while ours: a rating on the user's own scale is a different axis, and the
+    // map is many-to-one so the two cannot be compared.
     if let Some(existing) = engine.storage.review_rating(note_id).await? {
         if existing.scale.name != scale.name {
             warnings.push(kept_ours(
@@ -852,9 +686,6 @@ async fn apply_rating(
             ));
             return Ok(None);
         }
-        // Already exactly this. Reported as `None` rather than `Some(value)`
-        // because the field is what the *import changed*, and a re-import that
-        // announced "rated 5" every time would read as work it did not do.
         if existing.value == value {
             return Ok(None);
         }
@@ -866,7 +697,6 @@ async fn apply_rating(
     Ok(Some(value))
 }
 
-/// Write a note body, unless the note already says something else.
 async fn write_body(engine: &Engine, note_id: i64, text: &str) -> Result<TextOutcome> {
     let note = engine
         .storage
@@ -884,7 +714,6 @@ async fn write_body(engine: &Engine, note_id: i64, text: &str) -> Result<TextOut
     Ok(TextOutcome::Written)
 }
 
-/// A plain note titled for its origin, found again by that title on a re-import.
 async fn write_side_note(
     engine: &Engine,
     book_id: i64,
@@ -893,8 +722,7 @@ async fn write_side_note(
 ) -> Result<TextOutcome> {
     if let Some(existing) = engine
         .storage
-        // Every note on the book: the one being looked for may be any of them,
-        // and a viewport's limit here would silently write a second copy.
+        // All notes on the book, unlimited: a viewport limit could miss the match and write a duplicate.
         .list_notes(NoteScope::Book(book_id), None)
         .await?
         .into_iter()
@@ -914,8 +742,6 @@ async fn write_side_note(
     Ok(TextOutcome::Written)
 }
 
-/// Our normalization of a shelf name. The raw value is stored beside it, which
-/// is what makes this safe to change later.
 fn slug_tag(shelf: &str) -> String {
     shelf.trim().to_lowercase().replace(' ', "-")
 }
@@ -936,11 +762,6 @@ fn kept_ours(kind: DiagnosticKind, detail: &str) -> Diagnostic {
     }
 }
 
-// ---- export ----------------------------------------------------------------
-
-/// The columns Goodreads' *importer* reads. Its exporter writes twenty-four;
-/// writing the other sixteen would be writing fields nothing on the far side
-/// looks at.
 const EXPORT_COLUMNS: [&str; 8] = [
     "Title",
     "Author",
@@ -952,7 +773,6 @@ const EXPORT_COLUMNS: [&str; 8] = [
     "Review",
 ];
 
-/// One row of the export, before it is quoted.
 #[derive(Debug, Default, PartialEq)]
 pub struct ExportRow {
     pub title: String,
@@ -965,20 +785,13 @@ pub struct ExportRow {
     pub review: String,
 }
 
-/// Serialize rows as a Goodreads-importable CSV.
-///
-/// ISBNs go back out **armoured** (`="0990000028"`), the way Goodreads writes
-/// them, so a spreadsheet cannot eat the leading zero on the way to the import
-/// form — and so our own reader meets, in its own output, exactly the shape it
-/// has to survive from theirs.
+/// ISBNs are written armoured (`="0990000028"`) so a spreadsheet keeps the leading zero.
 pub fn write_csv(rows: &[ExportRow]) -> String {
     let mut w = csv::Writer::from_writer(Vec::new());
     w.write_record(EXPORT_COLUMNS).expect("in-memory write");
     for r in rows {
-        // Every free-text cell through `inert_cell`: a title, an author, a
-        // shelf or a review starting `=`/`+`/`-`/`@` is a formula to the
-        // spreadsheet most people open this in. The armoured ISBN below is the
-        // one deliberate `=`: Goodreads' own shape, digits only, ours.
+        // Free-text cells go through `inert_cell` so a leading `=`/`+`/`-`/`@` is not a formula;
+        // the armoured ISBN below is the one deliberate `=`.
         w.write_record([
             &*inert_cell(&r.title),
             &*inert_cell(&r.author),
@@ -997,35 +810,18 @@ pub fn write_csv(rows: &[ExportRow]) -> String {
     String::from_utf8(w.into_inner().expect("flush")).expect("csv is utf-8")
 }
 
-/// How many books an export payload describes.
-///
-/// Not `lines().count() - 1`: a review with a newline in it is one record over
-/// two lines, and counting lines reported six books for five the first time a
-/// multi-line review went through. Counting records is the csv reader's job, and
-/// it is already here.
+/// Counts csv records, not lines: a review with a newline is one record over two lines.
 pub fn row_count(csv: &str) -> usize {
     csv::Reader::from_reader(csv.as_bytes()).records().count()
 }
 
-/// Build the export. Returns the payload and every honest failure along the way,
-/// mirroring `export_flashcards`: the caller owns the file.
-///
-/// Two things are reported rather than papered over:
-///
-/// * **An unmapped rating skips its row.** Goodreads takes 0–5 in quarters,
-///   and a point of a user-made scale with no mapping stays unmapped: a rounded star is precisely the failure the explicit lookup
-///   table exists to refuse — formulas are always wrong at the ends.
-/// * **Rereads lose all but the most recent.** Goodreads' importable CSV has no
-///   read-count column, so a book read three times exports as one row. Silent
-///   truncation would look like data loss on the far side.
+/// Returns the payload and any diagnostics; the caller owns the file. An unmapped rating skips its
+/// row (no rounding), and rereads export only the most recent (the CSV has no read count).
 pub async fn export(engine: &Engine) -> Result<(String, Vec<Diagnostic>)> {
     let storage = &engine.storage;
     let mut warnings = Vec::new();
     let mut rows = Vec::new();
 
-    // The whole library, and now it says so: `i64::MAX` was a limit standing in
-    // for its own absence, and a limit that means "all of them" is one somebody
-    // eventually reads as a cap.
     let whole_library = crate::BookQuery {
         sort: storage::BookSort::Title,
         ..Default::default()
@@ -1049,8 +845,6 @@ pub async fn export(engine: &Engine) -> Result<(String, Vec<Diagnostic>)> {
         }
         let latest = readings.last();
 
-        // The review of *that* reading, so a reread's review is the one that
-        // goes with the date beside it.
         let review_note = match latest {
             Some(r) => {
                 storage
@@ -1107,10 +901,8 @@ pub async fn export(engine: &Engine) -> Result<(String, Vec<Diagnostic>)> {
         });
     }
 
-    // Ordered by what the *data* says, never by row id: an export re-imported
-    // into an empty library gets fresh ids, and a round trip that reordered its
-    // own rows would fail the stability property for no reason anyone could act
-    // on.
+    // Ordered by the data, never row id: re-import into an empty library assigns fresh ids and
+    // would otherwise reorder rows.
     rows.sort_by(|a, b| {
         (a.title.to_lowercase(), &a.author, &a.isbn).cmp(&(
             b.title.to_lowercase(),
@@ -1142,7 +934,6 @@ mod tests {
     fn dates_round_trip_through_goodreads_own_format() {
         let read = parse_date("2019/03/12").expect("parses");
         assert_eq!(format_date(read).as_deref(), Some("2019/03/12"));
-        // A spreadsheet hands them back with dashes.
         assert_eq!(parse_date("2019-03-12"), Some(read));
         assert_eq!(parse_date(""), None);
         assert_eq!(parse_date("March 2019"), None);
@@ -1156,8 +947,6 @@ mod tests {
         assert_eq!(Shelf::parse("dnf"), Shelf::Other("dnf".into()));
     }
 
-    /// `to-read` is a book with no reading at all — the honest encoding, and the
-    /// reason it needs no collection to live in.
     #[test]
     fn a_shelf_decides_how_many_readings_a_row_describes() {
         let row = |shelf: Option<Shelf>, count: i64, read: Option<i64>| GoodreadsRow {
@@ -1172,10 +961,7 @@ mod tests {
             1
         );
         assert_eq!(row(Some(Shelf::Read), 3, Some(1)).wanted_readings(), 3);
-        // A `read` row with a zero count is still a reading.
         assert_eq!(row(Some(Shelf::Read), 0, None).wanted_readings(), 1);
-        // Our own export carries no Exclusive Shelf; a Date Read is what says
-        // it was read.
         assert_eq!(row(None, 1, Some(1)).wanted_readings(), 1);
         assert_eq!(row(None, 1, None).wanted_readings(), 0);
     }
@@ -1198,18 +984,12 @@ mod tests {
             "Title,Author,ISBN,My Rating,Date Read,Date Added,Bookshelves,Review"
         );
         let row = lines.next().unwrap();
-        // Armoured *and* correctly quoted. Goodreads writes `="…"` as a bare
-        // field, which is not strictly valid CSV; we quote it properly, and our
-        // reader accepts both — `a_written_row_reads_back_as_itself` is where
-        // that is actually asserted rather than eyeballed here.
+        // Armoured and properly quoted; Goodreads writes a bare field, which is not strictly valid CSV.
         assert!(row.contains(r#""=""9781900000178""""#), "armoured: {row}");
         assert!(row.contains("\"victorian-lit, favourites\""));
         assert!(row.contains("\"\"quote\"\""), "quotes doubled: {row}");
     }
 
-    /// The writer and the reader are two halves of one format, and this is the
-    /// only test that puts them together without a database in the way: a
-    /// comma, a double quote, a newline and an armoured ISBN survive the trip.
     #[test]
     fn a_written_row_reads_back_as_itself() {
         let csv = write_csv(&[ExportRow {
@@ -1240,8 +1020,6 @@ mod tests {
         assert_eq!(r.review.as_deref(), Some("First line.\nSecond line."));
     }
 
-    /// A title, author, shelf or review that a spreadsheet would run as a
-    /// formula goes out inert (`'=…`) and reads back as the text it was.
     #[test]
     fn a_formula_goes_out_inert_and_reads_back_as_itself() {
         let title = r#"=HYPERLINK("https://example.invalid","click")"#;

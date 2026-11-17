@@ -1,59 +1,6 @@
-//! A search is a session.
-//!
-//! Progressive arrival with no push channel: the engine holds the search, and
-//! the caller asks again. [`SearchSession::start`] reads the query, answers
-//! from what is kept **in the same call**, starts one task per provider that
-//! has to be asked, and returns the first snapshot; [`SearchSession::poll`]
-//! returns the next one when the revision moves or the wait (capped at
-//! [`MAX_WAIT`]) runs out; dropping the session aborts whatever is still
-//! running.
-//!
-//! # Why this spawns, when `watch.rs` says the engine never does
-//!
-//! The second argued exception, on the same terms as the wireless listener's
-//! (`wireless.rs`). A provider's answer
-//! has **no decision in it** — it is merged, ranked and published the same way
-//! for every frontend, so there is nothing a frontend would decide if it were
-//! handed the future instead. A request that returns before the work is done
-//! has **no pull-shaped alternative across a JSON seam**: `StartBookSearch`
-//! travels as JSON and cannot hand back an object to drive. **Nothing starts
-//! until a caller asks**, and **every task is owned by the session**, whose
-//! `Drop` aborts it — so a search nobody is polling any more costs nothing once
-//! the registry lets it go.
-//!
-//! # Row order is the engine's, and it is stable
-//!
-//! The catalogue section is first **released** when Open Library has answered
-//! or [`RELEASE_AFTER`] has passed, whichever is first. After that a provider's
-//! arrival fills rows in place and appends new works below the ones already
-//! shown ([`stable_order`]); an exact ISBN or exact title-and-author match may
-//! enter at the top. A search run to the end by a caller that sees only the end
-//! (`Engine::search`) is released once, at the end, in plain score order:
-//! nothing was delivered, so there is nothing to keep stable.
-//!
-//! # Correction
-//!
-//! A query that might be a misspelling — every word a word of some work, or a
-//! near miss of one, the title all there ([`correct::correct`]) — gets a
-//! **candidate fix** in the first call, from the offline index, the library
-//! and kept records. It is **used** only once the first answers are in and
-//! none of them is already a good answer ([`decide`]): the fix's own work is
-//! first → nothing; found lower down → the rows are ranked again as the fix
-//! reads; not found, and no good row of standing (a work with editions, a book
-//! of yours) explains the text as typed → the fix is asked of the providers,
-//! and its rows join the ones already there. The snapshot then carries
-//! [`Correction`], with the typed text for a search *as typed*, which is never
-//! corrected (`Extras::literal`). Adopting a fix is the second exception to
-//! the stable order: the query has changed, so the order starts again.
-//!
-//! # What is kept
-//!
-//! A provider whose records may be kept (Open Library) is answered from a kept
-//! answer younger than [`FRESH_FOR`] **without being asked**. An older one is
-//! shown at once and refreshed behind it. A provider that does not answer is
-//! replaced by what was kept — the kept answer to this search, else kept records
-//! that hold the query's words — and says it was not reached. Google Books is
-//! never kept: its records live in this session's memory and nowhere else.
+//! A search session: results arrive progressively and the caller polls for the next snapshot.
+//! Each task is owned by the session and aborted on drop; nothing starts until a caller asks.
+//! Google Books answers are never kept: they live in this session's memory only.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -80,121 +27,86 @@ use crate::providers::{
 };
 use crate::storage::{BookFilter, KeptEntry, KeptRow, LibraryScope, Storage, now_unix};
 
-/// The catalogue section is released at the latest this long after the search
-/// started, whether or not Open Library has answered.
+/// Latest the catalogue section is released, whether or not Open Library has answered.
 pub const RELEASE_AFTER: Duration = Duration::from_millis(1200);
 
-/// The longest one [`SearchSession::poll`] waits for a change.
 pub const MAX_WAIT: Duration = Duration::from_millis(1500);
 
-/// A session nobody has polled for this long is let go.
 pub const SESSION_IDLE: Duration = Duration::from_secs(10 * 60);
 
-/// At most this many sessions are kept; starting another lets the least
-/// recently used one go.
 pub const MAX_SESSIONS: usize = 8;
 
-/// A kept answer younger than this is used without asking the provider. Older
-/// (but inside the thirty days a search is kept) it is shown at once and the
-/// provider is asked again behind it.
+/// Seconds a kept answer is used without asking the provider; older is shown, then refreshed.
 pub const FRESH_FOR: i64 = 24 * 60 * 60;
 
-/// What a search may reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchScope {
-    /// The providers that are switched on, and what is kept.
     Everything,
-    /// What is kept, and nothing sent anywhere.
     LocalOnly,
 }
 
-/// One provider's part in a search, as a state rather than a warning: a
-/// frontend shows it as one quiet line (answered, answered from what was kept,
-/// did not answer, switched off), not as an alarm.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderState {
-    /// Switched off. Sent nothing.
     Off,
-    /// Needs a key or token and has none. Sent nothing.
     NoKey,
-    /// The search was local only, so it was not asked. `kept` is when what is
-    /// shown for it was fetched, when anything is.
+    /// `kept` is when what is shown for it was fetched, if anything.
     NotAsked {
         kept: Option<i64>,
     },
-    /// Being asked. `kept`: a kept answer from then is shown meanwhile.
     Asking {
         kept: Option<i64>,
     },
     Answered,
-    /// A kept answer from `fetched_at` was fresh enough to use without asking.
     FromCache {
         fetched_at: i64,
     },
-    /// It asked us to wait and was not asked.
     RateLimited {
         retry_after: Duration,
         kept: Option<i64>,
     },
-    /// It could not be reached (no network, or it did not answer in time).
     NotReached {
         diagnostic: Diagnostic,
         kept: Option<i64>,
     },
-    /// It answered with a failure.
     Failed {
         diagnostic: Diagnostic,
         kept: Option<i64>,
     },
 }
 
-/// A provider and its state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderStatus {
     pub provider: ProviderId,
     pub state: ProviderState,
 }
 
-/// How the query was read, as kinds; the wording is the frontend's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryReading {
     pub readings: Vec<ReadingKind>,
-    /// The ISBN typed, through `normalize_isbn`.
     pub isbn: Option<String>,
     /// Shaped like an ISBN and failing its checksum: searched as text.
     pub not_an_isbn: bool,
 }
 
-/// One row of the **Yours** section: a book the app already holds
-/// that answers the query, in the library or not, and what is held of it.
-/// Read in the search's first call, in two statements for the whole section
-/// (the matches, then their facts), never one per row.
 #[derive(Debug, Clone)]
 pub struct HeldRow {
     pub book: Book,
     /// In the library by the copies rule.
     pub in_library: bool,
-    /// Any copy recorded at all.
     pub has_copy: bool,
-    /// How many passages were kept from it — a count of things done, which the
-    /// axiom allows.
     pub passages: i64,
-    /// How many notes were written about it.
     pub notes: i64,
-    /// The lists it is on, by name.
     pub lists: Vec<HeldList>,
     /// The local search's score: the same scale as a work row's.
     pub score: f64,
 }
 
-/// A list a held book is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldList {
     pub id: i64,
     pub name: String,
 }
 
-/// One row of the catalogue section.
 #[derive(Debug, Clone)]
 pub struct WorkRow {
     /// Opaque, stable for the life of the session.
@@ -202,76 +114,51 @@ pub struct WorkRow {
     pub work: WorkResult,
 }
 
-/// The whole of a search as of one revision.
 #[derive(Debug, Clone)]
 pub struct SearchSnapshot {
     pub session: String,
     /// Moves whenever anything in the snapshot does.
     pub revision: u64,
-    /// Nothing more will arrive.
     pub done: bool,
     pub query: QueryReading,
-    /// The books the app already holds that answer, best first. There from
-    /// the first snapshot and never changing: nothing a provider says moves
-    /// it. Empty for a search run to its end (`Engine::search`), which has no
-    /// such section.
+    /// Fixed from the first snapshot; empty for `Engine::search`, which has no such section.
     pub yours: Vec<HeldRow>,
-    /// The catalogue section, in the engine's order. Empty until released.
-    /// Each work says what is held of it (`WorkResult::held`).
+    /// Empty until released.
     pub works: Vec<WorkRow>,
     pub providers: Vec<ProviderStatus>,
-    /// Every degradation so far: a provider's failure, and beside it that what
-    /// was kept was shown instead.
     pub warnings: Vec<Diagnostic>,
     /// Every provider that was asked could not be reached.
     pub offline: bool,
-    /// The query was corrected: what was searched instead, and what was typed
-    /// (for a search *as typed*, one press away).
     pub correction: Option<Correction>,
 }
 
-/// A corrected search, which a frontend shows as something like *Showing
-/// "dune herbert". Search for "dnue herbrt" instead.* Both strings are the
-/// user's query, so neither is ever
-/// logged above `trace!`.
+/// Both strings are the user's query: never log above `trace!`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Correction {
-    /// The typed words with each misspelling replaced.
     pub searched: String,
-    /// What was typed, trimmed.
     pub typed: String,
 }
 
-/// What a session may read beyond its providers and its database.
 #[derive(Clone, Default)]
 pub(crate) struct Extras {
-    /// The offline index, when there is one.
     pub wellknown: Option<Arc<WellKnown>>,
-    /// Why there is none, when there is none.
     pub missing: Option<Unavailable>,
-    /// Search the text as typed: never corrected.
     pub literal: bool,
 }
 
-/// Whether the order is published as it arrives or only at the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
-    /// Released by Open Library or [`RELEASE_AFTER`]; stable thereafter.
     Progressive,
-    /// Released once, at the end, in score order (`Engine::search`).
     ToDone,
 }
 
-/// Which providers a search may ask, and what to say about the others.
 pub(crate) struct Roster {
     pub providers: Arc<Vec<Box<dyn MetadataProvider>>>,
-    /// Every provider this build knows, with its availability.
     pub availability: Vec<(ProviderId, ProviderAvailability)>,
 }
 
-/// The hash a search is kept under: the folded query and the shape it was
-/// read as, never its text. A repeat search is recognised without the
-/// database holding a readable history of what was searched for.
+/// Hash of the folded query and its shape, never the text, so the database holds no readable search
+/// history.
 pub(crate) fn query_key(q: &ParsedQuery, limit: u32) -> String {
     let f = |s: &Option<String>| s.as_deref().map(fold).unwrap_or_default();
     let canonical = [
@@ -292,14 +179,7 @@ pub(crate) fn query_key(q: &ParsedQuery, limit: u32) -> String {
         .collect()
 }
 
-/// The order rows are shown in once some have been: rows already
-/// delivered keep their order, new rows that are an exact match enter above
-/// them, and other new rows follow below in score order. `scored` is every
-/// current row, best score first; a delivered row no longer present (merged
-/// into another work) is dropped.
-///
-/// With nothing delivered there is nothing to keep stable, and the order is
-/// `scored`'s.
+/// Delivered rows keep their order; new exact matches enter above, others below by score.
 pub fn stable_order(delivered: &[String], scored: &[(String, bool)]) -> Vec<String> {
     if delivered.is_empty() {
         return scored.iter().map(|(k, _)| k.clone()).collect();
@@ -325,15 +205,12 @@ pub fn stable_order(delivered: &[String], scored: &[(String, bool)]) -> Vec<Stri
             .filter(|(k, exact)| !*exact && !was.contains(k.as_str()))
             .map(|(k, _)| k.clone()),
     );
-    // A key in `delivered` twice would be shown twice; it never is, but the
-    // order must still be a permutation of `scored`.
+    // `delivered` could repeat a key; the order must still be a permutation of `scored`.
     let mut seen = HashSet::new();
     out.retain(|k| seen.insert(k.clone()));
     out
 }
 
-/// An exact match may enter above rows already shown: the typed ISBN is one of
-/// its editions, or a reading's title and author are the work's, folded.
 fn is_exact(q: &ParsedQuery, typed: Option<&str>, w: &WorkResult) -> bool {
     if let Some(isbn) = typed {
         return w.has_isbn(isbn);
@@ -361,15 +238,10 @@ fn is_exact(q: &ParsedQuery, typed: Option<&str>, w: &WorkResult) -> bool {
     })
 }
 
-// ---- the session ------------------------------------------------------------
-
-/// What every task of one session reads.
 struct Context {
     providers: Arc<Vec<Box<dyn MetadataProvider>>>,
-    /// Where answers are kept. `None` is a search with nothing kept and
-    /// nowhere to keep anything — what the engine's paused-clock tests use,
-    /// since sqlx's pool times out under a paused clock (it parks on a
-    /// worker thread, and tokio advances the clock to its acquire timeout).
+    /// `None` means nothing kept; paused-clock tests use it because sqlx's pool times out under a
+    /// paused clock.
     storage: Option<Storage>,
     query: ParsedQuery,
     plan: Plan,
@@ -379,49 +251,32 @@ struct Context {
     typed: Option<String>,
     mode: Mode,
     scope: SearchScope,
-    /// The library as *you have this* reads it, prepared once. `None` with no
-    /// storage.
     library: Option<Library>,
-    /// The **Yours** section, answered in `start`.
     yours: Vec<HeldRow>,
-    /// The offline index, when there is one.
     wellknown: Option<Arc<WellKnown>>,
-    /// Names the offline index knows that the query holds a word of:
-    /// believed by every parse of this search.
     known: ResultNames,
-    /// What the query may have meant, decided in `start`; used or not once
-    /// the first answers are in ([`decide`]).
     fix: Option<Fix>,
-    /// The library's books that answer the text as typed, with their scores:
-    /// a good one of these is the user's answer, and is never corrected away.
+    /// The library's books that answer the text as typed; a good one is the user's answer and is never
+    /// corrected away.
     local: Vec<(Book, f64)>,
 }
 
 struct State {
     revision: u64,
-    /// Every result so far, by provider, in arrival order.
     records: Vec<ProviderWork>,
     providers: Vec<ProviderStatus>,
     warnings: Vec<Diagnostic>,
     released: bool,
-    /// Work keys in the order they were last shown.
     delivered: Vec<String>,
     rows: HashMap<String, String>,
     works: Vec<WorkRow>,
     pending: usize,
     done: bool,
-    /// Providers that were asked; `offline` is all of them not reached.
     asked: usize,
     not_reached: usize,
-    /// What the matcher said for each work's words, so a provider's arrival
-    /// does not compare every unchanged work against the library again.
     likely: HashMap<String, Option<(i64, Option<String>)>>,
-    /// The offline index's notability by Open Library work key, for every
-    /// work that has arrived and that the index knows.
     notability: HashMap<String, u32>,
-    /// The fix in use, once [`decide`] has used one.
     correction: Option<Fix>,
-    /// The fix is being asked of the providers.
     correcting: bool,
 }
 
@@ -430,12 +285,10 @@ struct Shared {
     ctx: Context,
     state: Mutex<State>,
     tx: watch::Sender<u64>,
-    /// Every task this session started, aborted when it is dropped. Here
-    /// rather than on [`SearchSession`] because a task starts the correction's.
+    /// Here rather than on [`SearchSession`] because a task starts the correction's.
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
-/// One search, and the tasks asking its providers. Dropping it aborts them.
 pub struct SearchSession {
     shared: Arc<Shared>,
     touched: Mutex<tokio::time::Instant>,
@@ -453,11 +306,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What one provider's ask came to.
 type Asked = std::result::Result<Vec<ProviderWork>, Diagnostic>;
 
-/// Whether a failure is the provider not being reached, as against answering
-/// with an error.
 fn not_reached(d: &Diagnostic) -> bool {
     matches!(
         d.kind,
@@ -470,8 +320,6 @@ fn not_reached(d: &Diagnostic) -> bool {
 }
 
 impl SearchSession {
-    /// Read `text`, answer from what is kept, start asking, and return the
-    /// session with its first snapshot already in it.
     #[cfg(test)]
     pub(crate) async fn start(
         id: String,
@@ -495,8 +343,6 @@ impl SearchSession {
         .await
     }
 
-    /// [`SearchSession::start`], with the offline index and the choice to
-    /// search as typed.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn start_with(
         id: String,
@@ -510,8 +356,6 @@ impl SearchSession {
     ) -> Result<SearchSession> {
         let first = parse(text, &KnowsNothing);
         let is_text = first.isbn.is_none() && !first.words.is_empty();
-        // The names the offline index knows that the query holds a word of:
-        // a guessed author it knows is believed.
         let known = match (&extras.wellknown, is_text) {
             (Some(wk), true) => match wk.authors_named(&first.words).await {
                 Ok(names) => ResultNames::named(names.iter().map(String::as_str)),
@@ -532,8 +376,6 @@ impl SearchSession {
                 crate::book::isbn10_to_13(i)
             }
         });
-        // The library, read and prepared once for every work of this search
-        // (never once per row), and the Yours section, answered here.
         let (library, library_language, local) = match &storage {
             Some(st) => {
                 let library = Library::prepare(st.library_identities().await?);
@@ -554,7 +396,6 @@ impl SearchSession {
         };
         let yours = match (&storage, mode) {
             (Some(st), Mode::Progressive) => yours_section(st, &local).await?,
-            // `Engine::search` flattens works and has no such section.
             _ => Vec::new(),
         };
         let now = now_unix();
@@ -601,12 +442,9 @@ impl SearchSession {
             local,
         };
 
-        // The local half, in this call: what is kept.
         let mut records: Vec<ProviderWork> = Vec::new();
         let mut statuses: Vec<ProviderStatus> = Vec::new();
         let mut warnings: Vec<Diagnostic> = Vec::new();
-        // An index that should be there and is not is said once; an engine
-        // with none configured (an in-memory database) has nothing missing.
         if is_text
             && let Some(why @ (Unavailable::NotInThisBuild | Unavailable::Failed(_))) =
                 extras.missing
@@ -686,12 +524,8 @@ impl SearchSession {
         {
             let mut st = lock(&shared.state);
             if st.done {
-                // Everything was kept: the first answers are all in.
                 settle(&shared, &mut st);
             }
-            // Released at once unless Open Library is being asked with nothing
-            // of its own to show meanwhile: a kept answer, fresh or stale, is
-            // shown at once.
             let ol_waiting = st.providers.iter().any(|s| {
                 s.provider == ProviderId::OpenLibrary
                     && matches!(s.state, ProviderState::Asking { kept: None })
@@ -739,15 +573,13 @@ impl SearchSession {
         &self.shared.id
     }
 
-    /// The snapshot as of now.
     pub fn snapshot(&self) -> SearchSnapshot {
         let st = lock(&self.shared.state);
         snapshot_of(&self.shared, &st)
     }
 
-    /// The next snapshot after `after_revision`, or the current one once
-    /// `wait` (at most [`MAX_WAIT`]) has passed. A finished session answers at
-    /// once: nothing more is coming.
+    /// The next snapshot after `after_revision`, or the current one once `wait` (at most [`MAX_WAIT`])
+    /// has passed; a finished session answers at once.
     pub async fn poll(&self, after_revision: u64, wait: Duration) -> SearchSnapshot {
         *lock(&self.touched) = tokio::time::Instant::now();
         let mut rx = self.shared.tx.subscribe();
@@ -769,7 +601,6 @@ impl SearchSession {
         self.snapshot()
     }
 
-    /// Wait for the last provider, however long its budget lets it take.
     pub(crate) async fn finish(&self) -> SearchSnapshot {
         let mut rx = self.shared.tx.subscribe();
         loop {
@@ -782,7 +613,6 @@ impl SearchSession {
         }
     }
 
-    /// Stop asking. What has arrived stays; the session is done.
     pub fn cancel(&self) {
         for t in lock(&self.shared.tasks).drain(..) {
             t.abort();
@@ -802,9 +632,6 @@ impl SearchSession {
     }
 }
 
-/// The **Yours** section: every book the app holds that answers the query, in
-/// the library or not, best first, with what is held of each — the matches
-/// (already read, in one statement) and their facts in one more.
 async fn yours_section(storage: &Storage, found: &[(Book, f64)]) -> Result<Vec<HeldRow>> {
     let ids: Vec<i64> = found.iter().filter_map(|(b, _)| b.id).collect();
     let facts: HashMap<i64, crate::storage::HeldFacts> = storage
@@ -837,9 +664,8 @@ async fn yours_section(storage: &Storage, found: &[(Book, f64)]) -> Result<Vec<H
         .collect())
 }
 
-/// The kept answer to this search from `provider`, read back. A record that no
-/// longer reads is dropped, said so, and makes the whole answer a miss: the
-/// provider is asked again rather than shown a list with a hole in it.
+/// A kept record that no longer reads makes the whole answer a miss, so the provider is asked
+/// again.
 async fn read_kept(
     ctx: &Context,
     provider: ProviderId,
@@ -849,8 +675,6 @@ async fn read_kept(
     read_kept_as(ctx, provider, &ctx.key, &ctx.query, now, warnings).await
 }
 
-/// [`read_kept`] for any search: `key` is its kept-search key, `query` its
-/// reading (for the author flag).
 async fn read_kept_as(
     ctx: &Context,
     provider: ProviderId,
@@ -892,9 +716,6 @@ async fn read_kept_as(
     Ok(Some((answer.fetched_at, out)))
 }
 
-/// Kept records holding the query's words, for a provider that was not
-/// reached and had no kept answer to this search. `None` when there are none;
-/// the time is the oldest record's.
 async fn from_index(
     ctx: &Context,
     provider: ProviderId,
@@ -927,24 +748,19 @@ async fn from_index(
     (!found.is_empty()).then_some((oldest, found))
 }
 
-// ---- correction ----------------------------------------------------------------
-
-/// A row of the typed search explains the text this well (`0..=1`, the text
-/// half of `rank`) and stops a correction — when it is a work of standing.
-/// Set by the benchmark.
+/// A typed-search row explaining the text this well (`0..=1`, the text half of `rank`) stops a
+/// correction when it is a work of standing.
 pub(crate) const GOOD_TEXT: f64 = 0.9;
-/// A work with at least this many editions has standing of its own: its title
-/// is a real title even when it is one letter from a famous one.
+/// Editions at which a work has standing of its own: its title is real even one letter from a
+/// famous one.
 pub(crate) const STANDING_EDITIONS: u32 = 20;
-/// Or one the offline index knows at least this fraction as well as the fix.
+/// Standing also holds for a work the offline index knows at least this fraction as well as the
+/// fix.
 const STANDING_SHARE: u32 = 4;
-/// How many works the offline index offers a correction to choose among.
 const CANDIDATES: usize = 40;
 
-/// What the query may have meant (`correct.rs`), from the offline index and
-/// the library — and, only when those offer nothing, from kept records,
-/// which may fix a word but never vouch that a text is right: a kept record
-/// can be the provider's own misspelt entry.
+/// Kept records may fix a word but never vouch that a text is right: one can be a provider's
+/// misspelt entry.
 async fn candidate_fix(
     q: &ParsedQuery,
     wk: Option<&WellKnown>,
@@ -1009,7 +825,6 @@ fn target_of(b: &Book) -> Option<Target> {
     })
 }
 
-/// The offline index's notability for every work among `records` it knows.
 async fn notability_of(wk: Option<&WellKnown>, records: &[ProviderWork]) -> HashMap<String, u32> {
     let Some(wk) = wk else {
         return HashMap::new();
@@ -1033,8 +848,6 @@ async fn notability_of(wk: Option<&WellKnown>, records: &[ProviderWork]) -> Hash
     })
 }
 
-/// `text` read knowing the names the answers carry and those the offline
-/// index knows.
 fn reread(ctx: &Context, text: &str, ws: &[WorkResult]) -> ParsedQuery {
     let names = ResultNames::of(ws.iter().map(|w| &w.flat)).and(&ctx.known);
     parse(text, &names)
@@ -1060,7 +873,6 @@ fn score_works(q: &ParsedQuery, notability: &HashMap<String, u32>, ws: &mut [Wor
     }
 }
 
-/// Whether `w` is the fix's work.
 fn is_fix_work(fix: &Fix, w: &WorkResult) -> bool {
     let mut titles: Vec<&str> = w.title.iter().map(String::as_str).collect();
     titles.extend(w.facts.also_titled.iter().map(String::as_str));
@@ -1074,16 +886,11 @@ fn is_fix_work(fix: &Fix, w: &WorkResult) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Decision {
-    /// The typed search stands.
     Keep,
-    /// The fix's work is already here: rank as the fix reads.
     Rerank,
-    /// Ask the providers for the fix.
     Ask,
 }
 
-/// Whether a candidate fix is used, once the first answers are in (the
-/// module doc). Pure over what has arrived.
 fn decide(ctx: &Context, st: &State, fix: &Fix) -> Decision {
     let mut ws = works(&st.records, &ctx.defaults);
     let typed = reread(ctx, &ctx.query.text, &ws);
@@ -1107,7 +914,6 @@ fn decide(ctx: &Context, st: &State, fix: &Fix) -> Decision {
         let editions = w.facts.edition_count.unwrap_or(0) >= STANDING_EDITIONS;
         (known || editions) && ranking::text_part(&typed, &c) >= GOOD_TEXT
     });
-    // A book of yours that answers the text as typed is the answer.
     let yours = ctx.local.iter().any(|(b, score)| {
         *score >= ranking::TEXT * GOOD_TEXT
             && !correct::is_fixed_work(
@@ -1124,7 +930,6 @@ fn decide(ctx: &Context, st: &State, fix: &Fix) -> Decision {
     }
 }
 
-/// The first answers are all in: use the candidate fix or not. Once.
 fn settle(s: &Shared, st: &mut State) {
     if st.correction.is_some() {
         return;
@@ -1136,7 +941,6 @@ fn settle(s: &Shared, st: &mut State) {
         Decision::Keep => {}
         Decision::Rerank => {
             st.correction = Some(fix);
-            // The query changed: the order starts again.
             st.delivered.clear();
         }
         Decision::Ask => {
@@ -1149,8 +953,6 @@ fn settle(s: &Shared, st: &mut State) {
     tracing::debug!(decided = ?st.correction.is_some(), "a candidate correction was weighed");
 }
 
-/// Ask every provider for the fix — by its title and author, from what was
-/// kept when that is fresh — and add what they say to the rows.
 async fn run_correction(s: Arc<Shared>) {
     let ctx = &s.ctx;
     let Some(fix) = lock(&s.state).correction.clone() else {
@@ -1207,14 +1009,11 @@ async fn run_correction(s: Arc<Shared>) {
     st.correcting = false;
     st.done = true;
     st.released = true;
-    // The fix's own rows are what the corrected search is: shown from the top.
     st.delivered.clear();
     recompute(ctx, &mut st);
     bump(&s, &mut st);
 }
 
-/// One provider's whole part: ask it, keep what it said, or stand in for it
-/// with what was kept.
 async fn run_provider(s: Arc<Shared>, idx: usize, stale: Option<i64>) {
     let ctx = &s.ctx;
     let p = ctx.providers[idx].as_ref();
@@ -1229,8 +1028,6 @@ async fn run_provider(s: Arc<Shared>, idx: usize, stale: Option<i64>) {
         }
         Err(diagnostic) => {
             parsed::log_degraded(id, &diagnostic);
-            // A stale kept answer is already on screen; otherwise look in the
-            // kept records for the query's own words.
             let (kept, found) = match stale {
                 Some(at) => (Some(at), Vec::new()),
                 None => match from_index(ctx, id, now).await {
@@ -1257,7 +1054,6 @@ async fn run_provider(s: Arc<Shared>, idx: usize, stale: Option<i64>) {
     let mut st = lock(&s.state);
     st.notability.extend(notability);
     if replace {
-        // A fresh answer replaces the stale one shown while it was asked.
         st.records.retain(|w| w.found.provider != id);
     }
     if matches!(state, ProviderState::NotReached { .. }) {
@@ -1287,10 +1083,8 @@ async fn run_provider(s: Arc<Shared>, idx: usize, stale: Option<i64>) {
     }
 }
 
-/// Ask one provider, inside its budget. An ISBN goes straight to the
-/// provider's edition lookup (typing an ISBN means that edition), which is
-/// also what the
-/// benchmark recorded; text goes through the plan.
+/// An ISBN goes straight to the provider's edition lookup (typing an ISBN means that edition); text
+/// goes through the plan.
 async fn ask(p: &dyn MetadataProvider, q: &ParsedQuery, plan: &Plan) -> Asked {
     let id = p.id();
     let Some(isbn) = plan.primary.isbn.as_deref() else {
@@ -1317,9 +1111,8 @@ async fn ask(p: &dyn MetadataProvider, q: &ParsedQuery, plan: &Plan) -> Asked {
     }
 }
 
-/// Keep an answer, when the provider's records may be kept and every result
-/// can be: a result with nothing to keep it by would be a row missing from the
-/// repeat, so such an answer is not kept at all.
+/// A result with nothing to key it by would be a row missing from the repeat, so such an answer is
+/// not kept at all.
 async fn keep(ctx: &Context, provider: ProviderId, found: &[ProviderWork], now: i64) {
     keep_as(ctx, &ctx.key, provider, found, now).await;
 }
@@ -1348,7 +1141,6 @@ async fn keep_as(ctx: &Context, key: &str, provider: ProviderId, found: &[Provid
         })
         .collect();
     if let Err(e) = storage.keep_answer(key, provider, &entries, now).await {
-        // The answer is still shown; it is just not kept.
         tracing::debug!(provider = %provider, class = ?ErrorClass::from(&e), "keeping an answer failed");
     }
 }
@@ -1358,11 +1150,8 @@ fn bump(s: &Shared, st: &mut State) {
     let _ = s.tx.send(st.revision);
 }
 
-/// Group, choose, rank and order everything that has arrived.
 fn recompute(ctx: &Context, st: &mut State) {
     let mut ws = works(&st.records, &ctx.defaults);
-    // Read the text again knowing the names the answers carry and the ones
-    // the offline index knows — as corrected, once it is.
     let text = st
         .correction
         .as_ref()
@@ -1392,7 +1181,6 @@ fn recompute(ctx: &Context, st: &mut State) {
         ws.into_iter().map(|w| (w.key.clone(), w)).collect();
     let shown = match ctx.mode {
         Mode::Progressive => ctx.limit.max(1) as usize,
-        // The old request returned every merged result; so does its session.
         Mode::ToDone => usize::MAX,
     };
     let mut rows = Vec::new();
@@ -1412,8 +1200,6 @@ fn recompute(ctx: &Context, st: &mut State) {
     st.works = rows;
 }
 
-/// What is held of `w`: an identifier, asked every time (cheap: map lookups),
-/// else the matcher, asked once per distinct set of words.
 fn held_of(
     library: &Library,
     likely: &mut HashMap<String, Option<(i64, Option<String>)>>,
@@ -1460,11 +1246,6 @@ fn snapshot_of(s: &Shared, st: &State) -> SearchSnapshot {
     }
 }
 
-// ---- the registry -----------------------------------------------------------
-
-/// The engine's sessions: at most [`MAX_SESSIONS`], each let go after
-/// [`SESSION_IDLE`] without a poll. Owned by the engine, so a session outlives
-/// the request that started it and no longer than the engine.
 #[derive(Default)]
 pub(crate) struct Registry {
     sessions: Mutex<Vec<Arc<SearchSession>>>,
@@ -1472,7 +1253,7 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    /// A new session id. Opaque to callers; never reused within an engine.
+    /// Opaque; never reused within an engine.
     pub(crate) fn mint(&self) -> String {
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         format!("search-{n}")
@@ -1483,8 +1264,6 @@ impl Registry {
         sessions.retain(|s| s.idle_for(now) < SESSION_IDLE);
     }
 
-    /// Keep `session`, letting the least recently used one go if that makes
-    /// one too many.
     pub(crate) fn insert(&self, session: SearchSession) -> Arc<SearchSession> {
         let session = Arc::new(session);
         let mut all = lock(&self.sessions);
@@ -1512,8 +1291,7 @@ impl Registry {
             .ok_or_else(|| EngineError::NotFound(format!("search session {id}")))
     }
 
-    /// Stop and let go of a session. `false` when there was none — which is
-    /// not an error: ending a search twice is ending it.
+    /// `false` when there was none: ending a search twice is not an error.
     pub(crate) fn end(&self, id: &str) -> bool {
         let gone = {
             let mut all = lock(&self.sessions);
@@ -1542,12 +1320,10 @@ mod tests {
                 .map(|(k, e)| (k.to_string(), *e))
                 .collect::<Vec<_>>()
         };
-        // Nothing shown: score order.
         assert_eq!(
             stable_order(&[], &s(&[("c", false), ("a", true), ("b", false)])),
             d(&["c", "a", "b"])
         );
-        // `a`, `b` shown; `x` scores best but is new: below. `e` is exact: top.
         assert_eq!(
             stable_order(
                 &d(&["a", "b"]),
@@ -1561,7 +1337,6 @@ mod tests {
             ),
             d(&["e", "a", "b", "x", "y"])
         );
-        // A shown row merged away is dropped, not left as a hole.
         assert_eq!(
             stable_order(&d(&["a", "gone", "b"]), &s(&[("b", false), ("a", false)])),
             d(&["a", "b"])
@@ -1591,10 +1366,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// `stable_order`'s rule: it is a permutation of the
-        /// current rows; rows already shown keep their order among themselves;
-        /// and no row already shown ever moves below a new row, except below a
-        /// new exact match.
         #[test]
         fn no_row_shown_moves_below_a_later_one_but_an_exact_match(
             n in 0usize..12,
@@ -1604,7 +1375,6 @@ mod props {
             seed in any::<u64>(),
         ) {
             let keys: Vec<String> = (0..n).map(|i| format!("w{i}")).collect();
-            // Delivered: a subset, in a seeded order; some since merged away.
             let mut delivered: Vec<String> = keys
                 .iter()
                 .enumerate()
@@ -1645,7 +1415,6 @@ mod props {
                     }
                 }
             }
-            // New, inexact rows keep score order among themselves.
             let new: Vec<usize> = scored
                 .iter()
                 .filter(|(k, e)| !*e && !delivered.contains(k))
@@ -1656,8 +1425,6 @@ mod props {
     }
 }
 
-/// The session against fake providers and a real (in-memory) database: what is
-/// kept, what is asked, what is shown, and in what order.
 #[cfg(test)]
 mod flow_tests {
     use super::*;
@@ -1668,7 +1435,6 @@ mod flow_tests {
     #[derive(Clone)]
     enum Answer {
         Works(Vec<(&'static str, &'static str)>),
-        /// Fails as an unreachable host does.
         Unreachable,
         Hangs,
     }
@@ -1676,7 +1442,6 @@ mod flow_tests {
     struct Fake {
         id: ProviderId,
         answer: Mutex<Answer>,
-        /// Answer only after this long.
         delay: Duration,
         asked: Arc<AtomicUsize>,
     }
@@ -1703,8 +1468,6 @@ mod flow_tests {
         }
     }
 
-    /// An Open Library result as `search.json` sends it, with the record it
-    /// is kept as.
     fn ol_work(title: &str, author: &str, n: usize, position: usize) -> ProviderWork {
         let key = format!("/works/OL{n}W");
         let body = serde_json::json!({
@@ -1845,8 +1608,6 @@ mod flow_tests {
         ])
     }
 
-    /// A repeat search inside a day is answered from what was kept, asks
-    /// nothing, and comes back in the same order.
     #[tokio::test]
     async fn a_repeat_search_asks_nothing_and_keeps_its_order() {
         let s = storage().await;
@@ -1877,8 +1638,6 @@ mod flow_tests {
         assert!(again.warnings.is_empty());
     }
 
-    /// No network: the kept answer is the answer, the provider says it was not
-    /// reached, and the warnings carry the failure and the stand-in.
     #[tokio::test]
     async fn offline_the_kept_answer_stands_in_and_says_so() {
         let s = storage().await;
@@ -1912,7 +1671,6 @@ mod flow_tests {
             DiagnosticKind::ProviderAnsweredFromCache { .. }
         ));
 
-        // A search never made, offline: kept records holding its words.
         let (ol, _) = Fake::quick(ProviderId::OpenLibrary, Answer::Unreachable);
         let other = run(&s, vec![ol], "messiah herbert").await;
         assert_eq!(
@@ -1922,7 +1680,6 @@ mod flow_tests {
         assert!(titles(&other).contains(&"Dune Messiah".to_string()));
         assert!(other.offline);
 
-        // Nothing kept that matches: the failure alone, and no rows.
         let (ol, _) = Fake::quick(ProviderId::OpenLibrary, Answer::Unreachable);
         let nothing = run(&s, vec![ol], "middlemarch").await;
         assert!(nothing.works.is_empty());
@@ -1933,9 +1690,6 @@ mod flow_tests {
         assert_eq!(nothing.warnings.len(), 1);
     }
 
-    /// Google Books' records live in the session and nowhere else (its terms
-    /// allow no durable copy):
-    /// shown, merged into the works — and absent from every table.
     #[tokio::test]
     async fn google_books_is_shown_and_never_kept() {
         let s = storage().await;
@@ -1979,7 +1733,6 @@ mod flow_tests {
         assert_eq!(leaked, 0);
     }
 
-    /// A local-only search sends nothing anywhere.
     #[tokio::test]
     async fn a_local_only_search_asks_no_provider() {
         let s = storage().await;
@@ -2025,10 +1778,6 @@ mod flow_tests {
         }
     }
 
-    /// The Yours section is in the first snapshot, before any provider has
-    /// answered, and stays as it was; each work says what is held of it — an
-    /// identifier is certain, the matcher's auto band is likely, and the band
-    /// below it is nothing.
     #[tokio::test]
     async fn yours_comes_first_and_every_work_says_what_is_held() {
         let s = storage().await;
@@ -2103,8 +1852,6 @@ mod flow_tests {
         );
     }
 
-    /// A kept record that no longer reads is dropped, said so, and the
-    /// provider is asked again.
     #[tokio::test]
     async fn an_unreadable_kept_record_is_dropped_and_asked_again() {
         let s = storage().await;
@@ -2126,8 +1873,6 @@ mod flow_tests {
         ));
     }
 
-    /// Progressive: nothing is shown until Open Library answers or 1.2 s pass;
-    /// then a late provider fills in place and appends below.
     #[tokio::test(start_paused = true)]
     async fn rows_are_released_once_and_late_ones_go_below() {
         let (gb, _) = Fake::quick(
@@ -2149,7 +1894,6 @@ mod flow_tests {
         let first = session.snapshot();
         assert!(first.works.is_empty(), "shown before release");
 
-        // Google answers at once; still held until 1.2 s.
         let mut snap = session.poll(first.revision, MAX_WAIT).await;
         while snap.works.is_empty() {
             snap = session.poll(snap.revision, MAX_WAIT).await;
@@ -2164,8 +1908,6 @@ mod flow_tests {
         }
         assert!(released_at.elapsed() < Duration::from_secs(3));
         let all = titles(&snap);
-        // What was shown stays first, in its order; Open Library's new works
-        // are below; Google's Dune row was filled in place by Open Library's.
         assert_eq!(&all[..2], &shown[..]);
         assert_eq!(all.len(), 4, "{all:?}");
         let dune = snap
@@ -2176,8 +1918,6 @@ mod flow_tests {
         assert_eq!(dune.work.sources.len(), 2);
     }
 
-    /// The registry: an unknown session is `NotFound`, ending is idempotent,
-    /// at most eight are kept, and ten idle minutes let one go.
     #[tokio::test(start_paused = true)]
     async fn the_registry_keeps_eight_and_forgets_the_idle() {
         let reg = Registry::default();
@@ -2211,7 +1951,6 @@ mod flow_tests {
         assert!(reg.get(&ids[1]).is_err(), "idle ten minutes");
     }
 
-    /// Ending a session aborts the work it started.
     #[tokio::test]
     async fn ending_a_session_stops_its_providers() {
         struct Guard(Arc<AtomicUsize>);
@@ -2263,8 +2002,6 @@ mod flow_tests {
     }
 }
 
-/// Correction in the session: a fixture index, a provider that
-/// answers by what it is asked, and a real (in-memory) database.
 #[cfg(test)]
 mod correction_tests {
     use super::*;
@@ -2272,10 +2009,8 @@ mod correction_tests {
     use crate::search::wellknown::{Unavailable, fixture};
     use async_trait::async_trait;
 
-    /// A row: title, author, Open Library work number, edition count.
     type Doc = (&'static str, &'static str, u32, u32);
 
-    /// Answers each request from a script and remembers what it was asked.
     struct ByRequest {
         script: fn(&SearchRequest) -> Vec<Doc>,
         asked: Arc<Mutex<Vec<SearchRequest>>>,
@@ -2326,9 +2061,6 @@ mod correction_tests {
         }
     }
 
-    /// Open Library as far as these tests need it: Dune by its title, the
-    /// misspelling of a famous book as a stray record of its own, and
-    /// nothing for a misspelling.
     fn open_library(req: &SearchRequest) -> Vec<Doc> {
         let title = req.title.as_deref().unwrap_or_default();
         let q = req.query.as_deref().unwrap_or_default();
@@ -2399,8 +2131,6 @@ mod correction_tests {
             .unwrap_or_default()
     }
 
-    /// Nothing found for a misspelling: the fix is asked for by its title and
-    /// author, its work comes first, and the snapshot says what was typed.
     #[tokio::test]
     async fn a_misspelling_that_finds_nothing_is_searched_as_corrected() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2418,14 +2148,12 @@ mod correction_tests {
         assert_eq!(asked[1].author.as_deref(), Some("Frank Herbert"));
         assert!(snap.done);
 
-        // Again: both answers were kept, so nothing is asked and nothing moves.
         let (again, asked) = search(&st, "dnue herbrt", with_index().await).await;
         assert!(asked.is_empty(), "{asked:?}");
         assert_eq!(again.correction, snap.correction);
         assert_eq!(first(&again), "Dune");
     }
 
-    /// The text as typed is never corrected, and is asked once.
     #[tokio::test]
     async fn a_search_as_typed_is_not_corrected() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2437,8 +2165,6 @@ mod correction_tests {
         assert_eq!(asked.len(), 1);
     }
 
-    /// A stray record that spells the typo is not a reason to keep it: it has
-    /// no standing beside the famous book one letter away.
     #[tokio::test]
     async fn a_stray_misspelt_record_does_not_stop_the_fix() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2450,8 +2176,6 @@ mod correction_tests {
         assert_eq!(first(&snap), "Jane Eyre");
     }
 
-    /// A record with standing of its own that answers the text exactly is
-    /// what was meant.
     #[tokio::test]
     async fn a_good_answer_of_standing_is_not_corrected_away() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2461,8 +2185,6 @@ mod correction_tests {
         assert_eq!(asked.len(), 1);
     }
 
-    /// The fix's own work already among the answers: ranked as the fix
-    /// reads, and nothing more is asked.
     #[tokio::test]
     async fn a_fix_already_found_is_ranked_not_asked() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2471,9 +2193,6 @@ mod correction_tests {
         assert_eq!(asked.len(), 1, "{asked:?}");
     }
 
-    /// A query typed right is never corrected, even with a famous near
-    /// neighbour (`the habit` is one letter from *The Hobbit*... and is a
-    /// title of its own in the index).
     #[tokio::test]
     async fn a_title_in_the_index_is_never_corrected() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2482,8 +2201,6 @@ mod correction_tests {
         assert_eq!(asked.len(), 1);
     }
 
-    /// An index that should be there and is not is said once, and the search
-    /// still runs; an engine with none configured says nothing.
     #[tokio::test]
     async fn a_missing_index_is_said_and_the_search_still_runs() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2510,8 +2227,6 @@ mod correction_tests {
         assert!(snap.warnings.is_empty());
     }
 
-    /// The index's notability is standing: of two equally good text matches,
-    /// the better known comes first.
     #[tokio::test]
     async fn notability_breaks_a_tie_between_equal_matches() {
         let st = Storage::connect("sqlite::memory:").await.unwrap();
@@ -2519,7 +2234,6 @@ mod correction_tests {
         assert_eq!(snap.correction, None);
         let top = &snap.works[0].work;
         assert_eq!(top.authors, vec!["Frank Herbert".to_string()]);
-        // Without the index the provider's own order stands.
         let none = Extras::default();
         let (snap, _) = search(&st, "dune", none).await;
         assert_eq!(snap.works[0].work.authors, vec!["Another Dune".to_string()]);

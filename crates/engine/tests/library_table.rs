@@ -1,7 +1,3 @@
-//! The library as a table: every book, the latest read's state and how many
-//! days it took, the counts per filter, and the sort positions a frontend
-//! sorts by (so it never re-collates a title itself).
-
 mod common;
 
 use bookmole::{Book, Engine, LearnedFrom, NewCopy, ReadingState, Tenure};
@@ -10,7 +6,6 @@ fn at(day: &str) -> i64 {
     bookmole::history::midnight(bookmole::history::parse_day(day).unwrap()) + 12 * 3600
 }
 
-/// A book you have: the table lists the library, and a book is in it by a copy.
 async fn book(engine: &Engine, title: &str, author: &str, pages: Option<i64>) -> i64 {
     let id = engine
         .save_book(&Book {
@@ -40,7 +35,6 @@ async fn every_book_is_a_row_and_the_counts_partition_the_shelf() {
     let arith = book(&engine, "A Brief Arithmetic", "Yuki Dziedzic", Some(232)).await;
     let never = book(&engine, "Salt Machine", "Owen Dziedzic", None).await;
 
-    // A reread: the latest read is the second one.
     s.record_reading(
         yellow,
         Some(at("2025-01-01")),
@@ -111,8 +105,6 @@ async fn every_book_is_a_row_and_the_counts_partition_the_shelf() {
         "abandon_reading stamps the instant (0025)"
     );
 
-    // Title order drops the article: (A) Brief Arithmetic, Hollow Bell, (The)
-    // Pale Orchard, Salt Machine, (The) Yellow Hours.
     let by_title: Vec<i64> = table.rows.iter().map(|r| r.book.id.unwrap()).collect();
     assert_eq!(by_title, vec![arith, bell, orchard, never, yellow]);
     assert!(
@@ -122,8 +114,6 @@ async fn every_book_is_a_row_and_the_counts_partition_the_shelf() {
             .all(|w| w[0].title_order < w[1].title_order)
     );
 
-    // Author order is the engine's surname order: Dziedzic (Owen), Dziedzic
-    // (Yuki), Grigorescu, Halloran (Fen), Halloran (Mariam).
     let mut by_author: Vec<(i64, i64)> = table
         .rows
         .iter()

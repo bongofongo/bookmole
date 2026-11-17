@@ -1,6 +1,4 @@
-//! A minimal single-line text input, used for the search query, an ISBN, a
-//! progress page, a note's location, and a KOReader path. The multi-line note
-//! *body* is composed in `$EDITOR` (see `crate::editor`), not here.
+//! A minimal single-line text input. Multi-line note bodies are composed in `$EDITOR`, not here.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -9,11 +7,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::theme;
 
-/// Editable line + a char-indexed cursor.
 #[derive(Debug, Default, Clone)]
 pub struct InputState {
     pub value: String,
-    /// Cursor position as a char index in `[0, char_count]`.
     cursor: usize,
 }
 
@@ -29,7 +25,6 @@ impl InputState {
         self.value.chars().count()
     }
 
-    /// Byte offset of char `idx` (or end-of-string).
     fn byte_at(&self, idx: usize) -> usize {
         self.value
             .char_indices()
@@ -62,14 +57,12 @@ impl InputState {
         }
     }
 
-    /// Take the value out, leaving the state empty.
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.value)
     }
 }
 
-/// Draw a bordered input box titled `prompt`, with a block cursor.
 pub fn render(f: &mut Frame, area: Rect, prompt: &str, state: &InputState) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -81,8 +74,6 @@ pub fn render(f: &mut Frame, area: Rect, prompt: &str, state: &InputState) {
         return;
     }
 
-    // Value with a reversed cell where the cursor sits (or a trailing block at
-    // the end). Kept on one line; the box is short-lived so no scrolling.
     let chars: Vec<char> = state.value.chars().collect();
     let mut spans = Vec::new();
     for (i, c) in chars.iter().enumerate() {
@@ -130,7 +121,7 @@ mod tests {
         s.left();
         s.left();
         s.left();
-        s.backspace(); // at start, no-op
+        s.backspace();
         assert_eq!(s.value, "hi!");
     }
 }

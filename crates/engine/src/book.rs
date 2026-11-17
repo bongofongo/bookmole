@@ -1,7 +1,7 @@
 use time::OffsetDateTime;
 
-/// Central domain struct. Identity: internal `id` is canonical; ISBNs are
-/// unique lookup keys (a book may carry either, both, or neither).
+/// Internal `id` is canonical; ISBNs are unique lookup keys (a book may carry either, both or
+/// neither).
 #[derive(Debug, Clone, Default)]
 pub struct Book {
     pub id: Option<i64>,
@@ -10,11 +10,9 @@ pub struct Book {
     pub authors: Vec<String>,
     pub translators: Vec<String>,
     pub publisher: Option<String>,
-    /// The edition's year, as the source that supplied the record states it.
     pub publish_year: Option<i64>,
-    /// The year the work was first published (migration `0029`), where a source
-    /// says so. Never derived from [`Book::publish_year`], which is often an
-    /// edition's year; `None` means no source has said.
+    /// Never derived from `publish_year`, which is often an edition's year; `None` means no source
+    /// has said.
     pub first_published: Option<i64>,
     pub language: Option<String>,
     pub isbn_10: Option<String>,
@@ -26,117 +24,33 @@ pub struct Book {
     pub page_count: Option<i64>,
     pub description: Option<String>,
     pub first_sentence: Option<String>,
-    /// What a *provider* says this book is about (migration `0013`).
-    ///
-    /// Deliberately **not** `book_tags`: those are shelves the user or another
-    /// system minted, and collections are not modelled yet because three
-    /// systems minting them is a merge problem with no good default. A subject is a bibliographic
-    /// fact with an origin, like a publisher, and merges like one — the empty
-    /// vec means "this record does not say", never "this book has no subjects".
-    ///
-    /// The strings are raw as the provider spelled them. There is no controlled
-    /// vocabulary, which means Google's BISAC paths (`Fiction / Literary`) and
-    /// OpenLibrary's headings (`Provincial England`) are two dialects — and is
-    /// why a merge takes one provider's set whole rather than unioning them.
+    /// What a provider says the book is about, raw as spelled; empty means the record does not say.
+    /// Not `book_tags`; a merge takes one provider's set whole, never a union.
     pub subjects: Vec<String>,
-    /// The series this book belongs to, as its origin names it.
-    ///
-    /// A **pair** with [`Book::series_index`], and the pair is why
-    /// `MERGE_RULES` gained `Rule::pair`: owning "Dune" while a provider fills
-    /// in "#2" from a differently-named series is an incoherent row, so
-    /// user-ownership of either half protects both.
+    /// A pair with `series_index`: user-ownership of either half protects both in merges.
     pub series: Option<String>,
-    /// The book's position in [`Book::series`]. Fractional on purpose —
-    /// novellas are numbered 0.5 and 1.5 by calibre, Goodreads and publishers
-    /// alike.
+    /// Fractional on purpose: novellas are numbered 0.5 and 1.5.
     pub series_index: Option<f64>,
-    /// What the engine measured about the file at [`Book::cover_path`], the
-    /// moment it wrote it (migration `0014`).
-    ///
-    /// **Read-only projections, like the reading state below**, and for a
-    /// sharper version of the same reason: they are written by exactly one
-    /// statement ([`Storage::set_cover`](crate::Storage::set_cover)) beside the
-    /// path they describe, and every merge ignores them. They are deliberately
-    /// not `MERGE_RULES` columns — no provider publishes a width, there is no
-    /// source to attribute, and a record-shaped writer able to move one of them
-    /// without moving `cover_path` is a row whose stored dimensions belong to a
-    /// different image. The converse is closed in the generated SQL: a write
-    /// that *moves* `cover_path` sets these four back to NULL. Migration `0014`
-    /// carries the full argument, including why `Rule::pair` is not the fix.
-    ///
-    /// `None` means **not measured yet**, never "no cover": a library predating
-    /// `0014` has files on disk and NULLs here until
-    /// [`Engine::measure_stored_covers`](crate::Engine::measure_stored_covers)
-    /// runs, and a frontend meeting that state falls back to decoding, which is
-    /// what it does today.
+    /// Measured by `Storage::set_cover` beside `cover_path`; merges ignore them. `None` means not
+    /// measured yet, never "no cover".
     pub cover_width: Option<i64>,
-    /// See [`Book::cover_width`].
     pub cover_height: Option<i64>,
-    /// The median colour of a 2px frame around the cover, packed `0xRRGGBB` —
-    /// what gives a spine its colour when there is no spine art, which is every
-    /// book, since providers ship front covers only.
-    ///
-    /// **Unclamped**: `render3d` pushes it into a legible luma band so a white
-    /// jacket still reads as a board, and that band is a renderer's policy about
-    /// its own lighting rather than a fact about the file.
-    /// [`Book::cover_accent_rgb`] is the one place the packing comes apart.
+    /// Median colour of a 2px frame around the cover, packed `0xRRGGBB`. Unclamped: any luma policy
+    /// is the renderer's.
     pub cover_accent: Option<i64>,
-    /// The shelf tier: a downscaled sibling of the cover, written only when the
-    /// original is bigger than a grid cell can use. `None` when the cover is
-    /// already its own thumbnail — see [`Book::shelf_cover_path`], which is
-    /// where that fallback is decided once rather than in each frontend.
+    /// Downscaled shelf tier; `None` when the cover is its own thumbnail (see `shelf_cover_path`).
     pub cover_thumb_path: Option<String>,
-    /// Reading state, as a **read-only projection of the current reading** —
-    /// the open one if there is one, else the most recent. Since migration
-    /// `0005` these are not `books` columns and
-    /// [`Storage::upsert_book`](crate::Storage::upsert_book) ignores them;
-    /// [`Storage::update_progress`](crate::Storage::update_progress) is the
-    /// writer. They stay on `Book` because that is what left every render call
-    /// site — `render.rs`, `progress_tag`, `progress_text`, the note page
-    /// auto-anchor — untouched by the move.
+    /// Reading state: a read-only projection of the current reading (the open one, else the most
+    /// recent). `upsert_book` ignores these; `update_progress` writes them.
     pub current_page: Option<i64>,
-    /// True when the current reading's status is `finished`. See
-    /// [`Book::current_page`].
     pub finished: bool,
-    /// The current reading's own `status` — `reading` | `finished` |
-    /// `abandoned` — or `None` when the book has no reading at all.
-    ///
-    /// Beside [`Book::finished`] rather than replacing it, because `finished` is
-    /// load-bearing for `render.rs` and `progress_tag` and this adds a
-    /// distinction they never needed. The distinction: `finished == false`
-    /// covers *reading*, *abandoned* and *never opened* alike, and
-    /// [`Storage::abandon_reading`](crate::Storage::abandon_reading)
-    /// deliberately leaves the reading **open**, so an abandoned book is
-    /// `finished: false` with a `current_page` — indistinguishable from an
-    /// active read. A frontend cannot honour "abandoning a book is not failure
-    /// and is never styled as one" against a state the engine will not name,
-    /// and the two ways to recover it above this layer are both worse: one
-    /// request per row, or a client-side join of `currently_reading`, which is
-    /// row-state derivation and belongs here by rule.
-    ///
-    /// A `String` rather than an enum on purpose: the importer can write a
-    /// status this build does not know, and a parse that refuses one would turn
-    /// a foreign device's vocabulary into an error on the read path.
+    /// The current reading's `status` (`reading`, `finished`, `abandoned`), or `None` with no reading.
+    /// A `String` because an importer can write a status this build does not know.
     pub reading_status: Option<String>,
-    /// The current reading's `ko_percent` — the **device's** own fraction of
-    /// the book, `0.0..=1.0`. See [`Book::current_page`].
-    ///
-    /// A sixth projection, added for one reason: without it
-    /// [`Progress`](crate::Progress) cannot be computed from a `Book`, and the
-    /// commonest row in a KOReader-sourced library has a device percentage and
-    /// no `current_page` at all. That fallback once lived in one screen of one
-    /// frontend, which meant any other list built off `Book` alone could not
-    /// show progress for the books that had it. It is a projection and not a
-    /// schema change: `readings.ko_percent`
-    /// has existed since migration `0005`.
-    ///
-    /// Device-owned and refreshed by straight assignment, so it can disagree
-    /// with `current_page`. Which wins is [`Progress`](crate::Progress)'
-    /// question and is answered there, once.
+    /// The device's own fraction of the book, `0.0..=1.0`; it can disagree with `current_page`, and
+    /// `Progress` decides which wins.
     pub ko_percent: Option<f64>,
-    /// The current reading's `started_at`. See [`Book::current_page`].
     pub date_started: Option<i64>,
-    /// The current reading's `finished_at`. See [`Book::current_page`].
     pub date_finished: Option<i64>,
     pub created_at: Option<OffsetDateTime>,
     pub last_modified: Option<OffsetDateTime>,
@@ -155,21 +69,12 @@ impl Book {
         }
     }
 
-    /// Any ISBN, preferring 13.
     pub fn any_isbn(&self) -> Option<&str> {
         self.isbn_13.as_deref().or(self.isbn_10.as_deref())
     }
 
-    /// The cover's shape, width over height — what a grid reserves a box with,
-    /// and what the 3D renderer draws the front face at.
-    ///
-    /// Derived here because derived facts belong in the engine, not as a
-    /// convenience: it is the *whole* purpose of storing the dimensions. Both frontends previously
-    /// answered it by **decoding the image** (`render3d`'s `Cover::aspect`), so
-    /// a shelf of three hundred spines decoded three hundred files to find out
-    /// how wide to draw them. `None` when the cover is unmeasured, which is the
-    /// state that still needs a decode — a zero height is refused rather than
-    /// divided by, since a stored 0 is a broken measurement and not a shape.
+    /// Width over height; `None` when unmeasured (a zero dimension is a broken measurement, not a
+    /// shape).
     pub fn cover_aspect(&self) -> Option<f64> {
         match (self.cover_width, self.cover_height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => Some(w as f64 / h as f64),
@@ -177,58 +82,31 @@ impl Book {
         }
     }
 
-    /// [`Book::cover_accent`] as its three channels. The one place the packing
-    /// comes apart, so two frontends cannot unpack it differently.
     pub fn cover_accent_rgb(&self) -> Option<[u8; 3]> {
         self.cover_accent.map(crate::images::accent_channels)
     }
 
-    /// The file a **shelf** should load: the downscaled tier when there is one,
-    /// else the cover itself.
-    ///
-    /// One line, and it is in the engine rather than in each frontend because
-    /// the alternative is a frontend that reads `cover_thumb_path` and shows
-    /// nothing for every cover small enough not to have one. A fallback each
-    /// frontend re-derives is a fallback one of them gets wrong.
     pub fn shelf_cover_path(&self) -> Option<&str> {
         self.cover_thumb_path
             .as_deref()
             .or(self.cover_path.as_deref())
     }
 
-    /// The series this book sits in, written the way a person writes it:
-    /// `Dune #2`, or bare `Dune` where no index is recorded.
-    ///
-    /// Derived here rather than in each frontend: the *phrasing* belongs to a
-    /// frontend, but deciding what the pair means together is the engine's, and
-    /// `series_index` is a REAL — half-numbered novellas are real — so a
-    /// frontend formatting it itself is a frontend that will eventually print
-    /// `#2.5` one way and `#2.50` another. `Rule::show` goes through the same
-    /// [`series_index_text`].
+    /// `Dune #2`, or bare `Dune` with no index. Shares `series_index_text` so spellings cannot differ.
     pub fn series_label(&self) -> Option<String> {
         let name = self.series.as_deref()?;
         Some(match self.series_index {
             Some(n) => format!("{name} #{}", series_index_text(n)),
-            // Ordinary: a provider that names the series and not the place in
-            // it. Nothing is invented to fill the gap.
             None => name.to_string(),
         })
     }
 
-    /// The current reading's state, typed.
-    ///
-    /// `None` is "no reading at all", and stays **absence rather than a
-    /// variant** — see [`ReadingState`] for the argument.
     pub fn reading_state(&self) -> Option<ReadingState> {
         self.reading_status.as_deref().map(ReadingState::from)
     }
 
-    /// The authors, each written the way a person says it — `Jorge Luis
-    /// Borges`, never `Borges, Jorge Luis`.
-    ///
-    /// The **order within a name** is a parse and is the engine's
-    /// ([`crate::names`]); the **join between names** is wording and is the
-    /// frontend's, which is why this returns a list and not a sentence.
+    /// `Jorge Luis Borges`, never `Borges, Jorge Luis`; a list because joining names is a frontend's
+    /// wording.
     pub fn authors_in_display_order(&self) -> Vec<String> {
         self.authors
             .iter()
@@ -236,7 +114,6 @@ impl Book {
             .collect()
     }
 
-    /// Canonical dedup key: ISBN-13, converting a lone ISBN-10 when possible.
     pub fn canonical_isbn13(&self) -> Option<String> {
         if let Some(i13) = &self.isbn_13 {
             return Some(i13.clone());
@@ -245,51 +122,19 @@ impl Book {
     }
 }
 
-/// What a reading's `status` says, typed.
-///
-/// `readings.status` — and therefore [`Book::reading_status`] — crosses as a
-/// `String` because an importer can write a status this build does not know,
-/// and a parse that
-/// *refused* one would turn a foreign device's vocabulary into an error on the
-/// read path. That argument is about the **storage and transport** of the value
-/// and it still holds. It was never an argument against naming the three we do
-/// know: a frontend matching on `"abandoned"` is a stringly comparison in every
-/// frontend, and the one that misspells it styles a put-down book as an active
-/// read with no compiler anywhere in the way.
-///
-/// So: **the raw string stays, and this is read off it.** `Other` carries the
-/// unknown value rather than collapsing it, exactly as
-/// [`KoStatus`](crate::KoStatus) does for the device's own vocabulary — that is
-/// the precedent, and the two enums are deliberately the same shape.
-///
-/// **There is no `NeverOpened` variant, and that is a decision.** A book with no
-/// reading is `Option::None`, not a named state. Naming it would put *unread*
-/// into the type system, and the app deliberately has no task-completion
-/// framing: nothing counts what you haven't read. A variant is a thing a UI
-/// filters on, counts, and eventually puts a badge beside. Absence is also what
-/// every consumer already branches on,
-/// and it is honest: the engine knows there is no reading, not that the book has
-/// not been read.
+/// A reading's `status`, typed. No `NeverOpened` variant on purpose: a book with no reading is
+/// `None`, so nothing counts unread books. `Other` keeps an unknown status whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadingState {
     Reading,
-    /// Closed as read. The one state [`Book::finished`] also carries, and both
-    /// stay: `finished` is load-bearing for `render.rs` and `progress_tag`.
     Finished,
-    /// Put down. **Not a failure and never styled as one** —
-    /// `Storage::abandon_reading` leaves the reading *open* for exactly that
-    /// reason, which is also why `finished: false` cannot tell this apart from
-    /// an active read and why this enum has to exist.
+    /// Put down; `abandon_reading` leaves the reading open, so `finished: false` cannot tell this
+    /// from an active read.
     Abandoned,
-    /// A status this build does not model. Kept whole; showing it verbatim beats
-    /// inventing a word for it.
     Other(String),
 }
 
 impl ReadingState {
-    /// True when the value was not one this build writes. The signal that an
-    /// importer grew a vocabulary we do not model — the same question
-    /// [`KoStatus::is_unknown`](crate::KoStatus::is_unknown) answers.
     pub fn is_unknown(&self) -> bool {
         matches!(self, ReadingState::Other(_))
     }
@@ -307,10 +152,8 @@ impl From<&str> for ReadingState {
 }
 
 impl std::fmt::Display for ReadingState {
-    /// Round-trips through `From<&str>`, so an unknown status survives a
-    /// parse/render cycle unchanged rather than collapsing to a placeholder.
-    /// This is the **stored** vocabulary, not a label: `abandoned` is the word
-    /// in the column, and *Put down* is a frontend's.
+    /// The stored vocabulary, not a label; round-trips through `From<&str>` so unknown statuses
+    /// survive.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ReadingState::Reading => write!(f, "reading"),
@@ -321,17 +164,7 @@ impl std::fmt::Display for ReadingState {
     }
 }
 
-/// A series index as a person writes it: `2`, never `2.0`; `0.5`, never
-/// `0.5000`.
-///
-/// The column is REAL because half-numbered novellas are real, so the whole
-/// numbers — which is nearly all of them — arrive as `2.0` and would print that
-/// way in every report and every future shelf line.
-///
-/// `pub` because a frontend needs it for a number that has no series beside it —
-/// `rb set`'s refusal names the index the user typed and nothing else. Where
-/// there *is* a series, [`Book::series_label`] is the one to reach for; both go
-/// through this, so the two can never spell the same number differently.
+/// A series index as a person writes it: `2`, never `2.0`; `0.5`, never `0.5000`.
 pub fn series_index_text(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{}", n as i64)
@@ -340,9 +173,7 @@ pub fn series_index_text(n: f64) -> String {
     }
 }
 
-/// Normalize a raw ISBN-ish string (hyphens/spaces stripped, `urn:isbn:`
-/// prefixes dropped, X uppercased) and validate its checksum.
-/// Returns None if it isn't a valid ISBN-10 or ISBN-13.
+/// Strips hyphens, spaces and `urn:isbn:`, uppercases X, and validates the checksum.
 pub fn normalize_isbn(raw: &str) -> Option<String> {
     let stripped = raw.trim().rsplit(':').next().unwrap_or(raw);
     let cleaned: String = stripped
@@ -381,7 +212,6 @@ fn is_valid_isbn13(s: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
-/// Convert a valid ISBN-10 to its ISBN-13 (978-prefix) form.
 pub fn isbn10_to_13(isbn10: &str) -> Option<String> {
     if isbn10.len() != 10 || !is_valid_isbn10(isbn10) {
         return None;
@@ -441,7 +271,6 @@ mod tests {
 
     #[test]
     fn keeps_leading_zero_and_x_check_digit() {
-        // Both impossible under the old i64 representation.
         assert_eq!(
             normalize_isbn("0-19-853453-1"),
             Some("0198534531".to_string())
@@ -451,8 +280,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_checksums_and_shapes() {
-        assert_eq!(normalize_isbn("9781900000179"), None); // bad check digit
-        assert_eq!(normalize_isbn("0306406153"), None); // bad check digit
+        assert_eq!(normalize_isbn("9781900000179"), None);
+        assert_eq!(normalize_isbn("0306406153"), None);
         assert_eq!(normalize_isbn("12345"), None);
         assert_eq!(normalize_isbn("not-an-isbn"), None);
         assert_eq!(normalize_isbn("123456789X123"), None); // X only legal in isbn10
@@ -476,9 +305,6 @@ mod props {
     use super::*;
     use proptest::prelude::*;
 
-    /// Generate a *valid* ISBN-10 by computing the check digit, rather than
-    /// generating candidates and rejecting — reject-sampling would discard
-    /// ~10/11 of them and make the runs slow and shallow.
     fn valid_isbn10() -> impl Strategy<Value = String> {
         proptest::collection::vec(0u32..10, 9).prop_map(|digits| {
             let sum: u32 = digits
@@ -486,7 +312,6 @@ mod props {
                 .enumerate()
                 .map(|(i, d)| (10 - i as u32) * d)
                 .sum();
-            // c satisfies sum + 1*c ≡ 0 (mod 11)
             let check = (11 - (sum % 11)) % 11;
             let mut s: String = digits
                 .iter()
@@ -501,7 +326,6 @@ mod props {
         })
     }
 
-    /// ISBN-13 check digit for 12 body digits.
     fn isbn13_check(body: &[u32]) -> u32 {
         let sum: u32 = body
             .iter()
@@ -511,8 +335,6 @@ mod props {
         (10 - sum % 10) % 10
     }
 
-    /// A valid ISBN-13 that is *guaranteed* to have two adjacent digits
-    /// differing by exactly 5, and the position of that pair.
     fn isbn13_with_a_five_gap_pair() -> impl Strategy<Value = (String, usize)> {
         (
             proptest::collection::vec(0u32..10, 12),
@@ -539,15 +361,12 @@ mod props {
     }
 
     proptest! {
-        /// The real contract of the conversion, which two hand-picked examples
-        /// could never establish: the output is always itself a valid ISBN-13.
         #[test]
         fn isbn10_converts_to_a_genuinely_valid_isbn13(t in valid_isbn10()) {
             let thirteen = isbn10_to_13(&t).expect("valid 10 must convert");
             prop_assert_eq!(thirteen.len(), 13);
             prop_assert!(thirteen.starts_with("978"));
             prop_assert!(is_valid_isbn13(&thirteen), "bad checksum: {}", thirteen);
-            // And it survives a round trip through the front door.
             let round = normalize_isbn(&thirteen);
             prop_assert_eq!(round.as_deref(), Some(thirteen.as_str()));
         }
@@ -559,17 +378,13 @@ mod props {
             prop_assert_eq!(twice.as_deref(), Some(once.as_str()));
         }
 
-        /// Hyphens, spaces, a `urn:isbn:` prefix and lowercase `x` are all
-        /// formatting, not identity. Every ISBN entering the system goes
-        /// through here, so this is the invariant the whole library leans on.
         #[test]
         fn formatting_never_changes_the_result(
             t in valid_isbn10(),
             cuts in proptest::collection::vec(0usize..10, 0..4),
         ) {
             let mut decorated = t.clone();
-            // Insert separators at descending positions so earlier inserts
-            // don't shift later ones.
+            // Insert at descending positions so earlier inserts don't shift later ones.
             let mut cuts = cuts;
             cuts.sort_unstable();
             cuts.dedup();
@@ -593,8 +408,6 @@ mod props {
             }
         }
 
-        /// What the check digit is *for*. Catches an off-by-one in the
-        /// alternating 1-3-1-3 weights, which a fixed example set will not.
         #[test]
         fn a_single_wrong_digit_invalidates_an_isbn13(
             t in valid_isbn13(),
@@ -613,19 +426,13 @@ mod props {
             );
         }
 
-        /// Transposition detection is ASYMMETRIC between the two schemes, and
-        /// this is the property a naive implementation gets wrong and then
-        /// "fixes" by weakening the test.
-        ///
-        /// ISBN-10 is mod 11 with distinct weights, so swapping any two
-        /// adjacent unequal digits always breaks it.
+        /// ISBN-10 is mod 11 with distinct weights: swapping adjacent unequal digits always breaks it.
         #[test]
         fn adjacent_transposition_always_breaks_an_isbn10(
             t in valid_isbn10(),
             pos in 0usize..9,
         ) {
             let mut c: Vec<char> = t.chars().collect();
-            // Skip the check position, where 'X' is not a digit swap.
             prop_assume!(c[pos] != c[pos + 1]);
             prop_assume!(c[pos].is_ascii_digit() && c[pos + 1].is_ascii_digit());
             c.swap(pos, pos + 1);
@@ -636,14 +443,8 @@ mod props {
             );
         }
 
-        /// The counterpart, stated so nobody later "strengthens" the test
-        /// above into something false: ISBN-13's 1-3-1-3 weighting CANNOT see
-        /// a transposition of two adjacent digits differing by 5, because the
-        /// checksum moves by 2*5 = 10 ≡ 0 (mod 10).
-        ///
-        /// The qualifying pair is *constructed*, not filtered for — assuming
-        /// it rejects ~90% of cases and the run dies on the reject cap without
-        /// ever reaching the assertion.
+        /// ISBN-13 cannot see a swap of adjacent digits differing by 5 (the checksum moves by 10). The
+        /// pair is constructed, not filtered for: assuming it would hit the reject cap.
         #[test]
         fn isbn13_provably_misses_transpositions_differing_by_five(
             (t, pos) in isbn13_with_a_five_gap_pair(),
@@ -662,9 +463,6 @@ mod props {
             );
         }
 
-        /// Arbitrary input must be rejected, not panic. `normalize_isbn` is the
-        /// single entry point for every ISBN in the system, including ones
-        /// typed by hand and ones scraped from a provider.
         #[test]
         fn arbitrary_input_never_panics(s in ".{0,64}") {
             let _ = normalize_isbn(&s);

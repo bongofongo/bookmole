@@ -1,19 +1,6 @@
-//! Ratings: the user's own scale, its Goodreads lookup, and the value a review
-//! carries.
-//!
-//! Three rules, and all three are visible in the schema rather than only in
-//! code:
-//!
-//! - **Numeric scales only for v1** — `min`, `max`, `step`. Ordered labels are
-//!   explicitly out.
-//! - **Store the raw value plus the scale id, never only the mapped value.**
-//!   The map is user-editable, so the mapping has to stay re-derivable.
-//! - **The Goodreads mapping is an explicit lookup table, never a formula.**
-//!   Formulas are always wrong at the ends, so a scale value with no mapping
-//!   *says so* and is never silently rounded. Goodreads' `My Rating` was an
-//!   integer 0–5 until it took quarter ratings; since migration `0026` it is
-//!   0–5 in steps of 0.25 ([`goodreads_point`]), and the two seeded scales map
-//!   onto it one-to-one.
+//! Rating scales (numeric `min`/`max`/`step`), their Goodreads lookup, and a review's rating. The
+//! raw value is stored with its scale id; the Goodreads map is an explicit table, never a
+//! formula.
 
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -21,16 +8,9 @@ use sqlx::sqlite::SqliteRow;
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 
-/// The step of Goodreads' own scale: quarter stars, 0 to 5 (migration `0026`).
 pub const GOODREADS_STEP: f64 = 0.25;
 
-/// A value as Goodreads holds it, or `None` when Goodreads cannot hold it.
-///
-/// 0 to 5 in quarters, `0` meaning *unrated* in Goodreads' own encoding. The
-/// same quantizer every scale goes through (`RatingScale::canonical`), so a
-/// typed `4.25` and a computed one are one key. Off the grid is `None` rather
-/// than the nearest quarter — rounding is what the lookup table exists to
-/// refuse.
+/// `None` when off the quarter grid, never rounded; `0` means unrated in Goodreads' encoding.
 pub fn goodreads_point(g: f64) -> Option<f64> {
     let grid = RatingScale {
         id: 0,
@@ -51,8 +31,6 @@ pub struct RatingScale {
     pub step: f64,
 }
 
-/// A review's rating: the raw value **and** the scale it was given on, which is
-/// the pair that keeps the Goodreads mapping re-derivable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rating {
     pub scale: RatingScale,
@@ -70,26 +48,15 @@ pub(super) fn row_to_scale(r: &SqliteRow) -> RatingScale {
 }
 
 impl RatingScale {
-    /// How many steps from `min` a value sits, when it sits on one at all.
-    ///
-    /// Everything that reads or writes a rating goes through this, and that is
-    /// the point. `rating_map.value` is a REAL in a PRIMARY KEY, so a lookup is
-    /// float equality — and `min + 3*0.1` is not the `0.3` the user typed. One
-    /// quantizer on both sides means the value written and the value looked up
-    /// are the same bits, whatever the step.
+    /// The one quantizer for every read and write: `rating_map.value` is a REAL key, so values must
+    /// be bit-identical.
     pub fn step_index(&self, value: f64) -> Option<i64> {
         if !value.is_finite() || self.step <= 0.0 {
             return None;
         }
-        // A tolerance rather than exact equality: the user types 4.5, we compute
-        // it, and binary floats do not promise those agree to the last bit. It
-        // stays comfortably above `value_at`'s rounding and far below any step a
-        // person types, so a value that came *out* of the grid always goes back
-        // in.
+        // A tolerance, not exact equality: a typed 4.5 and a computed one may differ in the last bit.
         let tolerance = (self.step * 1e-6).max(1e-8);
-        // The bounds get the same tolerance, and that is not politeness: with a
-        // fractional `min`, `value_at(0)` rounds to just *below* it, so a strict
-        // `value < self.min` rejected the scale's own first point.
+        // Bounds get the tolerance too: with a fractional `min`, `value_at(0)` rounds just below it.
         if value < self.min - tolerance || value > self.max + tolerance {
             return None;
         }
@@ -98,16 +65,12 @@ impl RatingScale {
         ((value - snapped).abs() <= tolerance && n >= 0.0).then_some(n as i64)
     }
 
-    /// The canonical value at step `n` — what actually goes into the database.
     pub fn value_at(&self, n: i64) -> f64 {
-        // Rounded, so an accumulated 0.30000000000000004 and a typed 0.3 land on
-        // one key. Nine places: enough to erase the accumulation, small enough
-        // that the result is still inside `step_index`'s tolerance.
+        // Rounded to nine places so accumulated float error and a typed value land on one key.
         let v = self.min + n as f64 * self.step;
         (v * 1e9).round() / 1e9
     }
 
-    /// Every point on the scale, low to high.
     pub fn points(&self) -> Vec<f64> {
         let mut out = Vec::new();
         if self.step <= 0.0 || self.max < self.min {
@@ -120,7 +83,6 @@ impl RatingScale {
         out
     }
 
-    /// Snap a user-supplied value onto the grid, or say why it is not on it.
     pub fn canonical(&self, value: f64) -> Result<f64> {
         match self.step_index(value) {
             Some(n) => Ok(self.value_at(n)),
@@ -133,23 +95,8 @@ impl RatingScale {
 }
 
 impl Storage {
-    /// Create a rating scale, or redefine one that already has this name.
-    ///
-    /// Redefining keeps the row's id — a review already rated on it keeps
-    /// pointing at the scale it was given on, which is the whole reason the
-    /// scale id is stored beside the value.
-    ///
-    /// Creating a scale also makes it the default, which is what "new ratings
-    /// use the scale you just made" means now that the choice is a stored flag
-    /// (migration `0009`) rather than an accident of `created_at` ordering.
-    /// **Redefining an existing scale leaves the flag alone** — the old
-    /// behaviour, for the old reason: changing `default`'s bounds must not yank
-    /// ratings away from a scale the user made afterwards.
-    ///
-    /// Insert and update are told apart before the write rather than by an
-    /// `ON CONFLICT` clause, because the two paths differ in what they do to a
-    /// *different* row: only the insert clears the previous default, and
-    /// `idx_one_default_scale` refuses to let both be set at once.
+    /// Redefining keeps the row's id and leaves the default flag alone; creating makes the new scale
+    /// the default.
     pub async fn put_rating_scale(
         &self,
         name: &str,
@@ -183,8 +130,7 @@ impl Storage {
                 .await?
             }
             None => {
-                // Clear first: the partial unique index permits exactly one
-                // `is_default = 1`, so the order is not stylistic.
+                // Clear first: the partial unique index allows one `is_default = 1`.
                 sqlx::query("UPDATE rating_scales SET is_default = 0 WHERE is_default = 1")
                     .execute(&mut *tx)
                     .await?;
@@ -207,18 +153,8 @@ impl Storage {
         Ok(scale)
     }
 
-    /// The scale a new rating is given on: the one flagged `is_default`.
-    ///
-    /// **The flag, never the ordering.** It used to be "the most recently
-    /// created scale", and migration `0009` seeds a `goodreads` scale — which
-    /// under the old rule would have quietly become the scale `rating show` and
-    /// `set_rating` default to, an import feature changing the meaning of two
-    /// commands it has nothing to do with.
-    ///
-    /// There is deliberately **no ordering fallback**: reintroducing one is
-    /// reintroducing exactly that failure. A library with no default at all
-    /// gets an honest `None`, which every caller already reports as "no rating
-    /// scale — `bookmole rating scale …`".
+    /// By the `is_default` flag, never creation order, so the seeded `goodreads` scale cannot become
+    /// the default. `None` if unset.
     pub async fn active_rating_scale(&self) -> Result<Option<RatingScale>> {
         let row = sqlx::query(
             "SELECT id, name, min, max, step FROM rating_scales WHERE is_default = 1 LIMIT 1",
@@ -244,7 +180,6 @@ impl Storage {
         Ok(rows.iter().map(row_to_scale).collect())
     }
 
-    /// Rate a review. One rating per note, replaced on a second call.
     pub async fn set_review_rating(
         &self,
         note_id: i64,
@@ -273,7 +208,6 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// A review's rating, with the scale it was given on.
     pub async fn review_rating(&self, note_id: i64) -> Result<Option<Rating>> {
         let row = sqlx::query(
             "SELECT s.id, s.name, s.min, s.max, s.step, r.value
@@ -289,7 +223,6 @@ impl Storage {
         }))
     }
 
-    /// Record what one scale value means on Goodreads' 0–5 in quarters.
     pub async fn map_rating(&self, scale: &RatingScale, value: f64, goodreads: f64) -> Result<()> {
         let Some(goodreads) = goodreads_point(goodreads) else {
             return Err(EngineError::InvalidInput(format!(
@@ -309,7 +242,6 @@ impl Storage {
         Ok(())
     }
 
-    /// The whole map of a scale, low value first.
     pub async fn rating_map(&self, scale_id: i64) -> Result<Vec<(f64, f64)>> {
         let rows = sqlx::query(
             "SELECT value, goodreads FROM rating_map WHERE scale_id = ? ORDER BY value ASC",
@@ -323,9 +255,7 @@ impl Storage {
             .collect())
     }
 
-    /// What this scale value means on Goodreads, or `None` when the user has
-    /// not said. **`None` is an answer, not a failure** — the caller reports it
-    /// rather than rounding.
+    /// `None` is an answer, not a failure: the caller reports it rather than rounding.
     pub async fn goodreads_for(&self, scale: &RatingScale, value: f64) -> Result<Option<f64>> {
         let Some(n) = scale.step_index(value) else {
             return Ok(None);
@@ -348,10 +278,6 @@ mod tests {
         Storage::connect("sqlite::memory:").await.unwrap()
     }
 
-    /// Migration `0026`: the seeded scale is 0 to 5 in quarters and maps onto
-    /// Goodreads one-to-one, because Goodreads takes quarters too — every point
-    /// has an answer and the answer is itself, so there is no rounding rule to
-    /// get wrong. The map is still a table the user can edit.
     #[tokio::test]
     async fn the_seeded_scale_is_quarters_and_maps_one_to_one() {
         let s = storage().await;
@@ -380,14 +306,6 @@ mod tests {
         assert_eq!(goodreads_point(f64::NAN), None);
     }
 
-    /// The trap the Goodreads importer walked into, asserted rather than
-    /// trusted.
-    ///
-    /// Migration `0009` seeds a `goodreads` scale, and it is the newest row in
-    /// the table. Under the old `ORDER BY created_at DESC` rule that made it the
-    /// scale every unqualified rating landed on — a Goodreads import silently
-    /// redefining what `rating show` and `set_rating` mean. The flag is what
-    /// stops it, and this is the test that would notice it coming back.
     #[tokio::test]
     async fn seeding_the_goodreads_scale_does_not_move_the_default() {
         let s = storage().await;
@@ -406,16 +324,11 @@ mod tests {
             (0.0, 5.0, 0.25)
         );
 
-        // Its map is the identity, so an imported `My Rating` needs no
-        // translation to be exported again.
         for p in goodreads.points() {
             assert_eq!(s.goodreads_for(&goodreads, p).await.unwrap(), Some(p));
         }
     }
 
-    /// The flag has to *move* when the user makes a scale, or `rating scale`
-    /// would stop meaning what it always meant — and it must not move when they
-    /// merely re-bound an existing one.
     #[tokio::test]
     async fn a_new_scale_takes_the_default_and_a_redefinition_does_not() {
         let s = storage().await;
@@ -429,7 +342,6 @@ mod tests {
             "redefining an older scale's bounds must not steal the default back"
         );
 
-        // Exactly one default, always — the index says so, and so does this.
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM rating_scales WHERE is_default = 1")
             .fetch_one(s.pool())
             .await
@@ -452,9 +364,6 @@ mod tests {
         assert_eq!(scale.canonical(4.5).unwrap(), 4.5);
     }
 
-    /// The pair that must round-trip is (value, scale) — never the mapped
-    /// integer alone, or re-editing the map could not change what a stored
-    /// review means.
     #[tokio::test]
     async fn the_raw_value_and_its_scale_round_trip() {
         let s = storage().await;
@@ -466,7 +375,6 @@ mod tests {
         assert_eq!(got.value, 0.3);
         assert_eq!(got.scale, scale);
 
-        // The map is re-editable, and the stored review follows it.
         assert_eq!(s.goodreads_for(&got.scale, got.value).await.unwrap(), None);
         s.map_rating(&scale, 0.3, 2.0).await.unwrap();
         assert_eq!(
@@ -480,9 +388,6 @@ mod tests {
         );
     }
 
-    /// `0.1 * 3` is not `0.3`, and `rating_map.value` is half of a PRIMARY KEY.
-    /// Without one quantizer on both sides, a map written by walking the scale
-    /// would be invisible to a lookup of the value the user typed.
     #[tokio::test]
     async fn a_walked_scale_and_a_typed_value_agree() {
         let s = storage().await;
@@ -494,10 +399,6 @@ mod tests {
         assert_eq!(s.goodreads_for(&scale, 0.7).await.unwrap(), Some(3.0));
     }
 
-    /// Found by the property below, shrunk to this: `value_at` rounds, so on a
-    /// scale whose `min` has more than nine decimals its own first point lands
-    /// a fraction *below* `min` — and a strict bounds check then refused the
-    /// scale's own value, leaving one point permanently unmappable.
     #[tokio::test]
     async fn the_first_point_of_a_fractional_scale_is_on_its_own_scale() {
         let s = storage().await;
@@ -552,9 +453,6 @@ mod tests {
         }
     }
 
-    /// A bare note row to hang a rating on — this module does not care that a
-    /// rating belongs to a review; `Engine::set_rating` is where that is
-    /// enforced.
     async fn seed_note(s: &Storage) -> i64 {
         s.insert_note(
             super::super::NewNoteMeta {
@@ -581,14 +479,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Once every point on a scale is mapped, the map is a **total
-        /// function** on that scale: every point the scale can produce has an
-        /// answer, and no point produces one it was not given.
-        ///
-        /// A property rather than more examples because the rule is general
-        /// over (min, max, step) and the interesting failures are float ones —
-        /// a walked value and a typed value drifting apart at some step size
-        /// nobody picked by hand.
         #[test]
         fn a_fully_mapped_scale_is_total(
             min in -10.0f64..10.0,
@@ -614,9 +504,6 @@ mod props {
                     );
                 }
 
-                // And it stays a function of the scale only: a value between two
-                // points is not on the scale at all, so it has no answer rather
-                // than the nearest one.
                 if points.len() > 1 {
                     let between = (points[0] + points[1]) / 2.0;
                     if scale.step_index(between).is_none() {

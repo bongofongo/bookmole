@@ -19,28 +19,15 @@ use bookmole::{Book, Engine, NoteRecord, NoteScope};
 
 use crate::render;
 
-/// Bring the note index in line with the vault before reading it.
-///
-/// The CLI is the one frontend that **cannot** hold a watcher: every command is
-/// its own process, so there is no loop for one to live in. A sweep before the
-/// commands that read the *index* — rather than the rows — is the whole of its
-/// answer, and it is a `stat` per note on the common path.
-///
-/// **Never fatal.** A vault that cannot be swept is a reason to search the
-/// index we have, not a reason to refuse to search at all — an unreadable file
-/// must not turn `find` or `notes -s` into an error.
-///
-/// One definition, shared by every command that reads the index or the graph:
-/// a note edited in Obsidian is invisible to all of them equally, and two
-/// copies of this would eventually catch up in only one place.
+/// Syncs the note index with the vault before reading it. Never fatal: a failed sweep falls back
+/// to the existing index.
 pub(crate) async fn catch_up(engine: &Engine) {
     if let Err(e) = engine.reconcile_vault().await {
         tracing::warn!(error = %e, "could not reconcile the vault");
     }
 }
 
-/// Resolve a selector (id | ISBN | title fragment) to exactly one book,
-/// with a friendly error listing candidates when ambiguous.
+/// Resolves id | ISBN | title fragment to exactly one book; an ambiguous selector lists candidates.
 pub async fn resolve_one(engine: &Engine, selector: &str) -> Result<Book> {
     let mut candidates = engine.resolve_books(selector).await?;
     match candidates.len() {
@@ -57,12 +44,6 @@ pub async fn resolve_one(engine: &Engine, selector: &str) -> Result<Book> {
     }
 }
 
-/// Resolve a selector (id | title fragment) to exactly one note.
-///
-/// The book selectors accept a fragment as well as an id, and a note's title is
-/// the thing a `[[wikilink]]` names — so `links "Reflection: Middlemarch"` has to
-/// work, or the one command that reads the graph would be the one command that
-/// makes you look an id up first.
 pub async fn resolve_note(engine: &Engine, selector: &str) -> Result<NoteRecord> {
     if let Ok(id) = selector.parse::<i64>()
         && let Some(note) = engine.get_note(id).await?

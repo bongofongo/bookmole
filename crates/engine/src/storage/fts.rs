@@ -1,98 +1,7 @@
-//! One search over everything the reader wrote or kept.
-//!
-//! Two fts5 indexes exist — `notes_fts` (migration `0001`, an ordinary table
-//! maintained from application code because a note's body is on disk) and
-//! `highlights_fts` (migration `0015`, external content over `highlights`,
-//! maintained by triggers because a highlight's text is a column). This module
-//! is the one place they are read, and [`Storage::search_marks`] is the one
-//! method that reads them.
-//!
-//! Not to be confused with [`crate::search`], which is the federated *provider*
-//! search — asking OpenLibrary and Google Books about a book that is not here
-//! yet. This module asks the library about reading that already happened.
-//!
-//! ## One list, and how it is ordered
-//!
-//! Two lists a frontend interleaves is a relevance ordering invented above the
-//! seam: it has no way to say a note outranks a highlight, so it interleaves by
-//! whatever it has, which is source order. So this returns **one ordered list**.
-//!
-//! What it deliberately does *not* do is order that list by `bm25`. fts5's rank
-//! is computed from **that index's own corpus** — its document frequencies and
-//! its average document length — so a note scoring −8.2 and a highlight scoring
-//! −8.2 are not making the same claim, and there is no constant that converts
-//! one into the other. Sorting a union on the two numbers would be arithmetic on
-//! incommensurable units, which is worse than source order because it *looks*
-//! like relevance.
-//!
-//! So each index is asked separately and ordered by its own `rank`, which is
-//! the one thing bm25 can honestly support, and the two ordered lists are
-//! merged **by within-source position**: the best note and the best highlight
-//! come first, then the second-best of each, and so on. That is reciprocal rank
-//! fusion with one source per item, where the score is `1/(k + rank)` and every
-//! item appears in exactly one list — so the ordering is identical to ordering
-//! by rank, and no `k` has to be picked. It claims only what bm25 supports (an
-//! order *within* a source) and nothing it does not (a comparison across them).
-//!
-//! It has one consequence worth stating rather than discovering. A query
-//! matching fifty notes strongly and one highlight weakly puts that weak
-//! highlight at the top beside the best note. That is the intended behaviour
-//! here: the question a search box in this app answers is "where did I read
-//! that", and a single matching passage buried at position 47 is a passage the
-//! reader will never see. Both kinds surface immediately.
-//!
-//! ## Ties, and the total order underneath
-//!
-//! Two hits at the same position need a rule, for `list_books`' reason: a page
-//! is only the successor of the one before it if both statements break ties the
-//! same way. The rule is **newer first**, which is the one key that genuinely is
-//! comparable across the two — `notes.created_at` and `highlights.created_at`
-//! are both "when we stored it", in unix seconds, off one clock. A note with no
-//! decodable timestamp sorts last rather than first, then the kind, then the id,
-//! which closes the order completely.
-//!
-//! ## Absence, and what an empty query is
-//!
-//! `MATCH ''` is an fts5 **syntax error**, not an empty result — so an empty
-//! query had to be decided rather than passed through. It returns no hits and
-//! no error, and issues no statement: an empty search box is not asking, and
-//! "everything" is not what it would mean if it were. Whitespace is the same
-//! answer.
-//!
-//! The same measurement settled a live defect in the old `search_notes`, which
-//! bound the user's raw text straight into `MATCH`. `don't` and `C++` are both
-//! fts5 syntax errors, so `rb notes --search "don't"` failed with a raw sqlx
-//! error rather than a search. [`fts_query`] is the fix: every token becomes a
-//! quoted phrase, which is the one fts5 form that cannot contain an operator.
-//!
-//! ## Scoping to one book, and why it cannot live above this line
-//!
-//! `book_id` narrows *what is in* the two lists, in [`SearchSource`]'s own
-//! idiom: absent is the whole library, and it never changes how the answer is
-//! ordered. It is a predicate on **both index queries**, applied before the
-//! `LIMIT` and therefore before the merge.
-//!
-//! That placement is the whole point. Every [`SearchHit`] carries its book id,
-//! so a frontend could always have written `hits.retain(|h| …)` — and it would
-//! be **wrong**, not merely inelegant. `limit` cuts the *global* ranked list, so
-//! a search of a four-hundred-book library keeps the best `limit` marks in the
-//! library and then discards the ones that are not this book's; whenever the top
-//! `limit` hits live elsewhere the answer is **empty**, and an empty answer is
-//! indistinguishable from "you never wrote about that". Pushing the predicate
-//! into the two statements means the limit cuts a list that is already about the
-//! right book.
-//!
-//! One consequence is worth stating rather than discovering, because it looks
-//! like a bug from above. **A scoped list is not the unscoped list filtered.**
-//! Membership is (nothing appears that would not have appeared with an unbounded
-//! limit) and within-source order is (a `WHERE` cannot reorder `ORDER BY rank`),
-//! but the *interleaving* differs: the merge keys on within-source position, and
-//! filtering compacts those positions. Notes `[n1(A), n2(A), n3(B)]` beside
-//! highlights `[h1(B)]` put `n3` at position 2 and `h1` at position 0, so the
-//! unscoped list reads `[h1, …, n3]`; scoped to B both sit at position 0 and the
-//! recency tie-break decides, which may be `[n3, h1]`. That is the *correct*
-//! merge of the scoped lists — the book's best note beside the book's best
-//! passage — and it is a second reason the predicate belongs down here.
+//! One search over notes and highlights, returned as one list.
+//! Order is by within-source rank, never raw bm25, which is not comparable across the two indexes.
+//! A `book_id` scope is applied in both queries before the `LIMIT`; filtering hits afterwards is
+//! wrong.
 
 use sqlx::Row;
 
@@ -101,29 +10,16 @@ use super::notes::{NOTE_COLUMNS, qualified, row_to_note};
 use super::{Highlight, NoteRecord, Storage};
 use crate::error::Result;
 
-/// Which of the two indexes a search is about.
-///
-/// A filter, in `BookFilter`'s idiom: `None` is *not asking*, and asking for one
-/// narrows what is in the list without ever changing how it is ordered. It
-/// exists because "search my notes" is a real question — `rb notes --search`
-/// has always asked it — while the *ordering* is never the caller's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchSource {
     Note,
     Highlight,
 }
 
-/// One hit, from whichever index held it.
-///
-/// An enum rather than a struct with two `Option`s: exactly one of the two is
-/// present, and a shape that can represent neither or both is a shape somebody
-/// eventually reaches for `unwrap` on.
 #[derive(Debug, Clone)]
 pub enum SearchHit {
     Note {
         note: NoteRecord,
-        /// The matching passage with `>>`/`<<` around the terms, as
-        /// `search_notes` has always shaped it.
         snippet: String,
     },
     Highlight {
@@ -160,10 +56,6 @@ impl SearchHit {
         }
     }
 
-    /// Which book this hit is about, when it is about one.
-    ///
-    /// A highlight always has a book; a note need not — an unanchored thought is
-    /// an ordinary note. Derived here rather than in three frontends.
     pub fn book_id(&self) -> Option<i64> {
         match self {
             SearchHit::Note { note, .. } => note.book_id,
@@ -171,8 +63,6 @@ impl SearchHit {
         }
     }
 
-    /// When we stored it, unix seconds — the one key comparable across both
-    /// kinds, and therefore the tie-break between them.
     fn stored_at(&self) -> Option<i64> {
         match self {
             SearchHit::Note { note, .. } => note.created_at.map(|t| t.unix_timestamp()),
@@ -188,50 +78,21 @@ impl SearchHit {
     }
 }
 
-/// How much context a snippet carries — twelve tokens, which is the number
-/// the notes search has always answered in.
-///
-/// Named once because the two queries must not shape their snippets
-/// differently: a frontend rendering one list cannot have two conventions in
-/// it.
-///
-/// The `-1` at both call sites is the other half: it selects the column the
-/// match is actually in, which is what lets `highlights_fts` index three
-/// columns and still answer in one string.
+/// Shared by both queries so their snippets are shaped identically.
 const SNIPPET_TOKENS: i64 = 12;
 
-/// Turn what a human typed into an fts5 query, or `None` when they typed
-/// nothing.
-///
-/// **Every token becomes a quoted phrase.** fts5's query language reads `-`,
-/// `+`, `*`, `:`, `^`, `(`, `,`, `NEAR`, `AND`, `OR` and a bare `'` as syntax,
-/// so `don't` and `C++` are syntax errors rather than searches — measured
-/// against sqlite3 3.51, and the reason the old `search_notes` failed on an
-/// apostrophe. A double-quoted phrase is the one form in which none of that is
-/// operator text, and `""` is how a quote escapes itself inside one.
-///
-/// Tokens are joined by a space, which fts5 reads as **AND**: two words both
-/// have to appear, which is what a search box means by two words.
-///
-/// The one piece of syntax that survives is a **trailing `*`**, kept because
-/// prefix search is the thing a reader reaches for on purpose (`resil*`) and
-/// because `"resil"*` is a legal phrase-prefix. Nothing else is passed through:
-/// a query language is a surface, and this is a search box.
+/// Every token becomes a quoted phrase, because fts5 reads `-`, `*`, `:`, `'` and `NEAR` as syntax.
+/// Only a trailing `*` (prefix search) survives; tokens are ANDed.
 pub(super) fn fts_query(raw: &str) -> Option<String> {
     let phrases = fts_phrases(raw);
     (!phrases.is_empty()).then(|| phrases.join(" "))
 }
 
-/// [`fts_query`]'s phrases joined by `OR` — *any* of the words rather than all
-/// of them. Only [`Storage::matching_parts`]' fallback reads it: a note matches
-/// a two-word query when one part holds each word, and then no single part
-/// holds both.
 fn fts_any(raw: &str) -> Option<String> {
     let phrases = fts_phrases(raw);
     (!phrases.is_empty()).then(|| phrases.join(" OR "))
 }
 
-/// Every token of `raw` as a quoted fts5 phrase — see [`fts_query`].
 fn fts_phrases(raw: &str) -> Vec<String> {
     let mut phrases: Vec<String> = Vec::new();
     for token in raw.split_whitespace() {
@@ -253,11 +114,6 @@ fn fts_phrases(raw: &str) -> Vec<String> {
     phrases
 }
 
-/// Merge two rank-ordered lists into one, by within-source position.
-///
-/// Separated from the queries so the ordering can be asserted without a
-/// database — the rule is the substance of this module and a test that has to
-/// seed two indexes to reach it is a test that mostly exercises fts5.
 fn interleave(notes: Vec<SearchHit>, highlights: Vec<SearchHit>, limit: usize) -> Vec<SearchHit> {
     let mut ranked: Vec<(usize, SearchHit)> = Vec::with_capacity(notes.len() + highlights.len());
     for (position, hit) in notes.into_iter().enumerate() {
@@ -266,10 +122,7 @@ fn interleave(notes: Vec<SearchHit>, highlights: Vec<SearchHit>, limit: usize) -
     for (position, hit) in highlights.into_iter().enumerate() {
         ranked.push((position, hit));
     }
-    // A stable sort over a total key. `stored_at` descending is spelled as
-    // `Reverse` on the key rather than by flipping the comparison, so the three
-    // parts of the tie-break read in one direction. A hit with no decodable
-    // timestamp sorts last: `None` is not "the beginning of time".
+    // A hit with no decodable timestamp sorts last: `None` is not the beginning of time.
     ranked.sort_by_key(|(position, hit)| {
         (
             *position,
@@ -286,21 +139,8 @@ fn interleave(notes: Vec<SearchHit>, highlights: Vec<SearchHit>, limit: usize) -
 }
 
 impl Storage {
-    /// Notes and highlights matching one query, as **one ranked list**.
-    ///
-    /// `source` narrows which indexes are asked; `None` asks both. `book_id`
-    /// narrows which book they are about; `None` is the whole library. `limit`
-    /// is the length of the answer, and each index is asked for at most that
-    /// many so the merge has something to choose from at every position.
-    ///
-    /// Both narrowings are applied **inside** the two statements, which for
-    /// `book_id` is the substance rather than a detail — see the
-    /// module header for the empty answer a caller gets when it filters above
-    /// this line instead.
-    ///
-    /// An empty or whitespace-only query is no hits and no error — see the
-    /// module header, and note that it is not merely a shortcut: `MATCH ''`
-    /// raises rather than returning nothing.
+    /// `book_id` is applied inside both queries, before `limit`; filtering the result afterwards
+    /// would cut the global list first and can return nothing.
     pub async fn search_marks(
         &self,
         query: &str,
@@ -311,8 +151,7 @@ impl Storage {
         let Some(prepared) = fts_query(query) else {
             return Ok(Vec::new());
         };
-        // The prepared query is the user's own words. `trace!` is the ceiling
-        // for a search query and this is the only line that names one at all.
+        // Search queries are private reading: `trace!` is the ceiling.
         tracing::trace!(query = %prepared, "searching notes and highlights");
         let want = limit.max(0);
 
@@ -332,11 +171,6 @@ impl Storage {
         Ok(hits)
     }
 
-    /// `notes_fts`, in its own bm25 order.
-    ///
-    /// A note's `book_id` is nullable — an unanchored thought is an ordinary
-    /// note — so scoping to a book drops those, which is what asking about one
-    /// book means.
     async fn search_note_index(
         &self,
         prepared: &str,
@@ -365,12 +199,6 @@ impl Storage {
             .collect())
     }
 
-    /// `highlights_fts`, in its own bm25 order.
-    ///
-    /// `highlights_fts` is external content over `highlights`, so the join this
-    /// already does to build the row is also the join the scope reads —
-    /// `highlights.book_id` is `NOT NULL`, and a passage always belongs to a
-    /// book.
     async fn search_highlight_index(
         &self,
         prepared: &str,
@@ -401,23 +229,8 @@ impl Storage {
 }
 
 impl Storage {
-    /// Which of `texts` (each `(key, text)`) a query matches, by **the same
-    /// rules `notes_fts` matches by** — [`fts_query`]'s phrases and the
-    /// index's own `porter unicode61` tokenizer — so the answer agrees with
-    /// the ranking that found the note. The keys come back in ascending order.
-    ///
-    /// Used for a continued note's parts (`Engine::matched_parts`): a search
-    /// hit names the note, and which part matched is this question. The texts
-    /// are tokenized by fts5 itself in a **temporary** table on one
-    /// connection, inside a transaction that is rolled back — nothing is
-    /// written to the database, and a second tokenizer written in Rust would
-    /// be a second opinion about what a word is.
-    ///
-    /// A part that holds **every** term is a match. When no single part does
-    /// — the note matched because one part holds one word and another the
-    /// other — the parts holding **any** term are the answer, since those are
-    /// the parts the note matched by. Empty when the match was in the title
-    /// alone, when nothing matches, and for an empty query.
+    /// Keys of `texts` matching `query` by `notes_fts`'s own rules, ascending; when no text holds
+    /// every term, those holding any term.
     pub async fn matching_texts(&self, query: &str, texts: &[(i64, &str)]) -> Result<Vec<i64>> {
         let (Some(all), Some(any)) = (fts_query(query), fts_any(query)) else {
             return Ok(Vec::new());
@@ -459,14 +272,6 @@ impl Storage {
     }
 }
 
-/// The book predicate, written once for both statements — empty when nobody
-/// asked, which is what keeps the scoped and unscoped calls one code path.
-///
-/// It is a fragment rather than a whole clause because each query already has a
-/// `MATCH` in its `WHERE`, and it is shared for `BookFilter::predicate`'s
-/// reason: two hand-written predicates that agree today disagree the first time
-/// one of them is edited, and here the disagreement would be one index silently
-/// answering about the whole library while the other answered about one book.
 fn book_scope(alias: &str, book_id: Option<i64>) -> String {
     match book_id {
         Some(_) => format!(" AND {alias}.book_id = ?"),
@@ -480,11 +285,6 @@ mod tests {
     use crate::book::Book;
     use crate::storage::{NewHighlight, NewNoteMeta};
 
-    // ---- the query preparation --------------------------------------------
-
-    /// The whole reason this function exists. Both of these were `MATCH`
-    /// syntax errors reaching the caller as a raw sqlx error, and both are
-    /// ordinary things to type into a search box.
     #[test]
     fn punctuation_a_reader_types_is_not_a_syntax_error() {
         assert_eq!(fts_query("don't"), Some(r#""don't""#.into()));
@@ -494,7 +294,6 @@ mod tests {
         });
     }
 
-    /// A quote inside the needle must not close the phrase the needle is in.
     #[test]
     fn a_quote_cannot_escape_its_own_phrase() {
         assert_eq!(
@@ -503,7 +302,6 @@ mod tests {
         );
     }
 
-    /// Absence is not a search for everything, and it is not an error either.
     #[test]
     fn an_empty_query_is_not_asking() {
         assert_eq!(fts_query(""), None);
@@ -511,15 +309,11 @@ mod tests {
         assert_eq!(fts_query("*"), None, "a lone star is punctuation");
     }
 
-    /// The one piece of syntax that survives, because a reader reaches for it
-    /// on purpose.
     #[test]
     fn a_trailing_star_stays_a_prefix_search() {
         assert_eq!(fts_query("resil*"), Some(r#""resil"*"#.into()));
         assert_eq!(fts_query("a resil*"), Some(r#""a" "resil"*"#.into()));
     }
-
-    // ---- the merge ---------------------------------------------------------
 
     fn note_hit(id: i64, at: i64) -> SearchHit {
         SearchHit::Note {
@@ -564,8 +358,6 @@ mod tests {
         }
     }
 
-    /// The rule, stated as a test: position first, so the best of each kind
-    /// share the top of the list rather than one kind owning it.
     #[test]
     fn the_two_sources_interleave_by_their_own_rank() {
         let notes = vec![note_hit(1, 100), note_hit(2, 100), note_hit(3, 100)];
@@ -578,9 +370,6 @@ mod tests {
         );
     }
 
-    /// Within a source the order is that source's own bm25 order, and the merge
-    /// may never disturb it — a frontend that saw its 5th hit above its 3rd
-    /// would be looking at a ranking nothing produced.
     #[test]
     fn a_source_is_never_reordered_against_itself() {
         let notes = (0..6).map(|i| note_hit(i, 500 - i)).collect::<Vec<_>>();
@@ -602,9 +391,6 @@ mod tests {
         assert_eq!(hl_order, vec![100, 101, 102, 103, 104, 105]);
     }
 
-    /// One source matching is the degenerate case, and it has to be that
-    /// source's plain ranked list — not a list with gaps where the other kind
-    /// would have gone.
     #[test]
     fn one_source_alone_is_its_own_ranked_list() {
         let notes = vec![note_hit(1, 3), note_hit(2, 2), note_hit(3, 1)];
@@ -615,9 +401,6 @@ mod tests {
         );
     }
 
-    /// A note with no decodable timestamp must not win the tie by being read as
-    /// the beginning of time — it sorts last at its position, and the order
-    /// stays total.
     #[test]
     fn a_hit_with_no_timestamp_sorts_last_at_its_position() {
         let undated = SearchHit::Note {
@@ -636,8 +419,6 @@ mod tests {
             vec![10, 1]
         );
     }
-
-    // ---- against a real database ------------------------------------------
 
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -669,8 +450,6 @@ mod tests {
         }
     }
 
-    /// The one thing `highlights_fts` exists to do: a highlight that arrived
-    /// through the ordinary insert path is findable.
     #[tokio::test]
     async fn an_imported_highlight_is_findable() {
         let (s, book) = seeded().await;
@@ -692,8 +471,6 @@ mod tests {
         assert_eq!(hits[0].book_id(), Some(book));
     }
 
-    /// A note and a highlight come back in **one** list, with snippets, and the
-    /// caller is never handed two.
     #[tokio::test]
     async fn a_note_and_a_highlight_share_one_list() {
         let (s, book) = seeded().await;
@@ -726,7 +503,6 @@ mod tests {
         }
     }
 
-    /// The narrowing, and what it does *not* change: the order.
     #[tokio::test]
     async fn a_source_filter_narrows_the_list_and_nothing_else() {
         let (s, book) = seeded().await;
@@ -765,9 +541,6 @@ mod tests {
         assert!(highlights[0].as_highlight().is_some());
     }
 
-    /// `MATCH ''` raises, so this is not a shortcut around a query that would
-    /// have returned nothing — it is the difference between an answer and an
-    /// error.
     #[tokio::test]
     async fn an_empty_query_answers_nothing_rather_than_failing() {
         let (s, book) = seeded().await;
@@ -779,8 +552,6 @@ mod tests {
         }
     }
 
-    /// The old `search_notes` failed here with a raw sqlx error. It is the most
-    /// ordinary thing in the world to type.
     #[tokio::test]
     async fn an_apostrophe_is_searched_for_rather_than_parsed() {
         let (s, book) = seeded().await;
@@ -797,8 +568,6 @@ mod tests {
         );
     }
 
-    /// A search with no hits is an answer. Nothing above this layer may read it
-    /// as a failure, and nothing here may raise.
     #[tokio::test]
     async fn no_hits_is_an_answer() {
         let (s, book) = seeded().await;
@@ -813,11 +582,6 @@ mod tests {
         );
     }
 
-    // ---- the index cannot fall behind the table ---------------------------
-
-    /// Every write path to `highlights`, one at a time. This is the property
-    /// migration `0015` chose triggers for: a highlight in the table and not in
-    /// the index is invisible to the search, and nothing would say so.
     #[tokio::test]
     async fn every_write_path_moves_the_index() {
         let (s, book) = seeded().await;
@@ -828,12 +592,10 @@ mod tests {
                 .len()
         };
 
-        // insert
         let h = hl("born in moral stupidity");
         let id = s.insert_highlight(book, &h).await.unwrap().unwrap();
         assert_eq!(found(s.clone(), "moral").await, 1);
 
-        // the device's own note, through refresh_device_fields
         let edited = NewHighlight {
             note: Some("they mean the provinces".into()),
             ..h.clone()
@@ -841,11 +603,9 @@ mod tests {
         assert!(s.refresh_device_fields(book, &edited).await.unwrap());
         assert_eq!(found(s.clone(), "provinces").await, 1);
 
-        // deleting that note on the device removes it from the index too
         assert!(s.refresh_device_fields(book, &h).await.unwrap());
         assert_eq!(found(s.clone(), "provinces").await, 0);
 
-        // our own annotation
         s.set_annotation(id, Some("the whole book in one line"))
             .await
             .unwrap();
@@ -856,16 +616,10 @@ mod tests {
             "indexing the annotation must not drop the passage"
         );
 
-        // and the book going away takes its highlights with it, by cascade —
-        // the delete trigger fires for rows nothing named.
         s.delete_book(book).await.unwrap();
         assert_eq!(found(s.clone(), "moral").await, 0);
     }
 
-    /// `merge_books` moves highlights and drops the collisions. The moved ones
-    /// stay findable under the surviving book and the dropped ones leave the
-    /// index — neither is something the merge code says out loud, which is the
-    /// point.
     #[tokio::test]
     async fn a_merge_leaves_the_index_agreeing_with_the_table() {
         let (s, dst) = seeded().await;
@@ -910,8 +664,6 @@ mod tests {
         );
     }
 
-    // ---- the book scope -----------------------------------------------------
-
     fn book(title: &str) -> Book {
         Book {
             title: Some(title.into()),
@@ -919,8 +671,6 @@ mod tests {
         }
     }
 
-    /// Identity for a hit, for comparing two answers as sets: the kind plus the
-    /// row id. Two rows of different kinds may share an id.
     fn ident(h: &SearchHit) -> (u8, i64) {
         (
             match h.source() {
@@ -931,20 +681,7 @@ mod tests {
         )
     }
 
-    /// **The bug the book scope exists to fix**, and the reason the predicate cannot
-    /// live above this line.
-    ///
-    /// `limit` cuts the *global* ranked list. A frontend that searched the
-    /// library and then kept one book's hits is not doing the same thing more
-    /// slowly — it gets **nothing**, because the best `limit` marks in a real
-    /// library belong to other books, and an empty answer is indistinguishable
-    /// from "you never wrote about that".
-    ///
-    /// The decoys are one-word passages on purpose. bm25 divides by document
-    /// length, so a short strong match outranks a long one, which makes the
-    /// truncation a fact about the corpus rather than about SQLite's row order —
-    /// and the ranking assumption is **asserted** below, so a future fts5 that
-    /// scored differently fails this loudly instead of passing vacuously.
+    /// Decoys are one-word passages so bm25 ranks them above the target's longer one.
     #[tokio::test]
     async fn a_scoped_search_finds_what_a_filter_above_the_seam_would_have_truncated() {
         const LIMIT: i64 = 5;
@@ -969,7 +706,6 @@ mod tests {
         .await
         .unwrap();
 
-        // The corpus really does bury it — stated, not assumed.
         let unbounded = s.search_marks("grief", None, None, 1000).await.unwrap();
         assert_eq!(unbounded.len(), DECOYS + 1);
         let buried = unbounded
@@ -981,7 +717,6 @@ mod tests {
             "the fixture must rank the wanted book below the limit; it is at {buried}"
         );
 
-        // What a frontend filter would have had to work with.
         let truncated = s.search_marks("grief", None, None, LIMIT).await.unwrap();
         assert_eq!(truncated.len(), LIMIT as usize);
         assert!(
@@ -989,7 +724,6 @@ mod tests {
             "nothing to filter — this is the empty book view the scope prevents"
         );
 
-        // And what the predicate answers instead.
         let scoped = s
             .search_marks("grief", None, Some(wanted), LIMIT)
             .await
@@ -999,20 +733,7 @@ mod tests {
         assert!(scoped[0].snippet().contains(">>grief<<"));
     }
 
-    /// The two invariants scoping has — and the third one it deliberately does
-    /// **not**.
-    ///
-    /// *Membership*: with a limit that cuts nothing, a scoped answer is exactly
-    /// the unscoped answer restricted to that book. *Within-source order*: a
-    /// `WHERE` cannot reorder an `ORDER BY rank`, so each index's hits keep
-    /// their relative order.
-    ///
-    /// "…and the same relative order overall" is **false**, so it is not
-    /// asserted — asserting something false and weakening it later is worse
-    /// than asserting less. The merge keys on within-source *position* and
-    /// filtering compacts those positions, so a note three rows below a
-    /// highlight unscoped can sit beside it scoped. The module header carries
-    /// the counterexample.
+    /// Interleaving order is deliberately not asserted: filtering compacts within-source positions.
     #[tokio::test]
     async fn scoping_restricts_membership_and_never_a_source_s_own_order() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1057,8 +778,6 @@ mod tests {
             }
             books.push(b);
         }
-        // An unanchored thought: it is in the library-wide answer and in no
-        // book's, which is what asking about one book means.
         s.insert_note(
             NewNoteMeta {
                 book_id: None,
@@ -1113,8 +832,6 @@ mod tests {
         }
     }
 
-    /// The two narrowings are independent and compose, which is what makes
-    /// `book_id` a filter in `source`'s idiom rather than a second dialect.
     #[tokio::test]
     async fn the_two_narrowings_compose() {
         let (s, middlemarch) = seeded().await;
@@ -1166,9 +883,6 @@ mod tests {
         assert_eq!(one[0].as_highlight().unwrap().book_id, middlemarch);
     }
 
-    /// A book nothing was written about is an empty answer, never an error —
-    /// and never the whole library, which is the failure a forgotten bind
-    /// would produce.
     #[tokio::test]
     async fn scoping_to_a_book_with_no_marks_is_an_answer() {
         let (s, middlemarch) = seeded().await;
@@ -1191,10 +905,6 @@ mod tests {
         );
     }
 
-    // ---- which texts match (a continued note's parts) ----------------------
-
-    /// The probe tokenizes as `notes_fts` does: porter stemming finds
-    /// `walking` from `walked`, and an apostrophe is a search, not syntax.
     #[tokio::test]
     async fn the_probe_matches_by_the_index_s_own_rules() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1214,8 +924,6 @@ mod tests {
         assert!(s.matching_texts("absent", &texts).await.unwrap().is_empty());
     }
 
-    /// Two words in two parts: no part holds both, and the note still
-    /// matched — by the parts holding either.
     #[tokio::test]
     async fn terms_split_across_parts_answer_the_parts_holding_any() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1228,8 +936,6 @@ mod tests {
         );
     }
 
-    /// Nothing is left behind: the probe is rolled back, so two calls over
-    /// different texts never see each other's rows, and no table persists.
     #[tokio::test]
     async fn the_probe_leaves_nothing_behind() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();

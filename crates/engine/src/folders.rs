@@ -1,37 +1,7 @@
-//! A folder handed to *Add a book*, read as the book files in it.
-//!
-//! Every file request takes one path, and a webview frontend has no filesystem
-//! of its own, so a folder chosen in a dialog or dropped on a window arrives as
-//! one path with no extension. This turns a list of paths — files and folders
-//! mixed — into the book files they hold, which a frontend then stages exactly
-//! as it stages files picked one by one (`IdentifyFile`, then `ImportFile`). It
-//! **reads directory listings and nothing else**: no file is opened, nothing is
-//! written, and matching stays where it was.
-//!
-//! Four decisions, each a fact a frontend words rather than works out:
-//!
-//! - **A file passes through untouched**, whatever its extension. The caller
-//!   named it; whether it is a book is the next step's question, and that step
-//!   already answers *not a book file* about a `.docx`. Only what the walk
-//!   *finds* is filtered by [`BOOK_EXTENSIONS`].
-//! - **The walk is bounded**: folders [`MAX_DEPTH`] deep and no deeper, at most
-//!   [`MAX_FILES`] files back, hidden files and folders skipped, a symlinked
-//!   folder never followed (a link back up the tree is a loop, and a link out
-//!   of it is somebody else's disk). What a bound cut off is said, typed:
-//!   [`ExpandedPaths::cut_off_at`] and [`SkippedEntries`] — a silent cap is
-//!   indistinguishable from a small folder.
-//! - **A calibre library is not walked.** calibre owns the files under a
-//!   folder holding its `metadata.db` (calibre is the origin of its files,
-//!   and bookmole points at them rather than owning them), and bookmole
-//!   reads them through calibre, which knows which file is which book. Walking
-//!   one would point at calibre's files as loose copies and read every format
-//!   of a book as a book of its own. So it is returned as a fact —
-//!   [`ExpandedPaths::calibre_libraries`] — at any depth, and the frontend
-//!   points at the calibre importer.
-//! - **The order is the folder's**, deterministic: each input in the order
-//!   given, and inside a folder a depth-first walk with every listing sorted by
-//!   name, so the files come back in path order and the same folder gives the
-//!   same list twice. A path reached twice is returned once.
+//! Expands a list of files and folders into book files by reading directory listings only; no file
+//! is opened.
+//! Walks are bounded and report what they cut off; calibre libraries (folders holding
+//! `metadata.db`) are reported, never walked.
 
 use std::collections::HashSet;
 use std::fs;
@@ -39,54 +9,33 @@ use std::path::{Path, PathBuf};
 
 use crate::calibre::is_calibre_library;
 
-/// The kinds of file a walk returns — the same four a frontend's file picker
-/// should offer, so a folder and a hand-picked file accept the same kinds.
-/// Compared case-insensitively.
+/// File kinds a walk returns, matching a file picker's; compared case-insensitively.
 pub const BOOK_EXTENSIONS: &[&str] = &["epub", "pdf", "mobi", "azw3"];
 
-/// How many folders deep a walk reads. The folder chosen is depth 0, so
-/// calibre's own `Author/Title/book.epub` shape (depth 2) and a folder of such
-/// folders fit with room to spare. A folder below this is counted, not read.
+/// Folder depth read; the chosen folder is depth 0, so calibre's `Author/Title/book.epub` fits.
 pub const MAX_DEPTH: usize = 4;
 
-/// The most files one expansion returns. A walk that finds more stops there
-/// and says so; it does not guess at how many it left.
 pub const MAX_FILES: usize = 5000;
 
-/// What a list of paths came to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExpandedPaths {
-    /// The files: every input that was not a folder, as given, and every book
-    /// file found inside the folders, in walk order. No path twice.
+    /// Every non-folder input as given plus every book found, in walk order, no path twice.
     pub files: Vec<PathBuf>,
-    /// Folders that are calibre libraries, chosen or found, and not walked.
     pub calibre_libraries: Vec<PathBuf>,
-    /// What the walk passed over, by why.
     pub skipped: SkippedEntries,
-    /// `Some(limit)` when the walk found more book files than it may return
-    /// and stopped at `limit`; what lay beyond was not looked at.
+    /// `Some(limit)` when the walk stopped at `limit`; what lay beyond was not looked at.
     pub cut_off_at: Option<usize>,
 }
 
-/// Entries inside the chosen folders that are not in [`ExpandedPaths::files`],
-/// counted by reason. Counts rather than paths: a folder of four hundred
-/// cover images is one sentence, not four hundred rows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkippedEntries {
-    /// Files and folders whose name starts with `.`.
     pub hidden: usize,
-    /// Files that are not one of [`BOOK_EXTENSIONS`].
     pub not_books: usize,
-    /// Symbolic links to folders, not followed.
     pub linked_folders: usize,
-    /// Folders deeper than [`MAX_DEPTH`], not read.
     pub too_deep: usize,
-    /// Folders or entries that could not be read (permissions, a vanished
-    /// volume).
     pub unreadable: usize,
 }
 
-/// The bounds, separate so a test can walk a small tree into them.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bounds {
     pub depth: usize,
@@ -100,15 +49,13 @@ impl Bounds {
     };
 }
 
-/// Whether a path names a book file by its extension.
 pub fn is_book_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| BOOK_EXTENSIONS.iter().any(|b| b.eq_ignore_ascii_case(e)))
 }
 
-/// Expand `paths` within `bounds`. Blocking; the facade runs it off the
-/// runtime.
+/// Blocking; the facade runs it off the runtime.
 pub(crate) fn expand(paths: &[PathBuf], bounds: Bounds) -> ExpandedPaths {
     let mut walk = Walk {
         bounds,
@@ -119,8 +66,7 @@ pub(crate) fn expand(paths: &[PathBuf], bounds: Bounds) -> ExpandedPaths {
         if walk.out.cut_off_at.is_some() {
             break;
         }
-        // The caller named this path, so a link to a folder is followed here —
-        // it is only links met *inside* a walk that are not.
+        // A link to a folder is followed when the caller named it; only links met inside a walk are not.
         if fs::metadata(path).is_ok_and(|m| m.is_dir()) {
             walk.folder(path, 0);
         } else {
@@ -137,7 +83,6 @@ struct Walk {
 }
 
 impl Walk {
-    /// Add one file, unless it was added already or the limit is reached.
     fn take(&mut self, path: PathBuf) {
         if self.seen.contains(&path) {
             return;
@@ -182,8 +127,7 @@ impl Walk {
                 self.out.skipped.unreadable += 1;
                 continue;
             };
-            // A link is read for what it points at: a link to a file is that
-            // file, a link to a folder is not followed.
+            // A link to a file is that file; a link to a folder is not followed.
             let (is_dir, is_file) = if kind.is_symlink() {
                 match fs::metadata(&path) {
                     Ok(m) if m.is_dir() => {
@@ -260,7 +204,6 @@ mod tests {
         assert_eq!(got.skipped.not_books, 2);
         assert_eq!(got.cut_off_at, None);
         assert!(got.calibre_libraries.is_empty());
-        // The same folder twice is the same list.
         assert_eq!(expand(&[root.to_path_buf()], Bounds::SHIPPED), got);
     }
 
@@ -318,7 +261,6 @@ mod tests {
         let got = expand(&[root.to_path_buf()], bounds);
         assert_eq!(rel(root, &got.files), ["0.epub", "1.epub", "2.epub"]);
         assert_eq!(got.cut_off_at, Some(3));
-        // Exactly at the limit is not cut off: nothing was left behind.
         let exact = expand(&[root.to_path_buf()], Bounds { depth: 4, files: 5 });
         assert_eq!(exact.files.len(), 5);
         assert_eq!(exact.cut_off_at, None);
@@ -334,7 +276,6 @@ mod tests {
         let got = expand(&[root.to_path_buf()], Bounds::SHIPPED);
         assert_eq!(rel(root, &got.files), ["loose.epub"]);
         assert_eq!(got.calibre_libraries, [root.join("Calibre Library")]);
-        // Chosen directly, it is the same fact and nothing else.
         let direct = expand(&[root.join("Calibre Library")], Bounds::SHIPPED);
         assert!(direct.files.is_empty());
         assert_eq!(direct.calibre_libraries, [root.join("Calibre Library")]);
@@ -360,8 +301,6 @@ mod tests {
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(24))]
 
-            /// Whatever the tree, the answer is within its bounds, in path
-            /// order, without a repeat, and holds only book files.
             #[test]
             fn a_walk_is_bounded_sorted_and_only_books(
                 files in proptest::collection::vec(
@@ -374,8 +313,7 @@ mod tests {
                 let root = tmp.path();
                 for (stem, ext) in &files {
                     let p = root.join(format!("{stem}.{ext}"));
-                    // A stem can name both a file and a folder; the second is
-                    // simply not made.
+                    // A stem can name both a file and a folder; the second is not made.
                     if fs::create_dir_all(p.parent().unwrap()).is_ok() {
                         let _ = fs::write(&p, b"x");
                     }

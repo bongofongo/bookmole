@@ -20,17 +20,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiConfig {
-    /// Accent color as `#RRGGBB` (None = the built-in default).
     pub accent: Option<String>,
-    /// Ambient background motif by label (None / unknown = off).
+    /// Motif label; None or unknown means off.
     pub ambient: Option<String>,
-    /// What the library list is ordered by, by label (None / unknown =
-    /// most-recently-touched).
+    /// Sort label; None or unknown means most recently touched.
     pub library_sort: Option<String>,
 }
 
-/// Mirror of the CLI's `CliConfig` — only the fields we touch. Deserialize
-/// ignores the rest, so reading is forgiving; we currently only own this key.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct SecretConfig {
@@ -75,15 +71,12 @@ pub fn save(dir: &Path, config: &TuiConfig) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The persisted Google Books API key, if the shared config file holds one.
-/// A missing/unreadable file is simply "no key", never an error.
 pub fn load_google_key(dir: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(secret_path(dir)).ok()?;
     toml::from_str::<SecretConfig>(&raw).ok()?.google_api_key
 }
 
-/// Write the Google Books API key to the shared config file (mode 600),
-/// preserving the file's other keys.
+/// Writes with mode 600, preserving the file's other keys.
 pub fn save_google_key(dir: &Path, key: &str) -> Result<PathBuf> {
     let path = secret_path(dir);
     let mut cfg: SecretConfig = if path.exists() {

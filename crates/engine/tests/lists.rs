@@ -1,9 +1,3 @@
-//! Lists (migration `0028`): named, ordered collections of books, each entry
-//! with an optional note, and Goodreads shelves offered as lists.
-//!
-//! Offline, `sqlite::memory:`. Names, descriptions and notes are the reader's
-//! own writing; nothing here prints them.
-
 mod common;
 
 use bookmole::{
@@ -57,16 +51,14 @@ async fn add_move_remove_renumber() {
     assert_eq!(order(&e, list).await, [d, a, b, c]);
     e.move_in_list(list, d, 2).await.unwrap();
     assert_eq!(order(&e, list).await, [a, b, d, c]);
-    e.move_in_list(list, a, 99).await.unwrap(); // clamps to the end
+    e.move_in_list(list, a, 99).await.unwrap();
     assert_eq!(order(&e, list).await, [b, d, c, a]);
 
     e.remove_from_list(list, d).await.unwrap();
     assert_eq!(order(&e, list).await, [b, c, a]);
-    // Removing again is a no-op.
     e.remove_from_list(list, d).await.unwrap();
     assert_eq!(order(&e, list).await, [b, c, a]);
 
-    // A sorted view never rewrites the stored order.
     let by_title = e
         .list_entries(list, EntryShow::All, EntrySort::Title)
         .await
@@ -80,7 +72,6 @@ async fn add_move_remove_renumber() {
     );
     assert_eq!(order(&e, list).await, [b, c, a]);
 
-    // Moving a book that is not on the list is not-found.
     assert!(matches!(
         e.move_in_list(list, d, 0).await,
         Err(EngineError::NotFound(_))
@@ -130,7 +121,6 @@ async fn errors_are_typed() {
         e.delete_list(999).await,
         Err(EngineError::NotFound(_))
     ));
-    // Two lists may share a name.
     e.create_list("L", None).await.unwrap();
 }
 
@@ -172,7 +162,6 @@ async fn merging_books_that_share_a_list() {
     ];
     let shared = e.create_list("shared", None).await.unwrap().id;
     let only_src = e.create_list("only src", None).await.unwrap().id;
-    // shared: [a, src=b, c, dst=d]; src has the earlier position.
     e.add_to_list(shared, a, None).await.unwrap();
     e.add_to_list(shared, b, Some("from src")).await.unwrap();
     e.add_to_list(shared, c, None).await.unwrap();
@@ -181,18 +170,15 @@ async fn merging_books_that_share_a_list() {
 
     e.merge_books(b, d).await.unwrap();
 
-    // One entry survives, at the earlier position, notes joined, no gaps.
     assert_eq!(order(&e, shared).await, [a, d, c]);
     let got = e
         .list_entries(shared, EntryShow::All, EntrySort::Yours)
         .await
         .unwrap();
     assert_eq!(got[1].note.as_deref(), Some("from src\n\nfrom dst"));
-    // A list only src was on now holds dst.
     assert_eq!(order(&e, only_src).await, [d]);
     assert_eq!(e.lists_for_book(d).await.unwrap().len(), 2);
 
-    // And the other way round: dst earlier than src keeps dst's slot.
     let [x, y] = [seed_book(&e, "X").await, seed_book(&e, "Y").await];
     let l = e.create_list("l", None).await.unwrap().id;
     e.add_to_list(l, x, Some("x")).await.unwrap();
@@ -228,7 +214,6 @@ async fn deleting_a_book_cascades_and_renumbers() {
     e.delete_book(b).await.unwrap();
     assert_eq!(order(&e, l1).await, [c]);
     assert_eq!(order(&e, l2).await, [c]);
-    // The list itself is untouched.
     assert_eq!(e.get_list(l1).await.unwrap().id, l1);
 }
 
@@ -240,7 +225,6 @@ async fn summaries_membership_and_stamps() {
         seed_book(&e, "B").await,
         seed_book(&e, "C").await,
     ];
-    // A and B are in the library (a copy each); C is only on a list.
     for id in [a, b] {
         e.add_copy(&NewCopy::new(id, None, Tenure::Own, LearnedFrom::User))
             .await
@@ -273,7 +257,6 @@ async fn summaries_membership_and_stamps() {
         e.lists_for_book(999).await,
         Err(EngineError::NotFound(_))
     ));
-    // C has no copy.
     assert_eq!(
         e.list_entries(l, EntryShow::NotInLibrary, EntrySort::Yours)
             .await
@@ -300,7 +283,6 @@ async fn keep_and_dismiss_shelf_suggestions() {
     ];
     let tag = |t: &str| (t.to_string(), t.to_string());
     let s = e.storage();
-    // CSV order is a, b, c on "to-read" ("Zeta", "Alpha", "Mid").
     for id in [a, b, c] {
         s.add_book_tags(id, "goodreads", &[tag("to-read")])
             .await
@@ -312,7 +294,6 @@ async fn keep_and_dismiss_shelf_suggestions() {
     s.add_book_tags(a, "goodreads", &[tag("skipped")])
         .await
         .unwrap();
-    // Calibre tags are never suggested.
     s.add_book_tags(a, "calibre", &[tag("fiction")])
         .await
         .unwrap();
@@ -324,23 +305,19 @@ async fn keep_and_dismiss_shelf_suggestions() {
     assert_eq!(got[0].preview.len(), 2);
     assert_eq!(got[0].source, "goodreads");
 
-    // Keep: a goodreads list with a copy of the books, in CSV order.
     let kept = e.keep_shelf("goodreads", "to-read").await.unwrap();
     assert_eq!(kept.source, "goodreads");
     assert_eq!(kept.source_ref.as_deref(), Some("to-read"));
     assert_eq!(order(&e, kept.id).await, [a, b, c]);
-    // Keeping twice is the same list.
     assert_eq!(
         e.keep_shelf("goodreads", "to-read").await.unwrap().id,
         kept.id
     );
-    // It copied rather than linked: a later tag does not change the list.
     s.add_book_tags(seed_book(&e, "Late").await, "goodreads", &[tag("to-read")])
         .await
         .unwrap();
     assert_eq!(order(&e, kept.id).await, [a, b, c]);
 
-    // A kept shelf stops being suggested; dismissing hides another.
     e.dismiss_shelf("goodreads", "skipped").await.unwrap();
     e.dismiss_shelf("goodreads", "skipped").await.unwrap();
     let tags: Vec<_> = e
@@ -380,13 +357,11 @@ async fn timeline_is_ready_at_three_dated_books_not_two() {
     e.add_to_list(l, y3, None).await.unwrap();
     let t = e.list_timeline(l).await.unwrap();
     assert!(t.ready);
-    // Dated books keep the list's order (not year order); undated is separate.
     let ids =
         |v: &[bookmole::ListEntry]| -> Vec<i64> { v.iter().map(|x| x.book.id.unwrap()).collect() };
     assert_eq!(ids(&t.dated), [y1, y2, y3]);
     assert_eq!(ids(&t.undated), [u]);
 
-    // Sorting by published puts undated last and leaves positions alone.
     let pubd = e
         .list_entries(l, EntryShow::All, EntrySort::Published)
         .await
@@ -399,8 +374,6 @@ fn ids_of(v: &[bookmole::ListEntry]) -> Vec<i64> {
     v.iter().map(|x| x.book.id.unwrap()).collect()
 }
 
-/// Migration `0029`: the year prefers first publication and says when it fell
-/// back to an edition's year.
 #[tokio::test]
 async fn the_year_prefers_first_publication_and_flags_an_edition() {
     let (_tmp, e) = engine().await;
@@ -426,7 +399,6 @@ async fn the_year_prefers_first_publication_and_flags_an_edition() {
         .list_entries(l, EntryShow::All, EntrySort::Published)
         .await
         .unwrap();
-    // 1949 (not 2011) sorts `both` first; the undated book is last.
     assert_eq!(ids_of(&by_pub), [both, edition_only, neither]);
     let got: Vec<_> = by_pub.iter().map(|x| (x.year, x.year_is_edition)).collect();
     assert_eq!(
@@ -448,8 +420,6 @@ async fn deleting_a_list_keeps_its_books() {
     assert!(e.lists_for_book(a).await.unwrap().is_empty());
 }
 
-// ---- a candidate: a book a list holds that the library does not ----------
-
 #[tokio::test]
 async fn a_candidate_matching_a_book_we_have_is_reused() {
     use bookmole::BookQuery;
@@ -470,7 +440,6 @@ async fn a_candidate_matching_a_book_we_have_is_reused() {
         .unwrap();
     let l = e.create_list("L", None).await.unwrap().id;
 
-    // By ISBN.
     let by_isbn = e
         .add_candidate_to_list(
             l,
@@ -486,7 +455,6 @@ async fn a_candidate_matching_a_book_we_have_is_reused() {
     assert_eq!(by_isbn.book.id, Some(have));
     assert!(by_isbn.in_library);
 
-    // By the shared title ladder, with a different (unknown) ISBN.
     let by_title = e
         .add_candidate_to_list(
             l,

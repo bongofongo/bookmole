@@ -1,105 +1,7 @@
-//! The Kindle e-reader's `My Clippings.txt`, imported as highlights (origin
-//! `kindle`).
-//!
-//! Import is one-way and goes through the shared path
-//! [`Storage::upsert_imported_highlight`]. Whatever the Kindle wrote (the words,
-//! the note, the location, the date) belongs to the Kindle; `annotation` is
-//! bookmole's and is never touched.
-//!
-//! ## The file
-//!
-//! Entries are separated by a line of `==========`. Each is a title line
-//! `Title (Author)`, a meta line, a blank line, then the text (any number of
-//! lines, possibly none). A BOM may start the file and, on some firmware, each
-//! title line; line endings may be `\r\n`. The author is the **last**
-//! parenthesised group (titles carry parentheses of their own); several authors
-//! are `;`-separated. A last block with no closing separator is a write the
-//! Kindle had not finished, and is counted `unparsed` rather than imported half
-//! written (its next, complete appearance would otherwise be a second row).
-//!
-//! ## The meta line is in the device's language
-//!
-//! `- Your Highlight on page 12 | Location 180-183 | Added on Monday, March 3,
-//! 2025 10:15:22 AM`, and its variants (`Note`, `Bookmark`, `Page` capitalised,
-//! page only, location only, `Loc.` on old firmware, 12- and 24-hour clocks,
-//! day-before-month dates). It is read through [`LANGUAGES`], a **table**: one
-//! [`KindleWords`] row holds a language's words for the kinds, page, location,
-//! "added on", the month and weekday names and its [`DateLayout`]. Only the
-//! English row exists for now; another language is a new row, not a new
-//! parser, which is why the table exists before a second language does. An
-//! entry whose meta line no row reads, or that is structurally
-//! broken (a title and nothing else; a note with no words; text past
-//! [`MAX_TEXT_BYTES`]), is counted in [`ClippingsParse::unparsed`] and reported
-//! as one [`DiagnosticKind::KindleEntriesUnparsed`] per file: never guessed at,
-//! never dropped silently. The date is part of the row, so a date the row
-//! cannot read makes the entry unparsed too.
-//!
-//! ## Kinds
-//!
-//! * **Highlights** are imported. Truncated text (a clipping-limit marker) is
-//!   kept as given, no repair. A highlight with no words is kept with
-//!   `text_unavailable`.
-//! * **Notes** are entries of their own. A note is paired with a highlight of
-//!   the same title line whose range contains the note's location (or, when
-//!   neither has a location, whose page range contains the note's page). When
-//!   several contain it, the one whose range **starts nearest before** the note
-//!   wins; between two starting at the same place, the last one written
-//!   **before** the note in the file, else the first after it.
-//!   * **An edited note** appears as a new entry at the same location. Per
-//!     note location, **the last note in the file is the note**: it replaces
-//!     the earlier text as the highlight's `origin_note`.
-//!   * Notes at **different** locations inside one highlight are all kept,
-//!     joined by a blank line in location order, so a second note never
-//!     silently replaces a different one.
-//!   * A note no highlight contains becomes a **note-only row** (`text = ""`,
-//!     not `text_unavailable`: nothing is missing), keyed by its location so an
-//!     edit refreshes it.
-//! * **Bookmarks** are skipped and counted.
-//!
-//! ## Position
-//!
-//! `pos_kind = kindle_location`, `pos0`/`pos1` the location range as given
-//! (`180`/`183`; a single location leaves `pos1` empty; old firmware's
-//! abbreviated `466-69` is stored as `466`/`69`, expanded only to pair notes).
-//! `page` only when the meta line gave one (the leading number of `12` or
-//! `12-13`; a roman page is not a number and is not stored). `made_at` is the
-//! "Added on" date as `YYYY-MM-DD HH:MM:SS` in the **device's local time**: the
-//! file carries no zone, so none is applied (unlike Preview's UTC stamps).
-//!
-//! ## Identity and deletion
-//!
-//! A highlight's identity is (title line, location as given, text); with no
-//! location the page stands in. A note-only row's is (title line, `note`, its
-//! location), without the note's words, which the device edits.
-//! [`IdentityScope::Global`], `origin_id = None`. Two entries with one identity
-//! in one file are one highlight (the first is kept), so a re-import is all
-//! `Unchanged`.
-//!
-//! The file is an append-only log, so **nothing is ever removed** on import: a
-//! highlight deleted on the Kindle stays here, because the Kindle's own file
-//! never forgets it either: deletions follow the source. One consequence is
-//! stated rather than repaired: a note imported as note-only, whose highlight is
-//! made only later, is then also that highlight's note and the note-only row
-//! stays.
-//!
-//! ## Books and copies
-//!
-//! Entries are grouped by title line, and each group is matched through
-//! [`crate::koreader`]'s one matcher (`scores_for`), **auto-match only**. An
-//! unmatched title **creates no book**: its entries are counted, the title is
-//! reported (with the matcher's candidate band, at no extra cost) and a
-//! [`DiagnosticKind::KindleTitleUnmatched`] is emitted, and
-//! [`import_kindle_clippings_into`] attaches one title's entries to a named
-//! book. `copy_id` is set only when the book has **exactly one** copy that can
-//! plausibly be the Kindle's ([`kindle_copy`]); none is ever created here.
-//!
-//! Highlight text and notes are the user's private reading: nothing here logs
-//! them, and log fields carry counts only (no titles either).
-//!
-//! [`Storage::upsert_imported_highlight`]: crate::Storage::upsert_imported_highlight
-//! [`DiagnosticKind::KindleEntriesUnparsed`]: crate::DiagnosticKind::KindleEntriesUnparsed
-//! [`DiagnosticKind::KindleTitleUnmatched`]: crate::DiagnosticKind::KindleTitleUnmatched
-//! [`IdentityScope::Global`]: crate::IdentityScope::Global
+//! The Kindle's `My Clippings.txt`, imported one-way as highlights. The file is an append-only
+//! log, so nothing is removed on import; a title that matches no book creates none.
+//! A last block without its closing `==========` is an unfinished write: counted unparsed.
+//! `made_at` is the device's local time; the file carries no zone, so none is applied.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -114,45 +16,30 @@ use crate::koreader::{MatchCandidate, band, scores_for};
 use crate::matching::Query;
 use crate::storage::Storage;
 
-/// A clippings file larger than this is not read. A heavy reader's file is a
-/// few MB after years of use.
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
-/// Entries parsed from one file; blocks past it are counted `unparsed`.
 pub const MAX_ENTRIES: usize = 200_000;
 /// The longest text one entry may carry. The Kindle's own clipping limit keeps
 /// real entries far below it; a longer one is counted `unparsed`, not cut.
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
-/// The line between entries.
 pub const SEPARATOR: &str = "==========";
-/// Highlight visits note pairing may make in one title (each note looks at
-/// every highlight of its title). A real book is a few thousand of each; past
-/// the budget the remaining notes stay note-only rather than stall the import.
+/// Highlight visits note pairing may make in one title; past it the remaining notes stay note-only
+/// rather than stall the import.
 const MAX_PAIRING_WORK: usize = 50_000_000;
 
-// ---- the language table ---------------------------------------------------------
-
-/// How a row lays out a date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DateLayout {
-    /// A month **word**, a day and a four-digit year in either order, an
-    /// optional weekday word, and an `H:MM[:SS]` clock with an optional AM/PM
-    /// word: `Monday, March 3, 2025 10:15:22 AM`, `Monday, 3 March 2025
-    /// 22:15:22`, `Friday, March 30, 2012, 03:49 PM`.
     MonthWord,
 }
 
-/// One language's words for a Kindle's meta lines and notebook headings. Every
-/// word is lowercase and compared case-insensitively; a word list holds the
-/// spellings firmware has used.
+/// One language's words for meta lines. Lowercase, compared case-insensitively; each list holds
+/// every spelling firmware has used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindleWords {
     pub language: &'static str,
-    /// Before the kind: `Your`. Optional in the line.
     pub your: &'static [&'static str],
     pub highlight: &'static [&'static str],
     pub note: &'static [&'static str],
     pub bookmark: &'static [&'static str],
-    /// Between the kind and a position: `on`. Optional in the line.
     pub on: &'static [&'static str],
     pub page: &'static [&'static str],
     pub location: &'static [&'static str],
@@ -164,7 +51,6 @@ pub struct KindleWords {
     pub date_layout: DateLayout,
 }
 
-/// The English row.
 pub const ENGLISH: KindleWords = KindleWords {
     language: "en",
     your: &["your"],
@@ -203,13 +89,9 @@ pub const ENGLISH: KindleWords = KindleWords {
     date_layout: DateLayout::MonthWord,
 };
 
-/// Every language a Kindle line can be read in, tried in order. English only
-/// for now; CJK text is not designed for yet.
+/// Every language a line can be read in, tried in order. English only; CJK is not handled.
 pub const LANGUAGES: &[KindleWords] = &[ENGLISH];
 
-// ---- parsed shapes --------------------------------------------------------------
-
-/// What a Kindle entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KindleEntryKind {
     Highlight,
@@ -217,7 +99,6 @@ pub enum KindleEntryKind {
     Bookmark,
 }
 
-/// A Kindle location or location range, as given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindleLocation {
     pub start: u64,
@@ -227,7 +108,6 @@ pub struct KindleLocation {
 }
 
 impl KindleLocation {
-    /// `180` or `180-183`.
     pub fn as_given(&self) -> String {
         match self.end {
             Some(e) => format!("{}-{e}", self.start),
@@ -256,7 +136,6 @@ impl KindleLocation {
     }
 }
 
-/// `180` or `180-183`, ASCII digits only.
 pub(crate) fn parse_location(s: &str) -> Option<KindleLocation> {
     let digits = |t: &str| {
         (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
@@ -284,13 +163,10 @@ pub(crate) fn page_number(page: &str) -> Option<i64> {
         .flatten()
 }
 
-/// One entry of the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClippingEntry {
-    /// The title line, BOM and surrounding whitespace removed.
     pub title_line: String,
     pub kind: KindleEntryKind,
-    /// The page as written (`12`, `12-13`, `xii`).
     pub page: Option<String>,
     pub location: Option<KindleLocation>,
     /// `YYYY-MM-DD HH:MM:SS`, the device's local time (no zone in the file).
@@ -299,20 +175,14 @@ pub struct ClippingEntry {
     pub text: String,
 }
 
-/// Everything readable in one clippings file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClippingsParse {
-    /// Highlights, notes and bookmarks, in file order.
     pub entries: Vec<ClippingEntry>,
     /// Entries seen and not read: no language row matched, structurally
     /// broken, too long, past [`MAX_ENTRIES`], or the unfinished last write.
     pub unparsed: usize,
 }
 
-// ---- parsing --------------------------------------------------------------------
-
-/// `s` without a leading `word` (any of `words`, case-insensitively), when the
-/// word ends there; the rest is returned untrimmed.
 pub(crate) fn strip_word<'a>(s: &'a str, words: &[&str]) -> Option<&'a str> {
     'words: for w in words {
         let mut chars = s.char_indices();
@@ -333,7 +203,6 @@ pub(crate) fn strip_word<'a>(s: &'a str, words: &[&str]) -> Option<&'a str> {
     None
 }
 
-/// What a meta line says.
 #[derive(Debug, Default)]
 struct Meta {
     kind: Option<KindleEntryKind>,
@@ -342,7 +211,6 @@ struct Meta {
     added_on: Option<String>,
 }
 
-/// The kind word at the start of `s` (after an optional `your`), and the rest.
 pub(crate) fn kind_word<'a>(s: &'a str, w: &KindleWords) -> Option<(KindleEntryKind, &'a str)> {
     let s = strip_word(s, w.your).map_or(s, str::trim_start);
     if let Some(r) = strip_word(s, w.highlight) {
@@ -354,7 +222,6 @@ pub(crate) fn kind_word<'a>(s: &'a str, w: &KindleWords) -> Option<(KindleEntryK
     }
 }
 
-/// A page or location segment (`page 12`, `Location 180-183`, `Loc. 466-69`).
 fn position(meta: &mut Meta, seg: &str, w: &KindleWords) -> Option<()> {
     if let Some(v) = strip_word(seg, w.page) {
         let v = v.trim();
@@ -515,8 +382,7 @@ pub fn split_title_line(line: &str) -> (String, Vec<String>) {
     (t.to_string(), Vec::new())
 }
 
-/// Parse a whole clippings file. Pure, never panics, no I/O: the property and
-/// fuzz surface.
+/// Pure, never panics, no I/O: the property and fuzz surface.
 pub fn parse_clippings(text: &str) -> ClippingsParse {
     let mut out = ClippingsParse::default();
     let mut block: Vec<&str> = Vec::new();
@@ -579,16 +445,11 @@ fn finish_block(block: &[&str], out: &mut ClippingsParse) {
     });
 }
 
-// ---- becoming highlights --------------------------------------------------------
-
-/// One title line's worth of a file, ready for the shared path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClippingsBook {
     pub title_line: String,
-    /// [`split_title_line`]'s title and authors, for matching.
     pub title: String,
     pub authors: Vec<String>,
-    /// Highlights (with their paired notes) and note-only rows, file order.
     pub highlights: Vec<ImportedHighlight>,
     pub bookmarks: usize,
 }
@@ -601,7 +462,6 @@ enum Spot {
     Page(i64),
 }
 
-/// A highlight being built: its file index, the row, and its pairing range.
 type Row = (usize, ImportedHighlight, Option<(Spot, Spot)>);
 
 fn spot_range(e: &ClippingEntry) -> Option<(Spot, Spot)> {
@@ -618,7 +478,6 @@ fn spot_range(e: &ClippingEntry) -> Option<(Spot, Spot)> {
     Some((Spot::Page(start), Spot::Page(end)))
 }
 
-/// The identity's position part: the location as given, else `p` + the page.
 fn position_key(e: &ClippingEntry) -> String {
     match (&e.location, &e.page) {
         (Some(l), _) => l.as_given(),
@@ -639,9 +498,8 @@ fn base_highlight(e: &ClippingEntry, identity: String, text: String) -> Imported
     h
 }
 
-/// Group a parse by title line (first appearance order) and turn each group
-/// into highlights: notes paired, edits resolved, duplicates collapsed (module
-/// doc). `copy_id` is left `None`; the import fills it.
+/// Groups a parse by title line (first-appearance order) into highlights: notes paired, edits
+/// resolved, duplicates collapsed. `copy_id` is left `None`; the import fills it.
 pub fn clippings_books(parse: &ClippingsParse) -> Vec<ClippingsBook> {
     let mut order: Vec<&str> = Vec::new();
     let mut groups: HashMap<&str, Vec<&ClippingEntry>> = HashMap::new();
@@ -664,7 +522,6 @@ fn book_of(title_line: &str, entries: &[&ClippingEntry]) -> ClippingsBook {
         .filter(|e| e.kind == KindleEntryKind::Bookmark)
         .count();
 
-    // Highlights, first of each identity kept, with their file index.
     let mut rows: Vec<Row> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (i, e) in entries.iter().enumerate() {
@@ -680,8 +537,6 @@ fn book_of(title_line: &str, entries: &[&ClippingEntry]) -> ClippingsBook {
         rows.push((i, h, spot_range(e)));
     }
 
-    // Notes: per (row, note spot) the last one written wins; unpaired notes
-    // per spot likewise.
     let mut paired: BTreeMap<(usize, Option<Spot>), String> = BTreeMap::new();
     let mut alone: Vec<(String, usize)> = Vec::new();
     let mut alone_at: HashMap<String, usize> = HashMap::new();
@@ -768,8 +623,6 @@ fn book_of(title_line: &str, entries: &[&ClippingEntry]) -> ClippingsBook {
     }
 }
 
-// ---- reading the file -----------------------------------------------------------
-
 /// Read a text file of at most `cap` bytes. `Err` is the `(class, detail)` of
 /// why not: missing, not a file, too large, binary (a NUL byte) or not UTF-8.
 pub(crate) fn read_text_capped(
@@ -801,15 +654,12 @@ pub(crate) fn read_text_capped(
     String::from_utf8(bytes).map_err(|_| (ErrorClass::Decode, "not UTF-8 text".into()))
 }
 
-/// `documents/My Clippings.txt` on a mounted Kindle, matched
-/// case-insensitively; `None` when there is none. For the mount watcher.
+/// `documents/My Clippings.txt` on a mounted Kindle, matched case-insensitively; `None` if absent.
 pub fn clippings_path_on(mount: &Path) -> Option<PathBuf> {
     let docs = child_ci(mount, "documents", true)?;
     child_ci(&docs, "My Clippings.txt", false)
 }
 
-/// `dir/name`, the exact spelling first, else the first case-insensitive match
-/// in name order, of the wanted type.
 fn child_ci(dir: &Path, name: &str, want_dir: bool) -> Option<PathBuf> {
     let is = |p: &Path| if want_dir { p.is_dir() } else { p.is_file() };
     let exact = dir.join(name);
@@ -831,50 +681,37 @@ fn child_ci(dir: &Path, name: &str, want_dir: bool) -> Option<PathBuf> {
     hits.into_iter().next()
 }
 
-// ---- importing ------------------------------------------------------------------
-
-/// One matched title's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KindleClippingsBook {
     pub title_line: String,
     pub book_id: i64,
-    /// The copy stamped on new rows ([`kindle_copy`]), if exactly one fits.
     pub copy_id: Option<i64>,
     pub inserted: usize,
     pub updated: usize,
     pub unchanged: usize,
 }
 
-/// A title no library book auto-matched. Nothing of it was imported and no
-/// book was created; [`import_kindle_clippings_into`] attaches it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnmatchedKindleTitle {
-    /// The key to pass to [`import_kindle_clippings_into`].
     pub title_line: String,
     pub title: String,
     pub authors: Vec<String>,
-    /// Highlights and notes (rows that would be written), bookmarks excluded.
     pub entries: usize,
-    /// The matcher's ambiguous band, best first; possibly empty.
     pub candidates: Vec<MatchCandidate>,
 }
 
-/// What an import of a clippings file did (or, dry, would do).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct KindleClippingsReport {
     pub dry_run: bool,
     pub books: Vec<KindleClippingsBook>,
     pub unmatched: Vec<UnmatchedKindleTitle>,
-    /// Bookmarks seen in the imported titles (skipped by design).
     pub bookmarks: usize,
-    /// Totals over `books`, plus `unparsed` and every diagnostic. `removed` is
-    /// always 0: the clippings log never forgets.
+    /// Totals over `books`, plus `unparsed` and every diagnostic. `removed` is always 0.
     pub summary: HighlightImportSummary,
 }
 
-/// The copy of `book_id` a Kindle highlight was plausibly made in: the book's
-/// **only** copy that is `form = app` with app `kindle`, or was learned from a
-/// Kindle. `None` when there is none or more than one. Never creates a copy.
+/// The one copy of `book_id` that is `form = app` with app `kindle`, or learned from a Kindle;
+/// `None` if there is none or several. Never creates a copy.
 pub async fn kindle_copy(storage: &Storage, book_id: i64) -> Result<Option<i64>> {
     let fits: Vec<i64> = storage
         .copies_for_book(book_id)
@@ -895,7 +732,6 @@ pub async fn kindle_copy(storage: &Storage, book_id: i64) -> Result<Option<i64>>
     })
 }
 
-/// Store (or, dry, preview) one book's highlights, counting outcomes.
 pub(crate) async fn store_highlights(
     storage: &Storage,
     book_id: i64,
@@ -920,10 +756,8 @@ pub(crate) async fn store_highlights(
     Ok((inserted, updated, unchanged))
 }
 
-/// Import a clippings file. Every title is matched through the one matcher
-/// (auto band only); an unmatched title creates no book and is reported.
-/// A file that cannot be read is `Ok` with a diagnostic; `Err` is a storage
-/// failure. Nothing is ever removed. `dry_run` writes nothing.
+/// Matches each title through the shared matcher (auto band only); an unmatched title creates no
+/// book. An unreadable file is `Ok` with a diagnostic; `Err` is a storage failure.
 pub async fn import_kindle_clippings(
     storage: &Storage,
     path: &Path,
@@ -932,9 +766,8 @@ pub async fn import_kindle_clippings(
     import_file(storage, path, None, dry_run).await
 }
 
-/// Import only the entries whose title line is `title_line` (as reported in
-/// [`UnmatchedKindleTitle::title_line`]) into `book_id`, without matching: the
-/// manual attach. `NotFound` when the book does not exist.
+/// Imports only entries whose title line is `title_line` into `book_id`, without matching.
+/// `NotFound` when the book does not exist.
 pub async fn import_kindle_clippings_into(
     storage: &Storage,
     path: &Path,
@@ -979,8 +812,6 @@ async fn import_file(
     import_parsed(storage, path, &parse_clippings(&text), only, dry_run).await
 }
 
-/// The import proper, over an already-parsed file. `path` names the file in
-/// diagnostics only.
 pub(crate) async fn import_parsed(
     storage: &Storage,
     path: &Path,
@@ -1063,12 +894,8 @@ pub(crate) async fn import_parsed(
     Ok(report)
 }
 
-// ---- rendering (tests and fixtures) ---------------------------------------------
-
-/// Write entries the way an English Kindle does (`\r\n`, a BOM first, a
-/// separator after every entry, 12-hour clock). The inverse of
-/// [`parse_clippings`] for well-formed English entries; the round-trip
-/// property rests on it.
+/// Writes entries as an English Kindle does (`\r\n`, BOM first, separator after each entry, 12-hour
+/// clock); the inverse of [`parse_clippings`] for well-formed English entries.
 #[cfg(any(test, feature = "internals"))]
 pub fn render_clippings(entries: &[ClippingEntry]) -> String {
     let w = &ENGLISH;
@@ -1179,7 +1006,6 @@ mod tests {
         assert_eq!(m.page.as_deref(), Some("12"));
         assert_eq!(m.added_on.as_deref(), Some("2025-03-02 23:05:09"));
 
-        // Kindle 3 firmware: no "Your", "Loc.", abbreviated range, comma after year.
         let m =
             meta("- Highlight Loc. 466-69  | Added on Friday, March 30, 2012, 03:49 PM").unwrap();
         assert_eq!(
@@ -1192,7 +1018,6 @@ mod tests {
         assert_eq!(m.added_on.as_deref(), Some("2012-03-30 15:49:00"));
         assert_eq!(m.location.unwrap().full_end(), 469);
 
-        // 12 AM is midnight.
         let m = meta("- Your Highlight on page 1 | Added on Monday, March 3, 2025 12:01:00 AM")
             .unwrap();
         assert_eq!(m.added_on.as_deref(), Some("2025-03-03 00:01:00"));
@@ -1481,8 +1306,6 @@ mod props {
             entries in proptest::collection::vec(entry(), 0..20),
             added in proptest::collection::vec((0..BOOKS.len(), text(1..3), proptest::option::of(date())), 1..10),
         ) {
-            // Appended highlights sit past every generated location, each its
-            // own, so none can host an earlier note or share an identity.
             let appended: Vec<ClippingEntry> = added
                 .into_iter()
                 .enumerate()

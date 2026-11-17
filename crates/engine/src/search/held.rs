@@ -1,26 +1,5 @@
-//! "You have this": one question, one matcher, two strengths.
-//!
-//! - **[`Held::Certain`]**: one of the work's editions has an ISBN a book the
-//!   app holds has, or the work carries a provider id a held book carries
-//!   (`openlibrary_key`, `googlebooks_id`, or a stored external id under that
-//!   provider's name). The row opens that book instead of adding one.
-//! - **[`Held::Likely`]**: no identifier matches, and `matching.rs` — the one
-//!   matcher every import path uses — links the work's title and authors to a
-//!   held book with no question asked (`AUTO_MATCH`, the author veto and all).
-//!   The row says *you may have this* and still offers to add; a false certain
-//!   answer would open the wrong book.
-//! - The candidate band below `AUTO_MATCH` is **not shown**: it exists to stop
-//!   a silent duplicate on import, and on a search row the reader is already
-//!   looking at both titles.
-//!
-//! "Holds" is **any book the app has a row for**, in the library or not (a
-//! book only on a list is still yours to open, and adding it again would
-//! make a duplicate). Library membership by the copies rule matters to one
-//! thing here, the default edition: an edition *in the library* is the
-//! one a work defaults to, and [`Library::in_library_isbns`] is that set.
-//!
-//! **The library is read and prepared once per search** ([`Library::prepare`]),
-//! never once per row: `calibre.rs` records the cost of the other way.
+//! "You have this": matches a search result to held books, `Certain` by identifier, `Likely` by
+//! the shared matcher. The library is read and prepared once per search, never once per row.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -29,21 +8,15 @@ use crate::matching::{Prepared, Query};
 use crate::providers::ProviderId;
 use crate::storage::LibraryIdentities;
 
-/// What the app holds of a work.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Held {
-    /// Nothing the app holds is this work, as far as anything can tell.
     #[default]
     None,
-    /// An identifier says so: this book is that one.
     Certain(i64),
-    /// The shared matcher says so with no question asked; no identifier does.
-    /// `title` is the held book's, for *You may have this: <title>*.
     Likely { book_id: i64, title: Option<String> },
 }
 
 impl Held {
-    /// The book either strength names.
     pub fn book_id(&self) -> Option<i64> {
         match self {
             Held::None => None,
@@ -51,7 +24,7 @@ impl Held {
         }
     }
 
-    /// The book, when an identifier says so — what may open it on Enter.
+    /// Only an identifier match, which is what may open the book directly.
     pub fn certain(&self) -> Option<i64> {
         match self {
             Held::Certain(id) => Some(*id),
@@ -60,7 +33,6 @@ impl Held {
     }
 }
 
-/// The ISBN-13 of an ISBN as stored (either column).
 fn thirteen(isbn: &str) -> Option<String> {
     if isbn.len() == 13 {
         Some(isbn.to_string())
@@ -69,25 +41,17 @@ fn thirteen(isbn: &str) -> Option<String> {
     }
 }
 
-/// The library, read once and prepared for every work of one search.
 pub(crate) struct Library {
     by_isbn: HashMap<String, i64>,
-    /// `(provider word, its id)` → book: the provider id columns and the
-    /// external ids stored under a provider's name.
     by_provider_id: HashMap<(String, String), i64>,
     in_library_isbns: HashSet<String>,
-    /// Each titled book, prepared for the matcher, with its title.
     titled: Vec<(i64, Option<String>, Prepared)>,
-    /// Content word → the `titled` entries whose title has it. An auto match
-    /// shares a word (`Prepared::words`), so only these are compared.
+    /// Content word -> `titled` entries with it; an auto match shares a word, so only these compare.
     by_word: HashMap<String, Vec<usize>>,
 }
 
 impl Library {
-    /// Prepare what [`crate::Storage`]'s `library_identities` read. When two
-    /// books claim one identifier (two rows of one ISBN cannot exist, but a
-    /// work key can be on two), the lower id answers, so one library answers
-    /// one way.
+    /// When two books claim one identifier the lower id answers, so one library answers one way.
     pub(crate) fn prepare(ids: LibraryIdentities) -> Library {
         let mut by_isbn: BTreeMap<String, i64> = BTreeMap::new();
         let mut by_provider_id: BTreeMap<(String, String), i64> = BTreeMap::new();
@@ -121,8 +85,7 @@ impl Library {
             }
         }
         for (source, id, book) in ids.external {
-            // Only an id a provider would carry is an identity here: a
-            // Goodreads or calibre id names nothing a search returns.
+            // Only an id a provider carries is an identity; a Goodreads or calibre id matches no search result.
             if ProviderId::parse(&source).is_some() {
                 first(&mut by_provider_id, (source, id), book);
             }
@@ -142,15 +105,10 @@ impl Library {
         }
     }
 
-    /// Canonical ISBN-13s of the books **in the library** (the copies rule):
-    /// after a typed ISBN, an edition the library holds is the one a work
-    /// defaults to.
     pub(crate) fn in_library_isbns(&self) -> HashSet<String> {
         self.in_library_isbns.clone()
     }
 
-    /// [`Held::Certain`]'s half: an edition's ISBN — the default edition's
-    /// first — then a provider id.
     pub(crate) fn certain(&self, work: &WorkResult) -> Option<i64> {
         let default = work.editions.get(work.default_edition);
         let editions = default
@@ -182,10 +140,7 @@ impl Library {
         })
     }
 
-    /// [`Held::Likely`]'s half: the held book the matcher links the work to
-    /// with no question asked, under any title the work answers to (its own,
-    /// and the other titles its provider gave: the matched edition's, the title
-    /// with its subtitle). The best verdict wins; a tie, the lower id.
+    /// The best verdict across all the work's titles wins; a tie goes to the lower id.
     pub(crate) fn likely(&self, work: &WorkResult) -> Option<(i64, Option<String>)> {
         let mut titles: Vec<&str> = work.title.iter().map(String::as_str).collect();
         for t in &work.facts.also_titled {
@@ -226,8 +181,6 @@ impl Library {
         best.map(|(_, id, title)| (id, title.clone()))
     }
 
-    /// The whole answer for one work. The session asks the two halves itself
-    /// (`session::held_of`), keeping the matcher's answers across arrivals.
     #[cfg(test)]
     pub(crate) fn held(&self, work: &WorkResult) -> Held {
         if let Some(id) = self.certain(work) {
@@ -295,7 +248,6 @@ mod tests {
             external: vec![],
         });
 
-        // The ISBN-13 of a held ISBN-10.
         let p = work(
             Book {
                 isbn_13: Some("9781900000178".into()),
@@ -304,7 +256,6 @@ mod tests {
             &[],
         );
         assert_eq!(lib.held(&p), Held::Certain(1));
-        // A provider id.
         let d = work(
             Book {
                 openlibrary_key: Some("/works/OL893415W".into()),
@@ -313,7 +264,6 @@ mod tests {
             &[],
         );
         assert_eq!(lib.held(&d), Held::Certain(2));
-        // No identifier: the matcher's auto band.
         let m = work(found("Dune Messiah", "Frank Herbert"), &[]);
         assert_eq!(
             lib.held(&m),
@@ -322,8 +272,6 @@ mod tests {
                 title: Some("Dune Messiah".into())
             }
         );
-        // The band is not shown: Dune against Dune Messiah is a candidate,
-        // never an answer.
         let lib = Library::prepare(LibraryIdentities {
             books: vec![held_book(3, "Dune Messiah", "Frank Herbert")],
             external: vec![],
@@ -332,17 +280,12 @@ mod tests {
             lib.held(&work(found("Dune", "Frank Herbert"), &[])),
             Held::None
         );
-        // Another author with the same title is somebody else's book. (Brian
-        // Herbert would not be: the matcher's veto is only a veto, and a shared
-        // surname is agreement — `matching.rs` argues why.)
         assert_eq!(
             lib.held(&work(found("Dune Messiah", "Kevin J. Anderson"), &[])),
             Held::None
         );
     }
 
-    /// A held title that is the work's *other* title — the one with its
-    /// subtitle — is the work.
     #[test]
     fn any_title_the_work_answers_to_is_compared() {
         let lib = Library::prepare(LibraryIdentities {
@@ -429,9 +372,6 @@ mod props {
     }
 
     proptest! {
-        /// Comparing only the held books that share a word with the work
-        /// finds exactly what comparing every held book finds: an auto match
-        /// cannot share none (`Prepared::words`).
         #[test]
         fn the_shared_word_shortcut_changes_no_answer(
             held in proptest::collection::vec((words(), proptest::option::of(Just("Frank Herbert"))), 0..8),

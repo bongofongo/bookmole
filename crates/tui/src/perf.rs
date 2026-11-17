@@ -1,34 +1,4 @@
-//! Cost accounting for the render path.
-//!
-//! This module exists because of one expensive lesson: **our own numbers did
-//! not show the problem.** The first rich renderer streamed 7.1 MB/s of texture
-//! at the terminal and made it unusable, while every instrument we had reported
-//! health — trace and encode were a few milliseconds, `write`/`flush` never
-//! blocked, and a bench sustained 270 fps at 27 MB/s without complaint. The cost
-//! landed *inside* the terminal (zlib decompress, whole-texture re-upload,
-//! recomposite, with tmux re-parsing on the way), which is exactly the region no
-//! timer on our side of the pty can see.
-//!
-//! So this module measures two things nothing else did:
-//!
-//! 1. **Bytes, split by class.** [`CountingWriter`] wraps both the ratatui
-//!    backend and the graphics writer, so text bytes and image bytes are counted
-//!    separately. Keeping them apart is the whole point — a byte of image costs a
-//!    terminal far more than a byte of text, so a single total is a misleading
-//!    number rather than a useful one.
-//! 2. **Stage timings**, via a thread-local scratchpad rather than a parameter
-//!    threaded through the presenter. The single-book view depends on *disjoint
-//!    direct field* borrows of `App` (see `ui::book::present_book`), so adding
-//!    another `&mut` to that seam would be a borrow-checker fight for no gain.
-//!    Drawing is single-threaded, so a `Cell` is sufficient.
-//!
-//! The honest measurement of the terminal's own backlog lives elsewhere, in
-//! `render3d::caps::rtt_probe` — it needs exclusive stdin, so it can only run
-//! under the bench.
-//!
-//! Everything here is inert unless a log path is set (`--perf-log`, or
-//! `BOOKMOLE_PERF_LOG`): the recording calls check one relaxed atomic and
-//! return.
+//! Cost accounting for the render path: byte counters and per-stage timings.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -40,21 +10,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-/// Set once when a log path is accepted. Checked before every recording call so
-/// the default configuration costs a relaxed load and a branch.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Which side of the "a byte is not a byte" line a write falls on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteClass {
-    /// Cells written by ratatui's diff — what the glyph path costs.
     Text,
-    /// Graphics-protocol payload: the escape, the compressed texture, the
-    /// delete. What the pixel path costs.
     Image,
 }
 
@@ -65,12 +29,8 @@ struct Counters {
     writes: AtomicU64,
 }
 
-/// Shared byte counters.
-///
-/// Atomics rather than a mutex, for the same reason `kitty`'s live-image id is:
-/// these are touched from the writer the panic hook may also be unwinding
-/// through, and a lock there could deadlock on a lock the panicking thread
-/// already holds.
+/// Atomics, not a mutex: touched from a writer the panic hook may unwind through, where a lock
+/// could deadlock.
 #[derive(Clone, Default)]
 pub struct Meter(Arc<Counters>);
 
@@ -96,7 +56,6 @@ impl Meter {
     }
 }
 
-/// A reading of the counters. Deltas between two of these are one frame's cost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Bytes {
     pub text: u64,
@@ -114,13 +73,6 @@ impl Bytes {
     }
 }
 
-/// Counts everything on its way to the terminal, then forwards it untouched.
-///
-/// Wraps the `Stdout` given to `CrosstermBackend` (as [`ByteClass::Text`]) and
-/// the graphics writer inside `RichState` (as [`ByteClass::Image`]). Counting at
-/// the writer rather than at the call sites is what makes the glyph path
-/// measurable at all: its bytes are produced by ratatui's diff, which we never
-/// see.
 pub struct CountingWriter<W> {
     inner: W,
     meter: Meter,
@@ -149,16 +101,11 @@ impl<W: Write> Write for CountingWriter<W> {
     }
 }
 
-/// A phase of one frame's work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// Raytracing, either raster.
     Trace,
-    /// Compress + base64 for the graphics protocol.
     Encode,
-    /// Quantizing subpixels into block glyphs.
     Blit,
-    /// Handing the escape to the writer, including its flush.
     Transmit,
 }
 
@@ -175,34 +122,23 @@ impl Stage {
     }
 }
 
-/// How the frame was actually produced. Filled in by the presenter, read by the
-/// event loop, for the same borrow reason the stage scratchpad exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Quality {
-    /// Not a pixel frame at all.
     #[default]
     None,
     Motion,
     Settle,
 }
 
-/// What the presenter did this frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameNote {
     pub quality: Quality,
-    /// The object's rect in cells. Not the terminal's size — this is what the
-    /// cost actually scales with, and what two bench runs have to match on to be
-    /// comparable.
     pub cols: u16,
     pub rows: u16,
     pub px_w: u32,
     pub px_h: u32,
-    /// An image actually went on the wire (as opposed to the cached one being
-    /// reused, or the frame being glyphs).
     pub transmitted: bool,
-    /// Rich mode was asked for but glyphs were drawn — either the deliberate
-    /// motion fallback or a refusal (incapable terminal, oversized rect).
     pub fell_back: bool,
 }
 
@@ -221,7 +157,6 @@ thread_local! {
     };
 }
 
-/// Add to a stage's running total for the current frame.
 pub fn record(stage: Stage, elapsed: Duration) {
     if !enabled() {
         return;
@@ -233,8 +168,6 @@ pub fn record(stage: Stage, elapsed: Duration) {
     });
 }
 
-/// Time a block into a stage. The guard records on drop, so an early return
-/// still measures.
 pub fn scope(stage: Stage) -> Scope {
     Scope {
         stage,
@@ -253,7 +186,6 @@ impl Drop for Scope {
     }
 }
 
-/// Tell the recorder how this frame was produced.
 pub fn note(note: FrameNote) {
     if !enabled() {
         return;
@@ -261,11 +193,7 @@ pub fn note(note: FrameNote) {
     NOTE.set(note);
 }
 
-/// Record the object's rect without disturbing the rest of the note.
-///
-/// The glyph presenter calls this, including when it is the hybrid's motion
-/// fallback — so the rect is logged either way, while the rich presenter's
-/// verdict (quality, `fell_back`) survives the hand-off.
+/// Records the rect without disturbing the rich presenter's verdict (quality, `fell_back`).
 pub fn note_rect(cols: u16, rows: u16) {
     if !enabled() {
         return;
@@ -277,7 +205,6 @@ pub fn note_rect(cols: u16, rows: u16) {
     });
 }
 
-/// Drain the scratchpad. Called once per frame by the event loop.
 fn take_stages() -> [u64; STAGE_COUNT] {
     STAGES.replace([0; STAGE_COUNT])
 }
@@ -286,20 +213,15 @@ fn take_note() -> FrameNote {
     NOTE.replace(FrameNote::default())
 }
 
-/// One line of the JSONL log.
 #[derive(Debug, Serialize)]
 pub struct FrameRecord {
     pub seq: u64,
-    /// Milliseconds since the recorder opened.
     pub t_ms: u64,
     pub mode: &'static str,
     pub quality: Quality,
     pub moving: bool,
-    /// The object's rect in cells.
     pub cols: u16,
     pub rows: u16,
-    /// The whole terminal, for context when a run is compared against another
-    /// at a different window size.
     pub term_cols: u16,
     pub term_rows: u16,
     pub px_w: u32,
@@ -310,20 +232,16 @@ pub struct FrameRecord {
     pub encode_us: u64,
     pub blit_us: u64,
     pub transmit_us: u64,
-    /// The whole `Terminal::draw`, which is the only number that includes
-    /// ratatui's diff.
     pub draw_us: u64,
     pub bytes_text: u64,
     pub bytes_image: u64,
     pub writes: u64,
-    /// Round-trip to the terminal itself, when the bench sampled it this frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtt_kitty_us: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtt_tmux_us: Option<u64>,
 }
 
-/// What the caller knows that the scratchpad doesn't.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameCtx {
     pub mode: &'static str,
@@ -335,25 +253,17 @@ pub struct FrameCtx {
     pub rtt_tmux: Option<Duration>,
 }
 
-/// Owns the log file and the per-frame bookkeeping.
-///
-/// A direct field of `App`, like `scene` and `rich`, so the draw path can reach
-/// it without borrowing all of `App`.
 pub struct Recorder {
     meter: Meter,
     sink: Option<BufWriter<File>>,
     start: Instant,
     seq: u64,
     last: Bytes,
-    /// Kept for the bench's summary table, which wants aggregates rather than
-    /// the per-frame stream.
     frames: Vec<FrameRecord>,
     keep_frames: bool,
 }
 
 impl Recorder {
-    /// A recorder that writes nothing. Still owns a [`Meter`], so byte counting
-    /// works for tests and for the bench even without a log file.
     pub fn disabled(meter: Meter) -> Recorder {
         Recorder {
             meter,
@@ -366,13 +276,8 @@ impl Recorder {
         }
     }
 
-    /// Open a JSONL log. A failure here is reported to the caller but must never
-    /// be fatal: a diagnostic that bricks the TUI is worse than no diagnostic.
+    /// A failure is reported to the caller but must never be fatal.
     pub fn open(path: &Path, meter: Meter) -> std::io::Result<Recorder> {
-        // Create the directory rather than failing on it: `--perf-log
-        // perf/run.jsonl` is the obvious thing to type, and a diagnostic that
-        // quietly writes nothing because a directory was missing is worse than
-        // one that never existed.
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
@@ -389,20 +294,15 @@ impl Recorder {
         })
     }
 
-    /// Turn on recording without a file. The bench needs the counters and the
-    /// stage timings for its summary even when the user asked for no log.
     pub fn enable_in_memory(&mut self) {
         ENABLED.store(true, Ordering::Relaxed);
         self.keep_frames = true;
     }
 
-    /// Baseline the byte counters. Called just before the frame's work so the
-    /// delta covers this frame only.
     pub fn frame_begin(&mut self) {
         self.last = self.meter.snapshot();
     }
 
-    /// Close a frame: drain the scratchpad, diff the counters, write the line.
     pub fn frame_end(&mut self, ctx: FrameCtx) {
         if !enabled() {
             return;
@@ -439,8 +339,7 @@ impl Recorder {
         if let Some(sink) = self.sink.as_mut()
             && let Ok(line) = serde_json::to_string(&rec)
         {
-            // A write failure disables the log rather than propagating: the
-            // frame has already been drawn and the user is mid-session.
+            // A write failure disables the log rather than propagating: the frame is already drawn.
             if writeln!(sink, "{line}").is_err() {
                 self.sink = None;
             }
@@ -450,8 +349,6 @@ impl Recorder {
         }
     }
 
-    /// Take the frames recorded so far. The bench calls this between modes, so
-    /// each summary covers only its own run.
     pub fn drain_frames(&mut self) -> Vec<FrameRecord> {
         std::mem::take(&mut self.frames)
     }
@@ -469,9 +366,6 @@ impl Drop for Recorder {
     }
 }
 
-/// Nearest-rank percentile over a sorted slice. Used for the RTT distribution,
-/// where the tail is the interesting part — a p50 hides exactly the stalls we
-/// are hunting.
 pub fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -484,8 +378,7 @@ pub fn percentile(sorted: &[u64], p: f64) -> u64 {
 mod tests {
     use super::*;
 
-    /// Serialize the module's global `ENABLED` flag across tests, which cargo
-    /// runs in parallel threads by default.
+    /// Serializes the global `ENABLED` flag across tests, which run in parallel threads.
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -503,9 +396,7 @@ mod tests {
         let b = meter.snapshot();
         assert_eq!(b.text, 5);
         assert_eq!(b.image, 14);
-        // Keeping the classes apart is the point: a byte of image costs the
-        // terminal far more than a byte of text, so a combined total would be a
-        // misleading number rather than a useful one.
+        // Classes stay apart: an image byte costs the terminal far more than a text byte.
         assert_eq!(b.writes, 3);
     }
 
@@ -540,8 +431,6 @@ mod tests {
         take_stages();
         {
             let _t = scope(Stage::Blit);
-            // Long enough to register at microsecond granularity, which is what
-            // the log stores.
             std::thread::sleep(Duration::from_millis(2));
         }
         assert!(take_stages()[Stage::Blit.idx()] > 0);
@@ -586,8 +475,7 @@ mod tests {
         assert!(line.contains("\"bytes_text\":0"), "{line}");
         assert!(line.contains("\"quality\":\"settle\""), "{line}");
         assert!(line.contains("\"rtt_kitty_us\":1200"), "{line}");
-        // An absent sample is omitted rather than logged as a zero, which would
-        // read as "the terminal answered instantly".
+        // An absent sample is omitted, since a zero would read as an instant answer.
         assert!(!line.contains("rtt_tmux_us"), "{line}");
         let _ = std::fs::remove_file(&path);
     }

@@ -1,35 +1,5 @@
-//! The KOReader `statistics.sqlite3` fixture.
-//!
-//! # Why this emits SQL text rather than a `.sqlite3` file
-//!
-//! The obvious move is to link a SQLite writer here and commit the binary the
-//! device would have. Three arguments against it, and the last one decides:
-//!
-//! * Both existing tier-1 generators emit **text** — `gen-synthetic` writes
-//!   Lua, `gen-goodreads` writes CSV — and both are reviewed as text in a diff.
-//!   A committed `.sqlite3` would be the only fixture in the repo whose
-//!   contents no reviewer can see and no `git diff` can describe.
-//! * A database file's bytes depend on the writer's SQLite version, so
-//!   "regenerate and confirm nothing moved" stops being a check that means
-//!   anything, while a `.sql` script is byte-stable for a fixed seed for ever.
-//! * It would cost a new dependency for no coverage. What the engine must be
-//!   tested against is the **schema and the data**, and the schema is a string
-//!   either way. The engine's own test materialises this script into a real
-//!   database, and the WAL-copy path is exercised there, where a real
-//!   write-ahead log can actually be produced.
-//!
-//! The rule that matters — `crates/corpus` does not depend on `bookmole` —
-//! is kept: nothing here parses anything the engine parses, and the expected
-//! totals below are accumulated **as the rows are written**, never by reading
-//! them back. That is what makes `expected.json` an independent oracle rather
-//! than a recording of our own aggregate query.
-//!
-//! # The schema
-//!
-//! Verbatim from `plugins/statistics.koplugin/main.lua`, `koreader/koreader@master`.
-//! The engine's `ko_statistics.rs` quotes the same DDL in its module doc; this
-//! is the copy that is *executed*, so the two must agree and the engine's tests
-//! are what notice if they stop.
+//! The KOReader `statistics.sqlite3` fixture, emitted as SQL text rather than a binary database.
+//! Expected totals accumulate as rows are written, never read back, to stay an independent oracle.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -38,19 +8,13 @@ use std::path::{Path, PathBuf};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 
-/// Bump when the emitted fixture changes shape, so a stale checkout is
-/// diagnosable rather than merely different.
 pub const GENERATOR_VERSION: u32 = 1;
 
-/// `DB_SCHEMA_VERSION` in the statistics plugin, stamped into
-/// `PRAGMA user_version`.
 const SCHEMA_VERSION: i64 = 20221111;
 
-/// 2026-01-05, as days since the unix epoch. A fixed epoch, never `now()` —
-/// the corpus determinism rule.
 const BASE_DAY: i64 = 20458;
 
-/// The plugin's own DDL, quoted exactly. Reformatted whitespace only.
+/// The plugin's own DDL, quoted exactly; only whitespace is reformatted.
 const SCHEMA: &str = "\
 PRAGMA user_version=20221111;
 
@@ -94,52 +58,39 @@ pub struct Options {
     pub seed: u64,
 }
 
-/// One book as the fixture describes it, for the engine test to seed from.
 struct BookSpec {
     title: &'static str,
-    /// `None` models a statistics row the plugin wrote with no md5 — nothing to
-    /// join on.
+    /// `None` models a statistics row the plugin wrote with no md5: nothing to join on.
     md5: Option<&'static str>,
-    /// Whether the engine test should create a library book and link this md5.
-    /// A `false` here is the ordinary "the device holds a book we never
-    /// imported" case.
     in_library: bool,
-    /// `(day offset from BASE_DAY, [(page, seconds)])`.
     days: &'static [(i64, &'static [(i64, i64)])],
 }
 
-/// The fixture, written out rather than randomised, because every row here is
-/// a *case*: the interesting inputs are the awkward ones and a PRNG does not
-/// reliably produce them. The seed drives the filler rows only.
+/// Written out, not randomised: every row is a case. The seed drives only the filler rows.
 const BOOKS: &[BookSpec] = &[
-    // An ordinary, well-behaved book: three days, several pages each.
     BookSpec {
         title: "Middlemarch",
         md5: Some("3f9c1e7a5b2d4068a1c3e5f7092b4d6e"),
         in_library: true,
         days: &[
             (0, &[(10, 300), (11, 240), (12, 180)]),
-            // A page revisited later the same day: two rows, one page turned.
             (1, &[(13, 600), (13, 120), (14, 90)]),
             (4, &[(15, 3600)]),
         ],
     },
-    // The measured-zero case: a real session of nineteen seconds. It must
-    // record `Some(0)` minutes, never `None` — the device is saying something.
+    // A real session of nineteen seconds: records `Some(0)` minutes, never `None`.
     BookSpec {
         title: "Brief Encounter",
         md5: Some("7d2a9e4c1b6f3058c2e4a6b8d0f1a3c5"),
         in_library: true,
         days: &[(2, &[(1, 19)])],
     },
-    // On the device, never imported here. Ordinary, and reported.
     BookSpec {
         title: "A Book We Never Imported",
         md5: Some("b4e8a2c6d0f3157e9a1c3e5b7d9f0a2c"),
         in_library: false,
         days: &[(0, &[(3, 900)])],
     },
-    // A statistics row carrying no md5 at all.
     BookSpec {
         title: "No Checksum Here",
         md5: None,
@@ -148,7 +99,6 @@ const BOOKS: &[BookSpec] = &[
     },
 ];
 
-/// What the fixture *means*, accumulated while writing it.
 #[derive(serde::Serialize)]
 struct Expected {
     generator_version: u32,
@@ -168,11 +118,8 @@ struct ExpectedBook {
 struct ExpectedDay {
     day: String,
     seconds: i64,
-    /// Distinct pages touched that day.
     pages: i64,
-    /// Seconds rounded to the nearest minute — what `reading_events.minutes`
-    /// must hold. Computed here rather than in the test so the rounding rule is
-    /// asserted against an independently-stated number.
+    /// Seconds rounded to the nearest minute: what `reading_events.minutes` must hold.
     minutes: i64,
 }
 
@@ -200,15 +147,12 @@ pub fn generate(out: &Path, opts: &Options) -> std::io::Result<usize> {
             spec.title.replace('\'', "''")
         ));
 
-        // Accumulated as we emit, never read back.
         let mut per_day: BTreeMap<i64, (i64, std::collections::BTreeSet<i64>)> = BTreeMap::new();
 
         for (day_off, pages) in spec.days {
             let day_start = (BASE_DAY + day_off) * 86_400;
             for (n, (page, seconds)) in pages.iter().enumerate() {
-                // A deterministic time-of-day, so two rows for one page differ
-                // in `start_time` and the UNIQUE constraint is satisfied the
-                // way a real device satisfies it.
+                // Distinct start times per page, so repeat rows satisfy the UNIQUE constraint as on a device.
                 let start = day_start + 3_600 + (n as i64 * 907) + (rng.next_u32() % 60) as i64;
                 sql.push_str(&format!(
                     "INSERT INTO page_stat_data (id_book, page, start_time, duration, total_pages) \
@@ -220,9 +164,8 @@ pub fn generate(out: &Path, opts: &Options) -> std::io::Result<usize> {
             }
         }
 
-        // The dead-clock row: `start_time` 0 is the column's declared default,
-        // and taken at face value it is a day in 1970 that nobody read. Emitted
-        // for the first book only, and deliberately absent from `expected`.
+        // Dead-clock row: `start_time` 0 is the column default. Emitted for the first book only and
+        // deliberately absent from `expected`.
         if i == 0 {
             sql.push_str(&format!(
                 "INSERT INTO page_stat_data (id_book, page, start_time, duration, total_pages) \
@@ -256,11 +199,6 @@ pub fn generate(out: &Path, opts: &Options) -> std::io::Result<usize> {
     Ok(BOOKS.len())
 }
 
-/// `YYYY-MM-DD` from days since the unix epoch.
-///
-/// Hinnant's civil-from-days, written out rather than pulled in: this crate has
-/// no date dependency and deliberately shares no code with the engine, which is
-/// the whole reason its output can be trusted as an oracle.
 pub(crate) fn ymd(days: i64) -> String {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -275,25 +213,17 @@ pub(crate) fn ymd(days: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// One book's statistics as the tier-2 corpus writes them: the same reading
-/// sessions that dated its highlights, so a `page_stat_data` day and a
-/// highlight's `datetime` agree by construction.
 pub struct CorpusStatsBook {
     pub title: String,
     pub authors: String,
     pub language: String,
-    /// The sidecar's `partial_md5_checksum` — the join key the engine uses.
     pub md5: String,
     pub pages: i64,
     pub highlights: i64,
     pub notes: i64,
-    /// `(page, start_time unix seconds, duration seconds)`, in time order.
     pub rows: Vec<(i64, i64, i64)>,
 }
 
-/// Write `statistics.sql` and `expected.json` for the tier-2 corpus into
-/// `out`, returning the paths written. The totals are accumulated **as the
-/// rows are written**, exactly as [`generate`] does for the committed fixture.
 pub fn write_corpus_stats(out: &Path, books: &[CorpusStatsBook]) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(out)?;
     let mut sql = String::from(SCHEMA);
@@ -373,7 +303,6 @@ mod tests {
         assert_eq!(ymd(0), "1970-01-01");
         assert_eq!(ymd(BASE_DAY), "2026-01-05");
         assert_eq!(ymd(BASE_DAY + 1), "2026-01-06");
-        // A leap day, which is where a hand-rolled calendar goes wrong.
         assert_eq!(ymd(19_782), "2024-02-29");
     }
 }

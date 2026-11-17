@@ -1,37 +1,22 @@
-//! Tier-1 Kindle fixtures: the e-reader's `My Clippings.txt` and the Kindle
-//! app's Export Notebook HTML.
-//!
-//! Written the way the devices write them, from cases declared here, with an
-//! `expected.json` beside each set that this generator computes from its own
-//! declaration — never from the engine's parser, which is what the expected
-//! file checks. No randomness: every case is a shape, stated once.
-//!
-//! The prose is invented; no fixture quotes a real book.
+//! `expected.json` is computed from the declared cases, never from the engine's parser.
 
 use std::path::Path;
 
 use serde_json::{Value, json};
 
-/// What a declared clipping is for, which is what the expectations count.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Highlight,
-    /// The same entry written twice; the importer keeps one.
     DuplicateHighlight,
-    /// A note whose highlight is the one with this text.
     NoteOn(&'static str),
-    /// A note no highlight contains.
     LoneNote,
     Bookmark,
-    /// No language row reads it, or it is broken.
     Unparsed,
 }
 
 struct Clip {
     title: &'static str,
-    /// Some firmware writes a BOM at the start of each title line.
     title_bom: bool,
-    /// `None` is a broken entry: a title and nothing else.
     meta: Option<&'static str>,
     text: &'static str,
     role: Role,
@@ -85,7 +70,6 @@ fn base_clips() -> Vec<Clip> {
             "",
             Highlight,
         ),
-        // The same note, edited on the device: a new entry at the same place.
         clip(
             KINDRED,
             "- Your Note on page 12 | Location 181 | Added on Tuesday, March 4, 2025 9:02:11 PM",
@@ -98,7 +82,6 @@ fn base_clips() -> Vec<Clip> {
             "a note with no highlight",
             LoneNote,
         ),
-        // A device set to French. No row reads it: reported, never guessed.
         clip(
             KINDRED,
             "- Votre surlignement sur la page 15 | emplacement 220-222 | Ajouté le mardi 4 mars 2025 21:10:00",
@@ -126,7 +109,6 @@ fn base_clips() -> Vec<Clip> {
             "limit, of course",
             NoteOn("<You have reached the clipping limit for this item>"),
         ),
-        // Kindle 3 firmware: no "Your", "Loc.", an abbreviated range.
         clip(
             MIDDLEMARCH,
             "- Highlight Loc. 466-69  | Added on Friday, March 30, 2012, 03:49 PM",
@@ -167,8 +149,6 @@ fn base_clips() -> Vec<Clip> {
     ]
 }
 
-/// What the device appends later: an edit of a note already there and two
-/// new highlights.
 fn appended_clips() -> Vec<Clip> {
     use Role::*;
     vec![
@@ -217,7 +197,6 @@ fn render_clips(clips: &[Clip], eol: &str, bom: bool) -> String {
     out
 }
 
-/// Per-title expectations, computed from the roles.
 fn clippings_expected(clips: &[Clip]) -> Value {
     let mut titles: Vec<&str> = Vec::new();
     for c in clips {
@@ -234,7 +213,6 @@ fn clippings_expected(clips: &[Clip]) -> Value {
             let mut notes: Vec<(&str, &str)> = Vec::new();
             for c in clips.iter().filter(|c| c.title == *t) {
                 if let Role::NoteOn(host) = c.role {
-                    // The last note written on a highlight's one place is its note.
                     notes.retain(|(h, _)| *h != host);
                     notes.push((host, c.text));
                 }
@@ -255,8 +233,6 @@ fn clippings_expected(clips: &[Clip]) -> Value {
     })
 }
 
-// ---- the Kindle app's notebook ----------------------------------------------------
-
 const PREAMBLE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n\
 <!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"XHTML1-s.dtd\" >\n\
 <html xmlns=\"http://www.w3.org/TR/1999/REC-html-in-xml\" xml:lang=\"en\" lang=\"en\">\n\
@@ -275,9 +251,6 @@ fn header(title: &str, authors: &str) -> String {
 
 const FOOTER: &str = "</div>\n</body>\n</html>\n";
 
-/// The main notebook: colours, no page, no location, entities, `<br/>`, a note
-/// after a highlight, a lone note, a bookmark, a heading no row reads, and the
-/// markup variations the export has been seen with.
 fn remains_notebook() -> String {
     let mut s = header("The Remains of the Day", "Ishiguro, Kazuo");
     s.push_str("<div class=\"sectionHeading\">\nPrologue: July 1956\n</div>\n");
@@ -310,8 +283,6 @@ fn remains_notebook() -> String {
         "<div class=\"noteHeading\">Surlignement (<span class=\"highlight_yellow\">jaune</span>) - Emplacement 150</div>\n\
          <div class=\"noteText\">Une phrase que personne ne lira ici.</div>\n",
     );
-    // Attributes before the class, an unquoted class, a single-quoted one, a
-    // text closed with </h3> (seen in real exports), no colour at all.
     s.push_str(
         "<div id=\"h7\" CLASS=noteHeading>Highlight - Location 160</div>\n\
          <div data-n='7' class='noteText'>\n  No colour on this one.\n</h3>\n",
@@ -372,7 +343,6 @@ fn pretty(v: &Value) -> String {
     s
 }
 
-/// Write every Kindle fixture under `root` (`crates/engine/tests/fixtures/kindle`).
 pub fn generate(root: &Path) -> std::io::Result<usize> {
     let mut n = 0;
     let clips = root.join("clippings");
@@ -380,7 +350,6 @@ pub fn generate(root: &Path) -> std::io::Result<usize> {
         std::fs::create_dir_all(clips.join(d))?;
     }
     let base = base_clips();
-    // As a Kindle writes it: a BOM, `\r\n`, a separator after every entry.
     n += write(
         &clips.join("crlf/My Clippings.txt"),
         &render_clips(&base, "\r\n", true),
@@ -401,7 +370,6 @@ pub fn generate(root: &Path) -> std::io::Result<usize> {
         &pretty(&json!({
             "base": clippings_expected(&base),
             "appended": {
-                // The edit refreshes a highlight's note; the rest are new.
                 "inserted": appended.iter().filter(|c| c.role == Role::Highlight).count(),
                 "updated": appended.iter().filter(|c| matches!(c.role, Role::NoteOn(_))).count(),
                 "book": clippings_expected(&grown),

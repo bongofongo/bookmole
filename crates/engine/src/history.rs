@@ -1,39 +1,5 @@
-//! History — a reader's statistics over time — and the read summaries the
-//! Library table shares with it.
-//!
-//! Every figure a History view shows is a **derived fact** and is derived
-//! here, once, for every frontend (derived facts live in the engine; phrasing
-//! is a frontend's): which reads a span holds and where each card sits, how
-//! many pages a day, the longest *ended* run of reading days, the four records,
-//! a chart's buckets with their split and their comparison, and what was kept
-//! by book. `storage/history.rs` reads the library in a few narrow whole-table
-//! statements; the functions below are pure over what it read, which is what
-//! lets the invariants be properties (a series sums to its total, a split's
-//! parts sum to the unsplit bucket, the buckets partition the span's days).
-//!
-//! **The scope: comparisons yes, a streak no.** History offers averages,
-//! per-day rates, *+34% on 2025 to date*, *Best rated*, *Compare with: Average*
-//! — and **no current run of days is computed anywhere in this module**, since
-//! a running streak is a scoreboard of what you have not yet done today and the
-//! app deliberately has none. Enforcing that here, rather than trusting each
-//! frontend not to draw one, is the point. The longest run is reported only once it has ended, by
-//! `moments.rs`' own cutoff (a run whose last day is yesterday might still be
-//! running), and it is chosen from runs computed over the whole log *before*
-//! clipping to the span, so a run still going today can never leak in by being
-//! cut at a span's edge.
-//!
-//! ## Days are UTC
-//!
-//! Every day here is a UTC calendar day, which is what `reading_events.day` is
-//! (migration `0011`), what `ActivityByDay` answers in and what `NotePeriods`
-//! uses. A span arrives as unix seconds (`since` inclusive, `until` exclusive)
-//! and is read at day grain as the days from `since`'s to `until - 1`'s,
-//! clipped to today: a chart never draws a bucket that has not happened.
-//! **Weeks start on Monday**, as `ActivityByDay` and `NotePeriods` already do.
-//! (UTC days mean a reader at UTC−8 sees an evening's pages on the next day.)
-//!
-//! **Privacy.** Nothing here reads a passage's or a note's text; marks cross as
-//! ids, books and instants.
+//! History statistics over time and the read summaries the Library table shares, pure over what
+//! storage read. There is deliberately no current-run streak; days are UTC, weeks start Monday.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -49,27 +15,21 @@ use crate::storage::{
     run_cutoff, runs_of_days,
 };
 
-// ---- days --------------------------------------------------------------------
-
-/// The UTC day an instant falls on, or `None` outside `time`'s range (the
-/// window sentinels `±8.64e12` are the only such values in this database).
+/// The UTC day an instant falls on, or `None` outside `time`'s range (the window sentinels).
 pub fn date_of(ts: i64) -> Option<Date> {
     OffsetDateTime::from_unix_timestamp(ts)
         .ok()
         .map(|d| d.date())
 }
 
-/// Midnight UTC opening `d`.
 pub fn midnight(d: Date) -> i64 {
     d.midnight().assume_utc().unix_timestamp()
 }
 
-/// `YYYY-MM-DD`.
 pub fn fmt_day(d: Date) -> String {
     format!("{:04}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day())
 }
 
-/// `YYYY-MM-DD` back to a date; `None` for anything else.
 pub fn parse_day(s: &str) -> Option<Date> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     Date::parse(s, fmt).ok()
@@ -97,16 +57,11 @@ fn last_of_month(d: Date) -> Date {
     next.map(|n| n - Duration::days(1)).unwrap_or(first)
 }
 
-/// Whole UTC days from one instant's day to another's — the Library table's
-/// *Days = finished − started*. `None` when either is out of range.
 pub fn days_between(from: i64, to: i64) -> Option<i64> {
     Some((date_of(to)? - date_of(from)?).whole_days())
 }
 
-// ---- the span ----------------------------------------------------------------
-
-/// A span of time, unix seconds: `since` inclusive, `until` exclusive, either
-/// end open. Both absent is *all time*.
+/// Unix seconds, `since` inclusive, `until` exclusive; either end may be open.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HistorySpan {
     pub since: Option<i64>,
@@ -114,8 +69,7 @@ pub struct HistorySpan {
 }
 
 impl HistorySpan {
-    /// Refuses a span that ends before it starts (`InvalidInput`): an inverted
-    /// span would select nothing, and every figure would be a confident zero.
+    /// Refuses a span that ends before it starts (`InvalidInput`), which would yield confident zeros.
     pub fn new(since: Option<i64>, until: Option<i64>) -> Result<HistorySpan> {
         if let (Some(s), Some(u)) = (since, until)
             && s >= u
@@ -131,7 +85,6 @@ impl HistorySpan {
         self.since.is_none_or(|s| t >= s) && self.until.is_none_or(|u| t < u)
     }
 
-    /// Whether the closed interval `[a, b]` meets the span.
     pub fn overlaps(&self, a: i64, b: i64) -> bool {
         self.since.is_none_or(|s| b >= s) && self.until.is_none_or(|u| a < u)
     }
@@ -157,47 +110,32 @@ impl HistorySpan {
     }
 }
 
-// ---- reads -------------------------------------------------------------------
-
-/// One read as History and the Library table draw it.
 #[derive(Debug, Clone)]
 pub struct HistoryRead {
     pub book: Book,
     pub reading: Reading,
-    /// This read's progress, through [`Progress::of_reading`].
     pub progress: Progress,
     pub count: ReadCount,
     pub state: ReadingState,
-    /// When it was put down: `readings.put_down_at` (migration `0025`), else —
-    /// for a reading a merge closed `abandoned` — its `finished_at`. `None` for
-    /// a put-down read from before the column existed: *not since we started
-    /// recording*, never a guess.
+    /// `readings.put_down_at`, else `finished_at` for a reading a merge closed `abandoned`; `None` for
+    /// older put-down reads, never a guess.
     pub put_down_at: Option<i64>,
-    /// When the read ended: `finished_at` for a finished read, `put_down_at`
-    /// for a put-down one, `None` while it is open.
     pub ended_at: Option<i64>,
-    /// **Where the card sits on the timeline**, and the instant a span is
-    /// tested against: `ended_at`, else now for an open read, else — a put-down
-    /// read with no recorded instant — its `last_modified`, which is an upper
-    /// bound on when it was put down and is used only to place it.
+    /// Where the card sits and what a span is tested against: `ended_at`, else now if open, else
+    /// `last_modified` (an upper bound, used only for placement).
     pub at: i64,
-    /// Whole UTC days from start to end — finished or put down — when both are
-    /// known: the table's *Days = finished − started*.
     pub days: Option<i64>,
     pub rating: Option<Rating>,
-    /// Passages kept during this read: `highlights.reading_id`, the import's
-    /// window attribution.
     pub passages: i64,
-    /// Notes written during this read — see [`attribute_note`].
     pub notes: i64,
-    /// Every month (`YYYY-MM`, UTC) from the read's start to `at`, oldest
-    /// first: the spine's bar. A read with no start date spans its end month.
+    /// Every `YYYY-MM` (UTC) month from the read's start to `at`; a read with no start spans its end
+    /// month.
     pub months: Vec<String>,
 }
 
 impl HistoryRead {
-    /// When the read began, for a span test: `started_at`, else its end, else
-    /// when we learned of it — never after `at`.
+    /// When the read began, for span tests: `started_at`, else its end, else when we learned of it;
+    /// never after `at`.
     pub fn begin(&self) -> i64 {
         self.reading
             .started_at
@@ -206,30 +144,20 @@ impl HistoryRead {
             .min(self.at)
     }
 
-    /// Was this read under way at instant `t`?
     pub fn in_progress_at(&self, t: i64) -> bool {
         if self.begin() > t {
             return false;
         }
         match self.state {
-            // A put-down read with no instant cannot be placed, so it is not
-            // claimed as under way at any time.
+            // A put-down read with no instant cannot be placed, so it is never claimed as under way.
             ReadingState::Abandoned => self.put_down_at.is_some_and(|p| p > t),
             _ => self.ended_at.is_none_or(|e| e > t),
         }
     }
 }
 
-/// Which read an ordinary note belongs to.
-///
-/// A reflection or a review names its reading (`notes.reading_id`) and that
-/// wins. An ordinary note floats free of any reading by design, so it is placed
-/// by **when it was written**: the reading of its book whose window holds
-/// `created_at`, the windows being `attribute_highlights`' own
-/// ([`crate::storage::ReadWindow`], from the one derivation). Two windows
-/// holding the instant resolve to the later-starting one, then the higher id —
-/// the highlight rule's tie-break — so the answer does not depend on the order
-/// the windows were read in (asserted as a property).
+/// A reflection or review names its reading and wins. An ordinary note goes to the reading of its
+/// book whose window holds `created_at`; ties go to the later start, then the higher id.
 pub fn attribute_note(note: &MarkStamp, windows: &[ReadWindow]) -> Option<i64> {
     if note.reading_id.is_some() {
         return note.reading_id;
@@ -242,7 +170,6 @@ pub fn attribute_note(note: &MarkStamp, windows: &[ReadWindow]) -> Option<i64> {
         .map(|w| w.reading_id)
 }
 
-/// Everything the derivations read, in one bundle.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryFacts {
     pub reads: Vec<ReadFacts>,
@@ -254,8 +181,6 @@ pub struct HistoryFacts {
 }
 
 impl HistoryFacts {
-    /// The earliest day the library holds any fact on — the start of an
-    /// all-time span.
     pub fn first_known(&self) -> Option<Date> {
         let events = self.events.iter().filter_map(|e| parse_day(&e.day));
         let marks = self
@@ -280,9 +205,7 @@ impl HistoryFacts {
     }
 }
 
-/// Every reading summarised, keyed by reading id. Readings whose book is
-/// missing (impossible under the foreign key) are skipped rather than drawn
-/// faceless.
+/// Readings whose book is missing (impossible under the foreign key) are skipped.
 pub fn summarise_reads(f: &HistoryFacts, now: i64) -> Vec<HistoryRead> {
     let mut passages: HashMap<i64, i64> = HashMap::new();
     for p in &f.passages {
@@ -362,9 +285,7 @@ fn months_between(a: i64, b: i64) -> Vec<String> {
     out
 }
 
-/// The reads a span holds, **newest end first** (`at` descending, then
-/// reading id descending): every read whose `[begin, at]` meets the span —
-/// open, finished and put down alike.
+/// Reads whose `[begin, at]` meets the span, newest end first (`at`, then reading id, descending).
 pub fn timeline(reads: &[HistoryRead], span: &HistorySpan) -> Vec<HistoryRead> {
     let mut out: Vec<HistoryRead> = reads
         .iter()
@@ -375,12 +296,8 @@ pub fn timeline(reads: &[HistoryRead], span: &HistorySpan) -> Vec<HistoryRead> {
     out
 }
 
-/// The open reads — *Reading now* — with this read's passages, notes and
-/// progress, **most recently begun first** ([`HistoryRead::begin`]
-/// descending, then reading id descending). Open means
-/// [`ReadingState::Reading`]: a put-down read is still `finished_at IS NULL`
-/// in the table and is not being read, and a status this build does not model
-/// is not claimed as either. No span: *now* is not a period.
+/// Open reads (`ReadingState::Reading` only: a put-down read still has `finished_at IS NULL`),
+/// most recently begun first, then reading id descending. No span: now is not a period.
 pub fn reading_now(reads: &[HistoryRead]) -> Vec<HistoryRead> {
     let mut out: Vec<HistoryRead> = reads
         .iter()
@@ -395,19 +312,13 @@ pub fn reading_now(reads: &[HistoryRead]) -> Vec<HistoryRead> {
     out
 }
 
-// ---- the Overview's top row --------------------------------------------------
-
-/// A claimant of the activity log, with the name a frontend may show for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceName {
-    /// `reading_events.source` (or `highlights.source`, `readings.source`) as
-    /// stored — the stable key.
     pub key: String,
     pub label: String,
 }
 
-/// The proper name of a claimant. A product name is not phrasing, so it is
-/// named here once; a frontend that wants other words keys on `key`.
+/// The proper product name of a claimant; a frontend wanting other words keys on `key`.
 pub fn source_label(source: &str) -> String {
     match source {
         "koreader" => "KOReader".into(),
@@ -422,7 +333,6 @@ pub fn source_label(source: &str) -> String {
     }
 }
 
-/// A run of consecutive reading days that has **ended**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayRun {
     pub days: i64,
@@ -430,40 +340,28 @@ pub struct DayRun {
     pub last: String,
 }
 
-/// The Overview's top row for one span.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryFigures {
-    /// Reads closed as *finished* inside the span.
     pub books_finished: i64,
-    /// Reads under way at the span's end (now, for a span reaching today).
     pub reading_now: i64,
-    /// Put-down reads placed inside the span (see [`HistoryRead::at`]).
     pub put_down: i64,
     /// Pages the log measured in the span; `None` when nothing measured any.
     pub pages: Option<i64>,
     /// Days the span has had so far — the denominator of every per-day rate.
     pub elapsed_days: i64,
     pub pages_per_day: Option<f64>,
-    /// Minutes the log measured; `None` when nothing measured any.
     pub minutes: Option<i64>,
-    /// Which claimants measured those minutes, most minutes first.
     pub minutes_from: Vec<SourceName>,
-    /// Passages kept in the span, dated by the device's stamp.
     pub passages: i64,
-    /// Passages kept during the reads finished in the span, per such read.
-    /// `None` with nothing finished.
     pub passages_per_finished_book: Option<f64>,
-    /// Notes written in the span, every kind.
     pub notes: i64,
     pub reviews: i64,
     pub reflections: i64,
-    /// The longest run of consecutive days carrying any activity, among runs
-    /// that have **ended**, clipped to the span; ties go to the most recent.
-    /// There is deliberately no current run here or anywhere.
+    /// The longest ended run of consecutive active days, clipped to the span; ties go to the most
+    /// recent.
     pub longest_run: Option<DayRun>,
 }
 
-/// The Overview's figures. `now` is passed in so a test can say when it is.
 pub fn figures(
     f: &HistoryFacts,
     reads: &[HistoryRead],
@@ -540,8 +438,7 @@ pub fn figures(
     }
 }
 
-/// `None` when every value is `None` — the activity log's own rule that a
-/// period nothing measured has no pages rather than zero of them.
+/// `None` when every value is `None`: a period nothing measured has no pages, not zero.
 fn sum_known(values: impl Iterator<Item = Option<i64>>) -> Option<i64> {
     values.fold(None, |acc, v| match (acc, v) {
         (a, None) => a,
@@ -550,12 +447,8 @@ fn sum_known(values: impl Iterator<Item = Option<i64>>) -> Option<i64> {
     })
 }
 
-/// The longest **ended** run, clipped to the span.
-///
-/// Runs are computed over the whole log first and filtered by
-/// `moments.rs`' cutoff *before* clipping — so a run still going today is
-/// excluded whole, and cannot reappear as an "ended" run because a span's edge
-/// happened to cut it.
+/// Runs are computed over the whole log and filtered by the ended cutoff before clipping, so a run
+/// still going today is excluded whole rather than cut at a span edge.
 pub fn longest_ended_run(events: &[DayFact], span: &HistorySpan, now: i64) -> Option<DayRun> {
     let cutoff = run_cutoff(now).ok()?;
     let mut days: Vec<String> = events.iter().map(|e| e.day.clone()).collect();
@@ -569,7 +462,6 @@ pub fn longest_ended_run(events: &[DayFact], span: &HistorySpan, now: i64) -> Op
         if b > cutoff {
             continue;
         }
-        // Clip to the span's days.
         let mut lo = a;
         while lo <= b && !span.contains_day(lo) {
             lo += Duration::days(1);
@@ -593,34 +485,21 @@ pub fn longest_ended_run(events: &[DayFact], span: &HistorySpan, now: i64) -> Op
     })
 }
 
-// ---- records -----------------------------------------------------------------
-
-/// One record, naming its read.
 #[derive(Debug, Clone)]
 pub struct HistoryRecord {
     pub read: HistoryRead,
-    /// The book's page count, when known.
     pub pages: Option<i64>,
-    /// `pages / days`, a same-day read counting as one day.
     pub pages_per_day: Option<f64>,
-    /// Passages plus notes during the read.
     pub marks: i64,
-    /// Other reads in the span holding the same value — *your only 5 this year
-    /// besides …*. Most recent first.
     pub tied_with: Vec<HistoryRead>,
 }
 
-/// *This year's records*, each over the reads **finished** in the span.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryRecords {
-    /// Fewest days from start to finish (reads with a start date).
     pub fastest: Option<HistoryRecord>,
-    /// Most pages (reads whose book has a page count).
     pub longest: Option<HistoryRecord>,
-    /// Most passages plus notes (at least one).
     pub most_marked: Option<HistoryRecord>,
-    /// Highest rating, compared as a fraction of its own scale so two scales
-    /// can meet (reads with a rated review).
+    /// Highest rating, compared as a fraction of its own scale so different scales can meet.
     pub best_rated: Option<HistoryRecord>,
 }
 
@@ -629,10 +508,8 @@ fn rating_fraction(r: &Rating) -> Option<f64> {
     (span > 0.0).then(|| (r.value - r.scale.min) / span)
 }
 
-/// The four records. **Every tie goes to the most recent finish** (then the
-/// higher reading id) — the natural rule for *Best rated*, applied to all four
-/// so none of them depends on load order. Ratings on different scales meet as
-/// a fraction of their own scale.
+/// Every tie goes to the most recent finish, then the higher reading id, so no record depends on
+/// load order. Ratings on different scales meet as a fraction of their own scale.
 pub fn records(reads: &[HistoryRead], span: &HistorySpan) -> HistoryRecords {
     let finished: Vec<&HistoryRead> = reads
         .iter()
@@ -641,7 +518,6 @@ pub fn records(reads: &[HistoryRead], span: &HistorySpan) -> HistoryRecords {
         })
         .collect();
 
-    // Higher key wins; ties by recency. `key` returns `None` to sit out.
     fn pick<K: PartialOrd + Copy>(
         reads: &[&HistoryRead],
         key: impl Fn(&HistoryRead) -> Option<K>,
@@ -682,7 +558,6 @@ pub fn records(reads: &[HistoryRead], span: &HistorySpan) -> HistoryRecords {
     }
 
     HistoryRecords {
-        // Fewest days is the highest negated count.
         fastest: pick(&finished, |r| r.days.map(|d| -d)),
         longest: pick(&finished, |r| r.book.page_count.filter(|p| *p > 0)),
         most_marked: pick(&finished, |r| Some(r.passages + r.notes).filter(|m| *m > 0)),
@@ -690,27 +565,17 @@ pub fn records(reads: &[HistoryRead], span: &HistorySpan) -> HistoryRecords {
     }
 }
 
-// ---- series ------------------------------------------------------------------
-
-/// What a chart counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryMetric {
-    /// Pages the activity log measured.
     Pages,
-    /// Minutes the activity log measured.
     Minutes,
-    /// Reads closed as finished, on the day they closed.
     BooksFinished,
-    /// Passages kept, on the device's day.
     Passages,
-    /// Notes written, on the day they were created.
     Notes,
 }
 
 impl HistoryMetric {
-    /// Pages and minutes are *measured* — a bucket nothing measured has no
-    /// value rather than zero. The other three count the engine's own rows,
-    /// where zero is knowable.
+    /// Pages and minutes are measured: an unmeasured bucket has no value, not zero.
     pub fn is_measured(self) -> bool {
         matches!(self, HistoryMetric::Pages | HistoryMetric::Minutes)
     }
@@ -729,13 +594,11 @@ impl HistoryMetric {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryGroup {
     Day,
-    /// Monday to Sunday.
     Week,
     Month,
 }
 
 impl HistoryGroup {
-    /// The calendar bucket a day falls in, by its first day.
     pub fn period_of(self, d: Date) -> Date {
         match self {
             HistoryGroup::Day => d,
@@ -754,8 +617,7 @@ impl HistoryGroup {
         }
     }
 
-    /// The comparable day a year earlier: the same weekday 52 weeks back for a
-    /// week, the same calendar date for a day or a month.
+    /// The comparable day a year earlier: same weekday 52 weeks back for a week, same date otherwise.
     fn last_year(self, d: Date) -> Date {
         match self {
             HistoryGroup::Week => d - Duration::days(364),
@@ -775,25 +637,20 @@ impl HistoryGroup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistorySplit {
     Unsplit,
-    /// One part per book (`key` is the book id; `none` for a note with no book).
     Book,
-    /// One part per claimant — `reading_events.source` for pages and minutes,
-    /// `readings.source` for books, `highlights.source` for passages, `vault`
-    /// for notes. The log records no device identity beyond its claimant, so
-    /// *KOReader* is one part however many readers it ran on.
+    /// One part per claimant (`reading_events.source`, `readings.source`, `highlights.source`,
+    /// `vault`). No device identity is recorded, so KOReader is one part however many readers it ran
+    /// on.
     Device,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryCompare {
     Nothing,
-    /// The same bucket a year earlier ([`HistoryGroup`]'s `last_year`).
     LastYear,
-    /// The series' own per-bucket average, on every bucket.
     Average,
 }
 
-/// One chart's question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesQuery {
     pub metric: HistoryMetric,
@@ -803,7 +660,6 @@ pub struct SeriesQuery {
     pub span: HistorySpan,
 }
 
-/// One dated contribution to a metric.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayPoint {
     pub day: Date,
@@ -821,16 +677,14 @@ pub struct SeriesPart {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeriesBucket {
-    /// The calendar bucket's own first day (a Monday, the 1st) — *Week of 5 Oct*.
     pub period: String,
-    /// The first and last day **counted**: the bucket clipped to the span and
-    /// to today. The buckets' `[start, end]` partition the span's days.
+    /// The first and last day counted: the bucket clipped to the span and today. Buckets partition the
+    /// span's days.
     pub start: String,
     pub end: String,
     pub value: i64,
-    /// For pages and minutes: whether anything in this bucket measured the
-    /// metric. `false` is *no data*, to be drawn as an absence and not a zero.
-    /// Always `true` for the counted metrics.
+    /// For pages and minutes: whether anything measured this bucket. `false` is no data, not zero;
+    /// always `true` for counted metrics.
     pub known: bool,
     /// The split, largest first (then key); empty when unsplit. Sums to `value`.
     pub parts: Vec<SeriesPart>,
@@ -840,24 +694,17 @@ pub struct SeriesBucket {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistorySeries {
     pub buckets: Vec<SeriesBucket>,
-    /// The sum of every bucket.
     pub total: i64,
-    /// `known` over the whole series.
     pub known: bool,
-    /// `total / buckets`; `None` with no bucket.
     pub average: Option<f64>,
-    /// The index of the largest bucket (the earliest of equals); `None` when
-    /// every bucket is zero.
+    /// Index of the largest bucket (earliest of equals); `None` when every bucket is zero.
     pub busiest: Option<usize>,
-    /// *Compare with: Last year* — the comparison buckets summed, which is the
-    /// same span a year earlier **to date**, since buckets stop at today.
+    /// The comparison buckets summed: the same span a year earlier to date, since buckets stop at
+    /// today.
     pub compare_total: Option<i64>,
-    /// `(total − compare_total) / compare_total`: *+34% on 2025 to date*.
-    /// `None` when there is nothing to compare with.
     pub compare_change: Option<f64>,
 }
 
-/// The dated points one metric is made of.
 pub fn points(f: &HistoryFacts, reads: &[HistoryRead], metric: HistoryMetric) -> Vec<DayPoint> {
     match metric {
         HistoryMetric::Pages | HistoryMetric::Minutes => f
@@ -910,8 +757,6 @@ pub fn points(f: &HistoryFacts, reads: &[HistoryRead], metric: HistoryMetric) ->
     }
 }
 
-/// The bucket boundaries for the days `first..=last`: `(period, start, end)`,
-/// contiguous and in order.
 pub fn buckets_of(group: HistoryGroup, first: Date, last: Date) -> Vec<(Date, Date, Date)> {
     let mut out = Vec::new();
     let mut period = group.period_of(first);
@@ -931,12 +776,6 @@ fn part_key(split: HistorySplit, p: &DayPoint) -> String {
     }
 }
 
-/// Bucket a metric's points over the days `first..=last`.
-///
-/// `labels` names a book part (`key` = book id); a device part is named by
-/// [`source_label`]. Pure, so the three invariants are properties: the bucket
-/// values sum to `total` (and to the points inside the days), the parts of a
-/// bucket sum to its value, and the buckets partition the days.
 pub fn series(
     pts: &[DayPoint],
     q: &SeriesQuery,
@@ -1054,9 +893,6 @@ pub fn series(
     }
 }
 
-// ---- what was kept, by book --------------------------------------------------
-
-/// One book's share of what was kept in a span.
 #[derive(Debug, Clone)]
 pub struct KeptRow {
     pub book: Book,
@@ -1064,9 +900,8 @@ pub struct KeptRow {
     pub notes: i64,
 }
 
-/// *What you kept, by book*: passages and notes dated in the span, per book,
-/// most first (passages + notes, then passages, then title order, then id).
-/// A negative `limit` is no limit. Notes with no book are not a book's.
+/// Passages and notes dated in the span, per book, most first (passages + notes, then passages,
+/// then title order, then id). A negative `limit` is no limit; notes with no book are not counted.
 pub fn kept(
     f: &HistoryFacts,
     span: &HistorySpan,
@@ -1110,22 +945,14 @@ pub fn kept(
     rows
 }
 
-// ---- CSV ---------------------------------------------------------------------
-
-/// A CSV the engine wrote into the exports folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedCsv {
     pub path: std::path::PathBuf,
-    /// Data rows, header excluded.
     pub rows: i64,
 }
 
-/// The series as CSV text: `start,end,period,part,label,value,compare`.
-/// Every free-text cell goes through [`inert_cell`], so a book titled
-/// `=HYPERLINK(…)` cannot become a live formula in a spreadsheet.
-/// One row per bucket with an empty `part` (the bucket's total, carrying the
-/// comparison), followed by one row per part when split. Days are the counted
-/// `start`/`end`; `compare` is empty when there is none.
+/// `start,end,period,part,label,value,compare`: a total row per bucket (empty `part`), then one row
+/// per part when split. Free-text cells go through [`inert_cell`] so none is a live formula.
 pub fn series_csv(s: &HistorySeries) -> Result<(String, i64)> {
     let mut w = csv::Writer::from_writer(Vec::new());
     w.write_record([
@@ -1144,8 +971,6 @@ pub fn series_csv(s: &HistorySeries) -> Result<(String, i64)> {
             .map_err(csv_err)?;
         rows += 1;
         for p in &b.parts {
-            // The key and the label are free text — a book title, an
-            // importer's claimant word — so neither may start a formula.
             w.write_record([
                 b.start.as_str(),
                 b.end.as_str(),
@@ -1169,12 +994,7 @@ fn csv_err(e: csv::Error) -> EngineError {
     EngineError::Other(format!("writing the history CSV: {e}"))
 }
 
-// ---- the facade --------------------------------------------------------------
-
 impl Engine {
-    /// Everything History derives from, read once.
-    /// `with_events: false` skips the activity log for a caller that reads no
-    /// pages or minutes.
     pub(crate) async fn history_facts(&self, with_events: bool) -> Result<HistoryFacts> {
         let books = self
             .storage
@@ -1197,21 +1017,16 @@ impl Engine {
         })
     }
 
-    /// Every read the span holds, newest end first — see [`timeline`].
     pub async fn history_timeline(&self, span: &HistorySpan) -> Result<Vec<HistoryRead>> {
         let f = self.history_facts(false).await?;
         Ok(timeline(&summarise_reads(&f, now_unix()), span))
     }
 
-    /// The open reads, each with this read's counts and progress — see
-    /// [`reading_now`].
     pub async fn history_reading_now(&self) -> Result<Vec<HistoryRead>> {
         let f = self.history_facts(false).await?;
         Ok(reading_now(&summarise_reads(&f, now_unix())))
     }
 
-    /// The headline figures — see [`figures`]. No current run, by design (see
-    /// the module doc).
     pub async fn history_figures(&self, span: &HistorySpan) -> Result<HistoryFigures> {
         let now = now_unix();
         let f = self.history_facts(true).await?;
@@ -1219,13 +1034,11 @@ impl Engine {
         Ok(figures(&f, &reads, span, now))
     }
 
-    /// *This year's records* — see [`records`].
     pub async fn history_records(&self, span: &HistorySpan) -> Result<HistoryRecords> {
         let f = self.history_facts(false).await?;
         Ok(records(&summarise_reads(&f, now_unix()), span))
     }
 
-    /// One chart — see [`series`].
     pub async fn history_series(&self, q: &SeriesQuery) -> Result<HistorySeries> {
         let now = now_unix();
         let f = self.history_facts(true).await?;
@@ -1240,17 +1053,14 @@ impl Engine {
         Ok(series(&points(&f, &reads, q.metric), q, days, &labels))
     }
 
-    /// *What you kept, by book* — see [`kept`].
     pub async fn history_kept(&self, span: &HistorySpan, limit: i64) -> Result<Vec<KeptRow>> {
         let f = self.history_facts(false).await?;
         let title_order = self.title_order().await?;
         Ok(kept(&f, span, &title_order, limit))
     }
 
-    /// The chart as a CSV in [`Engine::exports_dir`], the Anki export's shape:
-    /// no dialog, the path is the answer. Named
-    /// `history-<metric>-<group>-<UTC stamp>.csv`; a second export in the same
-    /// second gets a suffix rather than overwriting the first.
+    /// Writes `history-<metric>-<group>-<UTC stamp>.csv` to [`Engine::exports_dir`]; a second export in
+    /// the same second gets a suffix rather than overwriting.
     pub async fn export_history_series(&self, q: &SeriesQuery) -> Result<SavedCsv> {
         let series = self.history_series(q).await?;
         let (text, rows) = series_csv(&series)?;
@@ -1270,8 +1080,6 @@ impl Engine {
         Ok(SavedCsv { path, rows })
     }
 
-    /// Each book's position in the engine's Title order (`BookSort::Title`),
-    /// 0-based.
     pub(crate) async fn title_order(&self) -> Result<HashMap<i64, i64>> {
         self.sort_positions(crate::storage::BookSort::Title).await
     }
@@ -1301,7 +1109,6 @@ mod tests {
 
     #[test]
     fn weeks_start_on_monday_and_months_on_the_first() {
-        // 2026-11-10 is a Tuesday.
         assert_eq!(
             HistoryGroup::Week.period_of(d("2026-11-10")),
             d("2026-11-09")
@@ -1379,7 +1186,6 @@ mod tests {
             pages: None,
             source: "vault".into(),
         };
-        // A run from 30 Dec 2025 to yesterday (10 Nov 2026 is today).
         let mut events = Vec::new();
         let mut day = d("2025-12-30");
         while day <= d("2026-11-09") {
@@ -1442,8 +1248,6 @@ mod props {
     }
 
     proptest! {
-        /// The buckets partition the days: contiguous, in order, covering
-        /// exactly `first..=last`, each inside its own calendar period.
         #[test]
         fn groupings_partition_the_days(a in 0i64..400, len in 0i64..400, g in group()) {
             let first = parse_day("2025-01-01").unwrap() + Duration::days(a);
@@ -1461,8 +1265,6 @@ mod props {
             }
         }
 
-        /// The series sums to its total, and the total is every point inside
-        /// the days — nothing double-counted at a bucket edge, nothing lost.
         #[test]
         fn a_series_sums_to_its_total(pts in proptest::collection::vec(point(), 0..80),
                                       a in 0i64..60, len in 0i64..90, g in group()) {
@@ -1474,7 +1276,6 @@ mod props {
             prop_assert_eq!(s.total, inside);
         }
 
-        /// A split's parts sum to the unsplit bucket, for either split.
         #[test]
         fn a_splits_parts_sum_to_the_unsplit_series(pts in proptest::collection::vec(point(), 0..80),
                                                     g in group(), by_book in any::<bool>()) {
@@ -1489,8 +1290,6 @@ mod props {
             }
         }
 
-        /// A note's read does not depend on the order the windows were read in,
-        /// and a window it is placed by holds it.
         #[test]
         fn note_attribution_is_order_independent(
             wins in proptest::collection::vec((1i64..4, 0i64..100, 0i64..100), 0..8),

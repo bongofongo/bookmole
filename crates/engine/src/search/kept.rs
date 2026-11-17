@@ -1,12 +1,5 @@
-//! Reading kept records back into results, and the one record the
-//! engine writes in its own words.
-//!
-//! A record kept as `doc` is the provider's own JSON and is read by that
-//! provider's module (`openlibrary::decode_doc`), so a parser that improves
-//! improves every kept record with it. A record kept as `book` is an answer
-//! that took several requests to assemble — Open Library's ISBN lookup is the
-//! edition, then its authors, then its work — where there is no one response to
-//! keep; it is kept as [`KeptBook`], the engine's own reading of it.
+//! Reads kept records back into results, and writes the one record the engine builds itself.
+//! A `doc` is the provider's own JSON, decoded by that provider; a `book` is a `KeptBook`.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,12 +10,7 @@ use crate::providers::{
 };
 use crate::storage::KeptRow;
 
-/// The fields of a [`Book`] a provider supplies, as kept for an ISBN lookup.
-///
-/// **Built and read by exhaustive destructuring**, never by `..`: a field added
-/// to `Book` fails to compile here until somebody decides whether a provider
-/// supplies it, which is the only way a second list of columns stays the same
-/// list as the first.
+/// Built by exhaustive destructuring, never `..`: a new `Book` field must fail to compile here.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KeptBook {
     title: Option<String>,
@@ -48,7 +36,6 @@ pub(crate) struct KeptBook {
 impl From<&Book> for KeptBook {
     fn from(b: &Book) -> Self {
         let Book {
-            // What a provider says.
             title,
             authors,
             translators,
@@ -67,8 +54,6 @@ impl From<&Book> for KeptBook {
             subjects,
             series,
             series_index,
-            // Ours: the row, its filing key, the stored jacket and what was
-            // measured of it, and the reading state. No provider says these.
             id: _,
             sort_title: _,
             cover_path: _,
@@ -154,13 +139,11 @@ impl From<KeptBook> for Book {
     }
 }
 
-/// The key an edition looked up by ISBN is kept under: the canonical ISBN-13,
-/// so the same edition typed as its ISBN-10 is the same record.
+/// Keyed on the canonical ISBN-13, so the same edition typed as an ISBN-10 is one record.
 pub(crate) fn isbn_key(book: &Book) -> Option<String> {
     book.canonical_isbn13().map(|i| format!("isbn:{i}"))
 }
 
-/// An ISBN lookup's answer, as the one record it is kept as.
 pub(crate) fn book_record(book: &Book) -> Option<KeptRecord> {
     Some(KeptRecord {
         key: isbn_key(book)?,
@@ -172,9 +155,6 @@ pub(crate) fn book_record(book: &Book) -> Option<KeptRecord> {
     })
 }
 
-/// Kept rows back into the result they were. `Err` names a body that no
-/// longer reads (a provider changed its shape, or a parser grew stricter);
-/// the caller drops it and asks the provider again rather than failing.
 pub(crate) fn decode(
     provider: ProviderId,
     rows: &[KeptRow],
@@ -205,7 +185,6 @@ pub(crate) fn decode(
                 let edition = rows.iter().find(|r| r.kind == RecordKind::Edition);
                 openlibrary::decode_doc(&work.body, edition.map(|e| e.body.as_str()), position)
             }
-            // Never kept, so never read back.
             ProviderId::GoogleBooks => Err(unreadable("is from a provider that is never kept")),
         },
     }
@@ -215,8 +194,6 @@ pub(crate) fn decode(
 mod tests {
     use super::*;
 
-    /// Everything a provider supplies survives the round trip; nothing of ours
-    /// is carried.
     #[test]
     fn a_kept_book_round_trips_what_a_provider_supplies() {
         let b = Book {

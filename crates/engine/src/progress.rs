@@ -1,104 +1,39 @@
-//! How far into a book a reading is — as a **value**, once.
-//!
-//! The model case of a derived fact living in the engine. Before this module
-//! there were four implementations of this arithmetic and they did not agree:
-//!
-//! | | rule |
-//! |---|---|
-//! | `crates/tui/src/ui/library.rs` | `done` / `{pct}%` / `p.{p}` / `""` — guards `total > 0` |
-//! | `crates/tui/src/ui/home.rs` | delegates to the above, **then** falls back to `Reading::ko_percent` |
-//! | `crates/tui/src/ui/book.rs` | `finished` / `{p} / {t} · {pct}%` / `page {p}` / `not started` |
-//! | `crates/cli/src/render.rs` | `[finished]` / `[p/t]` / `[p.{p}]` — **no `total > 0` guard**, so a zero page count printed `[12/0]` |
-//!
-//! The words in that table are still each frontend's. What is not is *which
-//! case a book is in*, and there are three real hazards behind that:
-//!
-//! 1. **`page_count = 0`** is a real row in `make dev-db`. Every percentage
-//!    over it is a divide by zero, and the honest answer is that there is no
-//!    percentage — which is a different answer from 0%. [`Progress`] normalises
-//!    a zero denominator to absence rather than carrying it, so a caller cannot
-//!    reach one.
-//! 2. **`page_count = NULL`** is also real, and is absence rather than zero. A
-//!    progress bar must not draw an empty track over an unknown length, which
-//!    is what every `unwrap_or(0)` produces.
-//! 3. **`ko_percent`** — the device's own fraction — is a *better* answer than
-//!    pages for a book with no page count, and a book pulled from a KOReader
-//!    sidecar routinely has one and no `current_page` at all. Choosing between
-//!    the two is exactly the derivation that must not live in two frontends.
-//!
-//! **Pages win where they can answer; the device fills in where they cannot.**
-//! `current_page` is ours — merged, editable, and the number printed on the
-//! paper — so where there is an honest denominator it is what a reader
-//! recognises. `ko_percent` is refreshed by straight assignment from the device
-//! and can disagree with `current_page`; it is consulted only when pages have
-//! nothing to say, which reproduces exactly what `home.rs` did by hand and is
-//! now the only copy of the rule.
-//!
-//! **This is not reading *state*.** Whether a book is being read, was put down,
-//! or was never opened is [`crate::ReadingState`]; `Progress::Untouched` says
-//! only that nothing has been recorded, and an abandoned book halfway through
-//! is `Started` like any other. Conflating them is how "abandoned" becomes a
-//! progress bar that stopped short, which is failure framing wearing arithmetic.
+//! How far into a book a reading is, as a value. Pages win where there is a nonzero page count; the
+//! device's percentage fills in otherwise. Not reading state: `Untouched` only means nothing
+//! recorded.
 
 use crate::book::Book;
 use crate::storage::{Reading, STATUS_FINISHED};
 
-/// Where a fraction came from. Frontends may say so or not; what they may not
-/// do is compute one and forget which it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FractionSource {
-    /// `current_page / page_count`, with an honest denominator.
     Pages,
-    /// `readings.ko_percent` — the device's own, for a book whose length we do
-    /// not know.
     Device,
 }
 
-/// A fraction of a book, `0.0..=1.0`, and where it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fraction {
-    /// Clamped to `0.0..=1.0` on construction. A device that reports 1.02, or a
-    /// `current_page` past a stale `page_count`, is a real thing and a progress
-    /// bar 102% wide is not.
+    /// Clamped to `0.0..=1.0` on construction; devices report 1.02 and stale page counts exist.
     pub value: f64,
     pub source: FractionSource,
 }
 
-/// How far into a book a reading is.
-///
-/// Three cases, and the middle one carries what it knows rather than filling
-/// the gaps: a book can have a page and no length, a length and no page, a
-/// device percentage and neither.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Progress {
-    /// Nothing has been recorded: no page, no device percentage, not finished.
-    ///
-    /// **Not zero**, and deliberately not called *unread*. A book nobody has
-    /// opened and a book opened at page one are the same row here; the
-    /// difference between them is [`crate::ReadingState`], and a name like
-    /// "unread" would put the banned completion framing into a type.
+    /// Nothing recorded. Deliberately not named `Unread`: a never-opened book and one at page one are
+    /// the same row here, and that name would put completion framing into a type.
     Untouched,
-    /// Somewhere in it.
     Started {
-        /// The current reading's page, if one is recorded.
         page: Option<i64>,
-        /// The book's length. **Never `Some(0)`** — a zero page count is a
-        /// false denominator and is normalised to absence here, which is the
-        /// one place it can be done once.
+        /// The book's length. Never `Some(0)`: a zero page count is normalised to absence here.
         of: Option<i64>,
-        /// The fraction, when one is computable honestly. `None` is a real
-        /// answer: a page with no length has no percentage.
+        /// `None` is a real answer: a page with no length has no percentage.
         fraction: Option<Fraction>,
     },
-    /// The current reading is closed as finished.
-    ///
-    /// Carries no page: every frontend that had this case dropped the numbers
-    /// for a word, and a book finished at page 200 of 200 has nothing a page
-    /// number adds.
+    /// The current reading is closed as finished. Carries no page: frontends show a word, not numbers.
     Finished,
 }
 
-/// A page count that can be divided by, or nothing.
 fn denominator(page_count: Option<i64>) -> Option<i64> {
     page_count.filter(|t| *t > 0)
 }
@@ -108,10 +43,6 @@ fn clamp(v: f64) -> f64 {
 }
 
 impl Progress {
-    /// Assemble from the parts, applying the rule the module header states.
-    ///
-    /// The one constructor the two public entry points share, so that "pages
-    /// first, device second" cannot be spelled twice.
     fn from_parts(
         finished: bool,
         page: Option<i64>,
@@ -138,25 +69,14 @@ impl Progress {
         Progress::Started { page, of, fraction }
     }
 
-    /// **The current reading's** progress, off a [`Book`].
-    ///
-    /// Not "the book's": `current_page`, `finished` and `ko_percent` are
-    /// read-only projections of the current reading (open if there is one, else
-    /// the most recent), so on a reread this is the progress of the read you are
-    /// in and not of the book across all of them. Every existing call site wanted
-    /// exactly that, which is why this form exists at all — but a screen showing
-    /// one *specific* reading of a book must use [`Progress::of_reading`], or it
-    /// will show the current read's numbers under an older read's heading.
+    /// The current reading's progress (open one, else the most recent), not the book's across rereads.
+    /// A screen showing one specific reading must use [`Progress::of_reading`].
     pub fn of_book(b: &Book) -> Progress {
         Progress::from_parts(b.finished, b.current_page, b.page_count, b.ko_percent)
     }
 
-    /// One named reading's progress.
-    ///
-    /// `page_count` comes from the book, because length is bibliographic and
-    /// `readings` has no column for it. A reading is finished when it is
-    /// *closed* as finished — `status`, not `finished_at`, since
-    /// `abandon_reading` deliberately leaves the reading open.
+    /// One named reading's progress. `page_count` comes from the book; finished means closed as
+    /// finished by `status`, since `abandon_reading` leaves the reading open.
     pub fn of_reading(r: &Reading, page_count: Option<i64>) -> Progress {
         Progress::from_parts(
             r.status == STATUS_FINISHED,
@@ -166,16 +86,8 @@ impl Progress {
         )
     }
 
-    /// A whole-number percentage, when there is one.
-    ///
-    /// Here rather than left to `(fraction * 100.0)` at four call sites, and the
-    /// integer division is the reason: `29 / 100` is `0.28999999999999998` in
-    /// binary, so flooring the float gives **28** where the integer division
-    /// gives 29. The two frontends that already computed a percentage did it in
-    /// integers and were right to; this keeps their answer byte-for-byte and
-    /// gives the third one the same number.
-    ///
-    /// A device fraction has no integers to divide, so it rounds.
+    /// A whole-number percentage. Pages use integer division, since flooring the float gives 28 for
+    /// 29/100; a device fraction rounds.
     pub fn percent(&self) -> Option<i64> {
         match self {
             Progress::Finished => Some(100),
@@ -193,11 +105,6 @@ impl Progress {
         }
     }
 
-    /// The fraction to draw a bar to, `0.0..=1.0`.
-    ///
-    /// [`Progress::Finished`] answers `1.0`: a finished reading is the whole
-    /// book by definition of the state, not by an arithmetic we would have to
-    /// invent numbers for.
     pub fn fraction(&self) -> Option<f64> {
         match self {
             Progress::Finished => Some(1.0),
@@ -210,14 +117,11 @@ impl Progress {
         matches!(self, Progress::Finished)
     }
 
-    /// True when there is nothing to show. The condition every frontend spelled
-    /// as "the tag came back empty".
     pub fn is_untouched(&self) -> bool {
         matches!(self, Progress::Untouched)
     }
 
-    /// The page to name, if any. `None` on a finished reading is deliberate —
-    /// see [`Progress::Finished`].
+    /// The page to name, if any; `None` on a finished reading by design.
     pub fn page(&self) -> Option<i64> {
         match self {
             Progress::Started { page, .. } => *page,
@@ -225,7 +129,6 @@ impl Progress {
         }
     }
 
-    /// The length to name, never zero.
     pub fn of(&self) -> Option<i64> {
         match self {
             Progress::Started { of, .. } => *of,
@@ -268,8 +171,6 @@ mod tests {
         assert_eq!(fraction.unwrap().source, FractionSource::Pages);
     }
 
-    /// The hazard the CLI shipped: a real book in the dev library has
-    /// `page_count = 0`. It is a false denominator, not a length of nothing.
     #[test]
     fn a_zero_page_count_is_absence_and_never_a_denominator() {
         let p = Progress::of_book(&book(Some(12), Some(0), false, None));
@@ -290,8 +191,6 @@ mod tests {
         );
     }
 
-    /// `home.rs`'s fallback, now the only copy of it: a sidecar-pulled book has
-    /// a device percentage and no page at all.
     #[test]
     fn the_device_percentage_answers_where_pages_cannot() {
         let p = Progress::of_book(&book(None, None, false, Some(0.435)));
@@ -303,17 +202,12 @@ mod tests {
         assert_eq!(fraction.unwrap().source, FractionSource::Device);
     }
 
-    /// And it does **not** override pages that can answer, even when the two
-    /// disagree — which they can, since `ko_percent` is refreshed by straight
-    /// assignment.
     #[test]
     fn pages_win_over_the_device_when_both_are_there() {
         let p = Progress::of_book(&book(Some(50), Some(200), false, Some(0.9)));
         assert_eq!(p.percent(), Some(25));
     }
 
-    /// A page with no length still falls through to the device, which is the
-    /// case `page_count = NULL` plus a KOReader pull produces.
     #[test]
     fn a_page_with_no_length_still_takes_the_device_fraction() {
         let p = Progress::of_book(&book(Some(12), None, false, Some(0.5)));
@@ -331,7 +225,6 @@ mod tests {
 
     #[test]
     fn out_of_range_input_is_clamped_rather_than_carried() {
-        // A stale page count, and a device past the end.
         assert_eq!(
             Progress::of_book(&book(Some(300), Some(200), false, None)).percent(),
             Some(100)
@@ -363,8 +256,6 @@ mod tests {
         }
     }
 
-    /// A reading is finished when its **status** says so. `abandon_reading`
-    /// leaves the reading open on purpose, so `finished_at` cannot be the test.
     #[test]
     fn a_reading_is_finished_by_its_status() {
         assert_eq!(
@@ -376,9 +267,6 @@ mod tests {
         assert!(!abandoned.is_finished(), "put down is not finished");
     }
 
-    /// An abandoned reading is `Started`, exactly like an active one. The
-    /// difference is state, not progress, and this is the assertion that keeps
-    /// "put down" from becoming a bar that stopped short.
     #[test]
     fn abandoned_and_reading_have_the_same_shape_of_progress() {
         let a = Progress::of_reading(&reading("abandoned", Some(50), None), Some(200));
@@ -403,9 +291,6 @@ mod props {
     }
 
     proptest! {
-        /// The invariant a progress bar leans on, and the one no frontend could
-        /// guarantee for itself: whatever arrives — a negative page, a stale
-        /// count, a device past the end — the fraction is in range or absent.
         #[test]
         fn a_fraction_is_always_drawable(
             page in proptest::option::of(-1000i64..100_000),
@@ -422,8 +307,6 @@ mod props {
             }
         }
 
-        /// A denominator that reaches a caller can always be divided by. This is
-        /// the `[12/0]` bug stated as a rule rather than as one more example.
         #[test]
         fn a_reported_length_is_never_zero(
             page in proptest::option::of(0i64..1000),
@@ -436,9 +319,6 @@ mod props {
             }
         }
 
-        /// `Untouched` means nothing was recorded — so it can only happen when
-        /// nothing was. The converse of the constructor's own guard, which is
-        /// what stops a future arm quietly swallowing a page.
         #[test]
         fn untouched_only_when_there_is_genuinely_nothing(
             page in proptest::option::of(0i64..1000),

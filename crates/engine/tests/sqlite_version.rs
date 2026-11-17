@@ -1,10 +1,5 @@
-//! The SQLite linked into the engine is the patched one.
-//!
-//! RUSTSEC-2026-0459 is fixed by SQLite 3.54.0, and the workspace gets it only
-//! through `vendor/libsqlite3-sys` (see its `VENDORED.md`). A `cargo update`,
-//! a dropped `[patch.crates-io]` or a stale vendored amalgamation would put the
-//! old SQLite back with every other test still green, so this asserts the
-//! version the running library reports — not what a manifest claims.
+//! The linked SQLite must be the patched one (>= 3.54.0): asserts the running library's
+//! version, since a dropped `[patch.crates-io]` would otherwise go unnoticed.
 
 use sqlx::{Connection, SqliteConnection};
 

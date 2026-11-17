@@ -1,12 +1,5 @@
-//! Replay the fuzz seed corpus on **stable**, in milliseconds, on every PR.
-//!
-//! This is what makes fuzzing pay off over time. The nightly `cargo fuzz` job
-//! finds things; every crash it finds gets minimized into `fuzz/seeds/` and is
-//! thereafter guarded here — no nightly toolchain, no libFuzzer, no wall clock.
-//! A fuzzer that has to be re-run to re-catch its own findings is a fuzzer that
-//! catches them once.
-//!
-//! Adding a regression is just dropping the input into `fuzz/seeds/<target>/`.
+//! Replays the fuzz seed corpus on stable; drop a crashing input into `fuzz/seeds/<target>/`
+//! to add a regression.
 
 use std::path::{Path, PathBuf};
 
@@ -28,10 +21,8 @@ fn seeds(target: &str) -> Vec<PathBuf> {
     out
 }
 
-/// Every seed must be handled — parsed or rejected — without panicking, and
-/// within a bound. The bound is the point: the sandbox removes the standard
-/// library but not the ability to loop, so "returns an error" and "never
-/// returns" are different failures and only one of them is acceptable.
+/// Every seed must be handled without panicking and within a time bound: looping forever is a
+/// different failure from returning an error.
 #[test]
 fn every_parse_sidecar_seed_is_survivable() {
     let seeds = seeds("parse_sidecar");
@@ -42,7 +33,6 @@ fn every_parse_sidecar_seed_is_survivable() {
 
     let started = std::time::Instant::now();
     for path in &seeds {
-        // Seeds are deliberately not all valid UTF-8.
         let Ok(src) = std::fs::read_to_string(path) else {
             continue;
         };
@@ -62,8 +52,6 @@ fn every_parse_sidecar_seed_is_survivable() {
     );
 }
 
-/// The sandbox is a security property, not a nicety: a sidecar is a file that
-/// arrived from a device, and `StdLib::NONE` is what stops it reaching the host.
 #[test]
 fn no_seed_can_reach_the_lua_standard_library() {
     for name in ["sandbox-escape.lua", "require.lua"] {
@@ -76,8 +64,7 @@ fn no_seed_can_reach_the_lua_standard_library() {
         let err = parse_sidecar(&src)
             .err()
             .unwrap_or_else(|| panic!("{name} was accepted — the sandbox is open"));
-        // It must fail because the function does not exist, not because we
-        // happened to reject the shape afterwards.
+        // It must fail because the function does not exist, not because the shape was rejected later.
         let msg = err.to_string();
         assert!(
             msg.contains("lua eval") || msg.contains("nil value"),
@@ -89,8 +76,6 @@ fn no_seed_can_reach_the_lua_standard_library() {
 #[test]
 fn every_epub_seed_is_survivable() {
     for path in seeds("epub_info") {
-        // Contract is only "does not panic"; corrupt input may legitimately
-        // parse or fail.
         let _ = bookmole::epub::epub_info(&path);
     }
 }

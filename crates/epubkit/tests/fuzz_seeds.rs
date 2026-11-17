@@ -1,10 +1,5 @@
-//! Replay the `epubkit_package` fuzz seeds on **stable**, on every test run.
-//!
-//! The nightly fuzzer (`fuzz/fuzz_targets/epubkit_package.rs`) finds things;
-//! every input it finds gets minimized into `fuzz/seeds/epubkit_package/` and
-//! is guarded here from then on, through the same calls the target makes. The
-//! older `epub_info` seeds are EPUB bytes too, so they are replayed through
-//! the same calls as well.
+//! Replays the `epubkit_package` fuzz seeds and the older `epub_info` seeds on stable, through the
+//! fuzz target's own calls.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -28,7 +23,6 @@ fn seeds(target: &str) -> Vec<PathBuf> {
     out
 }
 
-/// Exactly what the fuzz target does with its bytes.
 fn exercise(data: &[u8]) {
     let Ok(mut book) = epubkit::Package::from_bytes(data) else {
         return;
@@ -65,7 +59,6 @@ fn exercise(data: &[u8]) {
     }
 }
 
-/// Every seed is opened or refused, never a panic, and within a bound.
 #[test]
 fn every_epubkit_package_seed_is_survivable() {
     let own = seeds("epubkit_package");
@@ -89,8 +82,6 @@ fn every_epubkit_package_seed_is_survivable() {
     eprintln!("replayed {} seeds in {:?}", all.len(), started.elapsed());
 }
 
-/// The committed seeds open and have something in them — a seed set that
-/// fails at the zip layer exercises nothing past it.
 #[test]
 fn the_generated_seed_reaches_every_layer() {
     let bytes = std::fs::read(seed_dir("epubkit_package").join("epub3-nav.epub"))
@@ -118,12 +109,8 @@ fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out.into_inner()
 }
 
-/// Regenerate `fuzz/seeds/epubkit_package/epub3-nav.epub`: a small EPUB 3
-/// with a navigation document, an NCX beside it, a cover, a well-formed
-/// chapter and a sloppy one — so a fuzzer mutating it starts with every
-/// layer reachable. Deterministic: no timestamps (zip's default date).
-///
-/// `cargo test -p epubkit --test fuzz_seeds -- --ignored write_generated_seeds`
+/// Regenerates `fuzz/seeds/epubkit_package/epub3-nav.epub` deterministically (no timestamps):
+/// nav, NCX, cover, a clean and a sloppy chapter, so a mutating fuzzer reaches every layer.
 #[test]
 #[ignore]
 fn write_generated_seeds() {

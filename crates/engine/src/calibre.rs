@@ -1,53 +1,7 @@
-//! Calibre, through its command line.
-//!
-//! Two tiers, in order of importance:
-//!
-//! * **(i) `ebook-convert`** — format conversion. Calibre infers both formats
-//!   from the file extensions, which is the whole interface.
-//! * **(ii) `calibredb list --for-machine`** — the library the user has already
-//!   curated, as JSON. No scraping, and the single biggest onboarding win
-//!   available: empty shelf to full shelf without typing one ISBN.
-//!
-//! **Feature-detected, never a hard dependency.** Present → the features work;
-//! absent → they are not there, and nothing anywhere asks the user to install or
-//! configure calibre. Detection is [`Calibre::detect`], run **once per run** and
-//! held on the [`Engine`](crate::Engine): probing `PATH` once per book on a
-//! library import would be a syscall sweep per book for an answer that cannot
-//! change mid-run.
-//!
-//! **Shelling out to a GPL-3 binary is not linking**, so there is no licence
-//! contamination here — which made this strictly better than the in-process
-//! `epub =2.1.4` the workspace carried when it was written (since replaced by
-//! the permissive `epubkit`).
-//!
-//! Four things below are decisions rather than mechanics, and three of them were
-//! found by running calibre rather than by reading about it (7.26 first; the
-//! recorded fixture, `tests/fixtures/calibre/recorded/`, is calibre 9.11 over
-//! Project Gutenberg books).
-//!
-//! * **`authors` is a `&`-joined string, not a list.** `--for-machine` emits
-//!   `"Jacob Grimm & Wilhelm Grimm"` where `tags`, `languages` and `formats`
-//!   all come back as JSON arrays. [`StringOrList`] accepts either, because the
-//!   one thing worse than guessing the shape is guessing it right for one
-//!   version. A book with no author lists as `"Unknown"`, calibre's default
-//!   author, which is read as no author (`CALIBRE_UNKNOWN_AUTHOR`).
-//! * **`pubdate` is `0101-01-01T00:00:00+00:00` when there is no publication
-//!   date.** That is calibre's `UNDEFINED_DATE` sentinel, and taken at face value
-//!   it gives every undated book a `publish_year` of 101. [`year_of`] filters it.
-//! * **A `--library` path that does not exist is silently *created*.**
-//!   `calibredb --with-library /typo list` writes a `metadata.db` and a
-//!   `.calnotes/` there and reports `[]` with exit 0 — so a mistyped path looks
-//!   exactly like an empty library, and leaves a new calibre library on the
-//!   user's disk on the way. [`library_root`] refuses a directory with no
-//!   `metadata.db` **before** the binary is ever run. This is the one place the
-//!   read-only-sounding half of this module could write to the filesystem.
-//! * **Calibre's rating is not imported.** `list` reports 0–10 half-stars, and a
-//!   rating in this system lives on a *review*, which anchors to a *reading* —
-//!   which calibre knows nothing about. Importing one would mean fabricating a
-//!   reading to hang it from, and then mapping a number through the explicit
-//!   user-editable lookup table ratings are mapped through (a formula is always
-//!   wrong at the ends). Both are worse than leaving the rating where its origin
-//!   keeps it.
+//! Calibre through its command line: `ebook-convert` for conversion, `calibredb list
+//! --for-machine` to import a curated library. Feature-detected once per run
+//! ([`Calibre::detect`]), never a hard dependency.
+//! Calibre's rating is deliberately not imported: a rating lives on a review of a reading.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,34 +18,19 @@ use crate::providers::normalize_language;
 use crate::storage::{LinkedBy, Source, Storage};
 use crate::{Engine, partial_md5};
 
-/// The `source` a calibre row is recorded under, in `external_ids` and
-/// `book_tags` alike.
 pub const SOURCE: &str = "calibre";
 
-/// The two binaries this module knows how to drive.
 const CONVERT: &str = "ebook-convert";
 const CALIBREDB: &str = "calibredb";
 
-/// Where calibre installs itself when it is not on `PATH`.
-///
-/// macOS is the case that matters: `calibre.app` puts its command line tools
-/// inside the bundle and adds nothing to `PATH`, so a perfectly ordinary install
-/// is invisible to a `PATH` probe alone. Looking here is feature *detection* —
-/// it is not the same thing as asking the user to configure something.
+/// Where calibre installs itself when not on `PATH`; on macOS `calibre.app` adds nothing to `PATH`.
 const KNOWN_DIRS: [&str; 3] = [
     "/Applications/calibre.app/Contents/MacOS",
     "/opt/calibre",
     "/usr/lib/calibre",
 ];
 
-// ---- detection --------------------------------------------------------------
-
-/// Which calibre tools this machine has, resolved once.
-///
-/// Two separate `Option`s rather than one "calibre is installed" flag: the tiers
-/// are independent features, and a partial install (or a `PATH` that carries one
-/// wrapper and not the other) must degrade to *the half that works* rather than
-/// to nothing.
+/// Two separate `Option`s so a partial install degrades to the half that works.
 #[derive(Debug, Clone, Default)]
 pub struct Calibre {
     convert: Option<PathBuf>,
@@ -99,10 +38,8 @@ pub struct Calibre {
 }
 
 impl Calibre {
-    /// Probe for the tools. `extra` is searched first, and exists so a test can
-    /// point at a directory of fake binaries without touching the process
-    /// environment — `PATH` is global and mutating it from a test is a data race
-    /// with every other test in the binary.
+    /// `extra` is searched first so tests can point at fake binaries without mutating the global
+    /// `PATH`.
     pub fn detect(extra: Option<&Path>) -> Calibre {
         Calibre {
             convert: find_tool(CONVERT, extra),
@@ -110,18 +47,14 @@ impl Calibre {
         }
     }
 
-    /// Construct from explicit paths. Tests use it; so would a future settings
-    /// screen, if one ever turns out to be needed.
     pub fn at(convert: Option<PathBuf>, calibredb: Option<PathBuf>) -> Calibre {
         Calibre { convert, calibredb }
     }
 
-    /// Tier (i) is available.
     pub fn can_convert(&self) -> bool {
         self.convert.is_some()
     }
 
-    /// Tier (ii) is available.
     pub fn can_read_library(&self) -> bool {
         self.calibredb.is_some()
     }
@@ -143,9 +76,8 @@ impl Calibre {
     }
 }
 
-/// `PATH`, then the known install directories. Executability is checked, not
-/// assumed: a *directory* called `calibredb` on `PATH` is not a program, and
-/// finding one would turn "calibre is absent" into "calibre fails on every call".
+/// `PATH`, then known install dirs. Executability is checked: a directory named `calibredb` is
+/// not a program.
 fn find_tool(name: &str, extra: Option<&Path>) -> Option<PathBuf> {
     let path_dirs = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
@@ -172,25 +104,13 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-// ---- tier (i): conversion ---------------------------------------------------
-
-/// The argv for a conversion, as a pure function so a test can assert on the
-/// command line without a process.
-///
-/// Deliberately bare. Calibre's option set is enormous (`--output-profile`,
-/// `--embed-all-fonts`, per-format groups) and every one of those is a decision
-/// about somebody's book that we have no standing to make by default; the
-/// formats come from the two extensions and nothing else is sent.
+/// Deliberately bare: formats come from the extensions and no calibre option is sent.
 pub fn convert_argv(input: &Path, output: &Path) -> Vec<String> {
     vec![input.display().to_string(), output.display().to_string()]
 }
 
-/// Convert a book from one format to another. Returns the path written.
-///
-/// **Refuses to overwrite.** `ebook-convert` will happily replace an existing
-/// output file, and the caller here is a command line where the output path is
-/// typed by hand; the caller that means it passes `overwrite`. Losing the file
-/// is the one outcome with no undo, and the guard costs a `stat`.
+/// Refuses to overwrite an existing output unless `overwrite` is set; `ebook-convert` would
+/// replace it silently.
 pub async fn convert(
     calibre: &Calibre,
     input: &Path,
@@ -204,9 +124,8 @@ pub async fn convert(
             input.display()
         )));
     }
-    // Calibre infers the target format from the extension alone, so an output
-    // path without one produces an error from inside calibre that reads as a
-    // bug in us. Refusing here says the actual thing.
+    // Calibre infers the format from the extension; without one the failure would surface from inside
+    // calibre.
     if output.extension().is_none() {
         return Err(EngineError::InvalidInput(format!(
             "{} has no extension, and that is what calibre reads the output format from",
@@ -230,13 +149,7 @@ pub async fn convert(
     Ok(output.to_path_buf())
 }
 
-// ---- tier (ii): the library -------------------------------------------------
-
-/// The argv for a library listing.
-///
-/// `--fields all` rather than a named subset: the fields we do not read today
-/// cost one JSON parse and are the difference between adding a field here and
-/// discovering that the *shape* of the output changes with the field list.
+/// `--fields all` rather than a named subset: the shape of the output changes with the field list.
 pub fn list_argv(library: Option<&Path>) -> Vec<String> {
     let mut argv = Vec::new();
     if let Some(lib) = library {
@@ -250,13 +163,8 @@ pub fn list_argv(library: Option<&Path>) -> Vec<String> {
     argv
 }
 
-/// Check a `--library` path *before* handing it to calibredb.
-///
-/// `calibredb --with-library /typo list` does not fail: it **creates** a library
-/// there — `metadata.db`, `.calnotes/` and all — then reports `[]` with exit 0.
-/// So without this, a mistyped path is indistinguishable from an empty library
-/// and leaves a new calibre library on the user's disk on the way past. Verified
-/// against calibre 7.26.
+/// `calibredb --with-library /typo` creates a library there and reports `[]` with exit 0, so a path
+/// without `metadata.db` is refused before the binary runs.
 fn library_root(library: Option<&Path>) -> Result<Option<&Path>> {
     let Some(lib) = library else { return Ok(None) };
     if !is_calibre_library(lib) {
@@ -269,24 +177,18 @@ fn library_root(library: Option<&Path>) -> Result<Option<&Path>> {
     Ok(Some(lib))
 }
 
-/// Whether a folder is a calibre library: it holds calibre's `metadata.db`.
-///
-/// The one test, shared by the refusal above and by `folders.rs`, which must
-/// not walk a calibre library into loose files — calibre owns those files and
-/// bookmole reads them through calibre.
+/// A folder holding calibre's `metadata.db`. Shared with `folders.rs`, which must not walk a
+/// calibre library.
 pub(crate) fn is_calibre_library(dir: &Path) -> bool {
     dir.join("metadata.db").is_file()
 }
 
-/// One book, as calibre describes it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CalibreBook {
-    /// Calibre's per-library row id. Displayed, never keyed on — see `uuid`.
+    /// Per-library row id; displayed, never keyed on.
     pub calibre_id: i64,
-    /// Calibre's stable identity, and what `external_ids` is keyed on. **Not
-    /// the id**: ids are per-library and are reused after a delete, so id 4 in
-    /// one library and id 4 in another are different books, and `external_ids`
-    /// has no library column to tell them apart.
+    /// Stable identity and the `external_ids` key. Not `calibre_id`: ids are per-library and reused
+    /// after a delete.
     pub uuid: Option<String>,
     pub title: Option<String>,
     pub authors: Vec<String>,
@@ -298,16 +200,11 @@ pub struct CalibreBook {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub cover: Option<PathBuf>,
-    /// Every format calibre holds, as absolute paths. All of them, not just the
-    /// epub: the user may well be reading the azw3 on the device, and it is the
-    /// file that was opened whose `partial_md5` the sidecar carries.
+    /// Every format calibre holds, as absolute paths, not just the epub: the opened file may be the
+    /// azw3.
     pub formats: Vec<PathBuf>,
     pub series: Option<String>,
-    /// The book's position in [`CalibreBook::series`]. Calibre writes it as a
-    /// float and numbers novellas 1.5, which is why `books.series_index` is
-    /// REAL.
     pub series_index: Option<f64>,
-    /// Calibre's `timestamp` — when the book was added to *that* library.
     pub added: Option<i64>,
 }
 
@@ -317,9 +214,8 @@ impl CalibreBook {
     }
 }
 
-/// Calibre emits `authors` as a `&`-joined string and `tags`/`languages`/
-/// `formats` as arrays. Accepting both shapes everywhere costs one enum and
-/// removes a whole class of "it worked on my calibre".
+/// Calibre emits `authors` as a `&`-joined string but `tags`/`languages`/`formats` as arrays;
+/// accept both.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum StringOrList {
@@ -328,8 +224,7 @@ enum StringOrList {
 }
 
 impl StringOrList {
-    /// `&` is calibre's author separator; `,` is what a hand-edited field ends
-    /// up using often enough to be worth splitting on too.
+    /// `&` is calibre's author separator; `,` is also split on because hand-edited fields use it.
     fn names(&self) -> Vec<String> {
         match self {
             StringOrList::One(s) => s
@@ -347,8 +242,7 @@ impl StringOrList {
         }
     }
 
-    /// Verbatim, for fields that are values rather than lists of names — a tag
-    /// with a comma in it is one tag.
+    /// Verbatim, for values rather than names: a tag with a comma is one tag.
     fn values(&self) -> Vec<String> {
         match self {
             StringOrList::One(s) => s
@@ -370,9 +264,7 @@ impl StringOrList {
     }
 }
 
-/// The wire shape. Every field is optional because calibre **omits** a field
-/// entirely when it has no value — `rating` and `series` are simply absent on a
-/// book that has neither, rather than present and null.
+/// Every field is optional: calibre omits a field entirely when it has no value.
 #[derive(Debug, Deserialize)]
 struct RawRow {
     #[serde(default)]
@@ -409,12 +301,6 @@ struct RawRow {
     series_index: Option<f64>,
 }
 
-/// Parse `calibredb list --for-machine` output.
-///
-/// Pure, and public for the same reason [`crate::goodreads::parse_csv`] is: the
-/// format belongs to another system, so the parser has to be testable against a
-/// **recorded** sample of that system's real output rather than against our own
-/// idea of it.
 pub fn parse_library(json: &str) -> Result<Vec<CalibreBook>> {
     let rows: Vec<RawRow> = serde_json::from_str(json)?;
     Ok(rows.into_iter().map(row_to_book).collect())
@@ -422,10 +308,8 @@ pub fn parse_library(json: &str) -> Result<Vec<CalibreBook>> {
 
 fn row_to_book(r: RawRow) -> CalibreBook {
     let series = r.series.clone().filter(|s| !s.trim().is_empty());
-    // ISBN can arrive in either the dedicated column or the identifiers map,
-    // and in practice the map is the one that is filled in. Both go through
-    // `normalize_isbn` like every ISBN entering the system — calibre's field is
-    // free text and holds ASINs, ISSNs and typos as readily as ISBNs.
+    // The ISBN may sit in the column or the identifiers map; both are free text (ASINs, ISSNs,
+    // typos), so both go through `normalize_isbn`.
     let raw_isbn = r
         .identifiers
         .as_ref()
@@ -465,47 +349,32 @@ fn row_to_book(r: RawRow) -> CalibreBook {
             .map(|f| f.values().into_iter().map(PathBuf::from).collect())
             .unwrap_or_default(),
         series: series.clone(),
-        // **`series_index` is 1.0 on a book with no series at all** — calibre's
-        // default rather than a claim, and it is in the recorded fixture on two
-        // of three rows. Taken at face value it would say every standalone book
-        // is the first of something. The index exists only where the name does;
-        // that is the same pair rule `MERGE_RULES` enforces one layer down.
+        // `series_index` is 1.0 on a book with no series (calibre's default), so it is kept only where
+        // the name exists.
         series_index: series.as_ref().and(r.series_index),
         added: r.timestamp.as_deref().and_then(unix_of),
     }
 }
 
-/// What calibre writes as the author of a book that has none: its default
-/// author, the string `_('Unknown')` in calibre's own source, which it stores
-/// in place of an empty list (`calibredb add --empty` with no `--authors`
-/// lists as `"authors": "Unknown"` on calibre 9.11). It is a placeholder, not a
-/// person, and imported as one it would put every authorless book on the shelf
-/// under one invented writer — and hand the matcher a name to agree or
-/// disagree with that nobody wrote.
-///
-/// Deliberately narrow: only the whole author list being exactly this string,
-/// as calibre writes it. `_()` is translated, so a library built under another
-/// locale stores that locale's word and is not recognised here; and a real
-/// author literally called "Unknown" beside another name is left alone.
+/// Calibre's placeholder author for a book with none; it is not a person, so it is read as no
+/// author. Deliberately narrow: only the whole list being exactly this string (the word is
+/// locale-translated).
 const CALIBRE_UNKNOWN_AUTHOR: &str = "Unknown";
 
 fn is_unknown_author(names: &[String]) -> bool {
     matches!(names, [only] if only == CALIBRE_UNKNOWN_AUTHOR)
 }
 
-/// Calibre's `UNDEFINED_DATE` is year 101, which is what an undated book's
-/// `pubdate` comes back as: `0101-01-01T00:00:00+00:00`. Anything before printing
-/// existed is that sentinel, not a publication year.
+/// An undated book's `pubdate` is year 101 (`UNDEFINED_DATE`); anything before printing is that
+/// sentinel.
 const UNDEFINED_BEFORE: i64 = 1000;
 
-/// The year out of an ISO-8601 timestamp, unless it is calibre's sentinel.
 fn year_of(iso: &str) -> Option<i64> {
     let year: i64 = iso.get(..4)?.parse().ok()?;
     (year >= UNDEFINED_BEFORE).then_some(year)
 }
 
-/// A unix timestamp out of an ISO-8601 one. Only the date is used, so a missing
-/// or odd timezone offset cannot move it by more than a day.
+/// Only the date is used, so an odd timezone offset cannot move it by more than a day.
 fn unix_of(iso: &str) -> Option<i64> {
     let date = time::Date::parse(
         iso.get(..10)?,
@@ -516,7 +385,6 @@ fn unix_of(iso: &str) -> Option<i64> {
     (year_of(iso)?.is_positive()).then_some(stamp)
 }
 
-/// Run `calibredb list --for-machine` and parse it.
 pub async fn list_library(calibre: &Calibre, library: Option<&Path>) -> Result<Vec<CalibreBook>> {
     let bin = Calibre::require(CALIBREDB, calibre.calibredb_path())?;
     let library = library_root(library)?;
@@ -524,20 +392,11 @@ pub async fn list_library(calibre: &Calibre, library: Option<&Path>) -> Result<V
     parse_library(&out)
 }
 
-// ---- import -----------------------------------------------------------------
-
-/// How a calibre row found its book. The same shape as
-/// [`GoodreadsMatch`](crate::goodreads::GoodreadsMatch) and deliberately not the
-/// same enum: the branches differ, and one enum covering both would carry
-/// variants unreachable from either caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalibreMatch {
-    /// An `external_ids` row already links this uuid. The only branch that is
-    /// not a guess, and what makes a re-import idempotent.
+    /// An `external_ids` row already links this uuid: the only branch that is not a guess.
     Uuid,
     Isbn,
-    /// A file calibre holds is a file we have already identified — the middle
-    /// rung of dedup level 3, and the one that survives a retitled book.
     Md5,
     Title,
     New,
@@ -558,29 +417,16 @@ impl std::fmt::Display for CalibreMatch {
 
 #[derive(Debug)]
 pub struct CalibreBookReport {
-    /// The calibre row this line is about.
-    ///
-    /// Carried because a report line otherwise names its book only by *title*,
-    /// and a frontend showing one row per calibre book has to tie the line back
-    /// to the row it came from — two editions of the same title would tie to
-    /// each other. `uuid` would not do: it is `Option`, and the rows without one
-    /// are exactly the rows that most need identifying.
+    /// The calibre row this line is about; `uuid` cannot identify it (optional), and titles can repeat.
     pub calibre_id: i64,
-    /// `None` in a dry run for a book that does not exist yet.
     pub book_id: Option<i64>,
     pub title: String,
     pub matched_by: CalibreMatch,
     pub tags_added: usize,
-    /// A cover was copied in from calibre's library.
     pub cover: bool,
-    /// How many of calibre's files were identified by `partial_md5`, so a
-    /// sidecar off the device later matches this book outright.
     pub files_linked: usize,
 }
 
-/// A row we will not guess about — the same shape as
-/// [`UnmatchedRow`](crate::goodreads::UnmatchedRow), for the same reason:
-/// unmatched has to be a decision, not a dead end.
 #[derive(Debug)]
 pub struct UnmatchedCalibreBook {
     pub calibre_id: i64,
@@ -593,7 +439,6 @@ pub struct UnmatchedCalibreBook {
 #[derive(Debug, Default)]
 pub struct CalibreReport {
     pub dry_run: bool,
-    /// Books calibre reported, whatever became of them.
     pub rows: usize,
     pub books: Vec<CalibreBookReport>,
     pub unmatched: Vec<UnmatchedCalibreBook>,
@@ -608,19 +453,8 @@ impl CalibreReport {
             .count()
     }
 
-    /// What this report says about one calibre row.
-    ///
-    /// This used to be derived in the TUI — a **join across three fields of
-    /// this struct**, done by a frontend, which is a data-model question and not
-    /// a presentation one. A second frontend
-    /// reimplementing it inexactly gets a shelf that disagrees with the TUI's
-    /// about the same library, and the disagreement is invisible from either
-    /// side.
-    ///
-    /// The third branch is why this is not a lookup into `books`: a row calibre
-    /// gave no title is in **neither** list and survives only as a warning, so
-    /// its absence *is* its state. Deriving a shelf from `books` alone drops it
-    /// silently.
+    /// What this report says about one calibre row. A row with no title is in neither list and
+    /// survives only as a warning, so deriving state from `books` alone would drop it.
     pub fn row_state(&self, calibre_id: i64) -> CalibreRowState {
         if let Some(b) = self.books.iter().find(|b| b.calibre_id == calibre_id) {
             return match b.matched_by {
@@ -636,9 +470,8 @@ impl CalibreReport {
         if let Some(u) = self.unmatched.iter().find(|u| u.calibre_id == calibre_id) {
             return CalibreRowState::Candidates(u.candidates.clone());
         }
-        // Neither list: the import skipped it and said why. Its own diagnostic,
-        // never a re-worded one — `Diagnostic`'s `Display` is user-visible
-        // output.
+        // Neither list: the import skipped it. Uses its own diagnostic, never a re-worded one (`Display`
+        // is user-visible).
         let warning = self.warnings.iter().find(|w| {
             matches!(
                 w.kind,
@@ -647,9 +480,6 @@ impl CalibreReport {
         });
         match warning {
             Some(d) => CalibreRowState::Unreadable(d.clone()),
-            // Not skipped, not matched, not offered. Nothing claims to know what
-            // this is, so the row says exactly that rather than guessing at
-            // "new".
             None => CalibreRowState::Unreadable(Diagnostic {
                 kind: DiagnosticKind::CalibreRowSkipped { calibre_id },
                 severity: Severity::Warning,
@@ -659,59 +489,31 @@ impl CalibreReport {
     }
 }
 
-/// What a dry run says about one calibre row.
-///
-/// The vocabulary is the device screen's wherever it can be — `New` and
-/// `Unreadable` mean here what they mean in [`DeviceState`](crate::DeviceState).
-/// `Unchanged`/`Updated` have no analogue: a calibre import re-enriches every
-/// matched book, so "nothing would change" is not a thing the report claims.
 #[derive(Debug, Clone)]
 pub enum CalibreRowState {
-    /// Already ours, on the rung that found it.
-    ///
-    /// Deliberately carries no `book_id`: nothing that shows this navigates into
-    /// the book, and a field held "in case" is a field the next reader has to
-    /// work out the absence of a use for. The report has it when one is wanted.
+    /// Already ours. Carries no `book_id`: nothing that shows this navigates into the book.
     Linked {
         matched_by: CalibreMatch,
-        /// What a fresh import would add — tags, a cover, file identities. Zero
-        /// across the board is an honest "nothing new".
         tags: usize,
         cover: bool,
         files: usize,
     },
-    /// Not here yet; importing would create it.
     New,
-    /// In the candidate band. A decision, not a dead end.
     Candidates(Vec<MatchCandidate>),
-    /// calibre gave us nothing to match on — a row with no title. Carries the
-    /// engine's own diagnostic rather than a re-worded one.
+    /// A row with no title; carries the engine's own diagnostic, not a re-worded one.
     Unreadable(Diagnostic),
 }
 
 impl CalibreRowState {
-    /// Is there anything an import of this row would do?
-    ///
-    /// The calibre twin of
-    /// [`DeviceState::is_syncable`](crate::DeviceState::is_syncable), and in the
-    /// engine for the same reason: every frontend must agree on it.
-    ///
-    /// `Candidates` is deliberately **not** importable: that row is a question,
-    /// and a sweep answering it by creating a duplicate is exactly what the
-    /// candidate band exists to prevent. Linking it, one row at a time, is the
-    /// answer.
+    /// `Candidates` is deliberately not importable: a sweep answering it would create a duplicate.
     pub fn is_importable(&self) -> bool {
         matches!(self, CalibreRowState::New | CalibreRowState::Linked { .. })
     }
 
-    /// True while the row is still a question nobody has answered.
     pub fn is_undecided(&self) -> bool {
         matches!(self, CalibreRowState::Candidates(_))
     }
 
-    /// One word, for a list row. The **vocabulary**, not a frontend's phrasing —
-    /// `DeviceState::label`'s twin, and the same argument: two frontends calling
-    /// the same state different words is the drift, not the styling.
     pub fn label(&self) -> &'static str {
         match self {
             CalibreRowState::Linked { .. } => "in library",
@@ -724,37 +526,19 @@ impl CalibreRowState {
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
-    /// The library to read. `None` means calibre's own default, which is the
-    /// whole point of feature detection: the user configured it once, in
-    /// calibre, and we do not ask again.
+    /// `None` means calibre's own default library.
     pub library: Option<PathBuf>,
     pub dry_run: bool,
-    /// Create a book for a row that landed in the candidate band instead of
-    /// reporting it. The same escape hatch `ko pull --new` and
-    /// `goodreads import --new` have.
     pub create_ambiguous: bool,
-    /// Import only these calibre rows. **Empty means all of them**, which is
-    /// what keeps every existing caller unchanged.
-    ///
-    /// The filter is applied to the listing, not to the report, so `rows` and
-    /// every count derived from it stay what this import actually considered —
-    /// a frontend importing one row of four hundred must not be told it read
-    /// four hundred. `calibredb list` has no per-id query worth using here: the
-    /// whole library comes back in one process either way, and filtering after
-    /// the parse costs nothing against spawning calibre once per book.
+    /// Import only these calibre rows; empty means all. The filter applies to the listing, so report
+    /// counts reflect the rows considered.
     pub only: Vec<i64>,
 }
 
-/// Import a calibre library.
-///
-/// Takes the whole [`Engine`] rather than a [`Storage`]: covers land in
-/// `config.images_dir`, and the detected [`Calibre`] lives on the engine because
-/// detection is once per run.
 pub async fn import(engine: &Engine, opts: &ImportOptions) -> Result<CalibreReport> {
     let root = root_key(opts.library.as_deref());
-    // A library that is not there (a drive that is not mounted, a typo) is
-    // a fact about every place seen in it: missing, not gone. The listing below
-    // still refuses with its usual error.
+    // A missing library (unmounted drive, typo) leaves its places missing, not gone; the listing
+    // below still refuses.
     if !opts.dry_run
         && let Some(lib) = &opts.library
         && !is_calibre_library(lib)
@@ -787,9 +571,8 @@ pub async fn import(engine: &Engine, opts: &ImportOptions) -> Result<CalibreRepo
             continue;
         }
         if cb.uuid.is_none() {
-            // Same shape as `SidecarNotIdentified`: the import still happens,
-            // but it cannot be made idempotent, and the duplicate would appear
-            // silently and long after the fact.
+            // The import still happens but cannot be made idempotent, so the duplicate would appear silently
+            // later.
             report.warnings.push(Diagnostic {
                 kind: DiagnosticKind::CalibreRowNotIdentified {
                     calibre_id: cb.calibre_id,
@@ -799,9 +582,7 @@ pub async fn import(engine: &Engine, opts: &ImportOptions) -> Result<CalibreRepo
             });
         }
 
-        // Hashed once per book and threaded through both halves. `match_book`
-        // needs them for the `partial_md5` rung and `apply` needs the same set
-        // to record; hashing inside each would read every file twice.
+        // Hashed once and shared by `match_book` and `apply`; hashing in each would read every file twice.
         let hashes = file_hashes(cb);
         let (book_id, matched_by) = match match_book(storage, cb, &hashes).await? {
             Matched::Book(id, how) => (Some(id), how),
@@ -837,16 +618,15 @@ pub async fn import(engine: &Engine, opts: &ImportOptions) -> Result<CalibreRepo
             .await?,
         );
     }
-    // Places in this library that the listing no longer carries. Only a scan of
-    // the whole library can say so; a partial one saw only what it was asked for.
+    // Only a scan of the whole library can say a place is missing; a partial one saw only what it was
+    // asked for.
     if !opts.dry_run && whole_library {
         mark_missing(&engine.storage, &root, Some(&listed)).await?;
     }
     Ok(report)
 }
 
-/// The library a calibre place was seen in, as `copy_places.detail` records it.
-/// Empty is calibre's own default library.
+/// The library root as recorded in `copy_places.detail`; empty is calibre's default library.
 fn root_key(library: Option<&Path>) -> String {
     library.map(|p| p.display().to_string()).unwrap_or_default()
 }
@@ -865,11 +645,9 @@ fn root_of(detail: &str) -> &str {
     crate::copies::calibre_root(detail)
 }
 
-/// Mark this library's calibre places missing: all of them when `seen` is
-/// `None` (the library is unreachable), else those whose uuid is not in `seen`.
-/// A place with no recorded library (back-filled by the migration) is left
-/// alone: it cannot be said to belong to this one. Writes a fact about the
-/// place and nothing else; the copy and `have_now` never change here.
+/// Marks this library's places missing: all when `seen` is `None` (unreachable), else those whose
+/// uuid is not in `seen`. A place with no recorded library is left alone. Writes only the place;
+/// the copy never changes.
 async fn mark_missing(
     storage: &Storage,
     root: &str,
@@ -892,19 +670,15 @@ async fn mark_missing(
     Ok(())
 }
 
-/// Find or create the book's `file`/`own` copy and keep its calibre place
-/// current. **Points, copies no bytes.** A book that already has an own file
-/// copy (a directly imported file, say) takes the place on that copy; a calibre
-/// place already held is refreshed and un-missed. The copy's `have_now` is never
-/// touched. Every scan replaces the place's recorded file paths
-/// ([`place_files`]): calibre owns the list of formats.
+/// Points, copies no bytes. A book with an own file copy takes the place on that copy; `have_now`
+/// is never touched, and each scan replaces the place's file paths since calibre owns the format
+/// list.
 async fn record_copy(storage: &Storage, cb: &CalibreBook, book_id: i64, root: &str) -> Result<()> {
     let detail = place_detail(root, cb);
     if let Some(uuid) = &cb.uuid
         && let Some(copy) = storage.copy_for_place(PlaceKind::Calibre, uuid).await?
     {
-        // Held by another book's copy: the external-id link decides whose book
-        // this is, and the place stays where it is.
+        // Held by another book's copy: the external-id link decides whose book this is; the place stays.
         if copy.book_id == book_id {
             storage
                 .refresh_place(PlaceKind::Calibre, uuid, None, None)
@@ -949,9 +723,6 @@ async fn record_copy(storage: &Storage, cb: &CalibreBook, book_id: i64, root: &s
     Ok(())
 }
 
-/// Each format's absolute path, as `calibredb list` reported it on this scan
-/// (`copy_place_files`, migration `0031`). Kept rather than re-asked, so the
-/// book page can say where the file is without spawning calibre.
 fn place_files(cb: &CalibreBook) -> Vec<crate::copies::PlaceFile> {
     cb.formats
         .iter()
@@ -968,15 +739,8 @@ enum Matched {
     Nothing,
 }
 
-/// uuid → ISBN → `partial_md5` → the shared title+author scan.
-///
-/// That is the third level of dedup — *same book, file unknown*, after *same
-/// bytes* (sha256) and *same book, different file* (`book_id`) — with calibre's
-/// own stable id in front of it. **No second matcher**: [`crate::matching`], through
-/// `koreader::scores_for`, is the same scan a sidecar and a Goodreads row get,
-/// with the same `AUTO_MATCH` / `CANDIDATE_MIN` bands. Two fuzzy matchers would
-/// be two answers to "is this the book I already have", and the one that
-/// disagreed would be the one that made the duplicate.
+/// uuid, ISBN, `partial_md5`, then the shared title+author scan. No second fuzzy matcher, so the
+/// bands agree with sidecars and Goodreads rows.
 async fn match_book(storage: &Storage, cb: &CalibreBook, hashes: &[String]) -> Result<Matched> {
     if let Some(uuid) = &cb.uuid
         && let Some(book_id) = storage.book_for_external_id(SOURCE, uuid).await?
@@ -998,8 +762,8 @@ async fn match_book(storage: &Storage, cb: &CalibreBook, hashes: &[String]) -> R
         }
     }
 
-    // One scan, both answers. Calling the auto-match and the band separately
-    // read the whole shelf twice for every row calibre listed.
+    // One scan answers both the auto-match and the band; separate calls would read the shelf twice
+    // per row.
     let scored =
         koreader::scores_for(storage, &Query::new(cb.title.as_deref(), &cb.authors)).await?;
     if let Some(s) = scored.first()
@@ -1016,11 +780,7 @@ async fn match_book(storage: &Storage, cb: &CalibreBook, hashes: &[String]) -> R
     })
 }
 
-/// The `partial_md5` of every format we can read.
-///
-/// An unreadable one is skipped rather than reported: calibre's library may sit
-/// on a volume that is not mounted, and "one of five formats could not be
-/// hashed" is not something a user can act on. What it costs is a match, and the
+/// An unreadable file is skipped silently: the library may be on an unmounted volume, and the
 /// next rung catches it.
 fn file_hashes(cb: &CalibreBook) -> Vec<String> {
     cb.formats
@@ -1029,8 +789,6 @@ fn file_hashes(cb: &CalibreBook) -> Vec<String> {
         .collect()
 }
 
-/// The read-only half, for `--dry-run`. Answers the same questions [`apply`]
-/// does and writes nothing.
 async fn preview(
     storage: &Storage,
     cb: &CalibreBook,
@@ -1073,12 +831,8 @@ async fn preview(
     })
 }
 
-/// How many of these files are **not** already identified.
-///
-/// The count has to be what the import *changed*, not what it looked at — the
-/// same rule the Goodreads import applies to a rating it did not rewrite. Before
-/// this, a re-import of an unchanged library announced "1 file identified"
-/// against every book, for ever, which reads as work it did not do.
+/// How many of these files are not already identified: the count is what the import changed, not
+/// what it looked at.
 async fn unlinked(storage: &Storage, hashes: &[String]) -> Result<usize> {
     let mut n = 0;
     for md5 in hashes {
@@ -1099,17 +853,12 @@ async fn apply(
     warnings: &mut Vec<Diagnostic>,
 ) -> Result<CalibreBookReport> {
     let storage = &engine.storage;
-    // Counted before the links are written, or every one of them would look new.
+    // Counted before the links are written, or every one would look new.
     let files_linked = unlinked(storage, hashes).await?;
 
-    // **`upsert_book`, i.e. the provider no-clobber merge — not the device's
-    // straight assignment.** calibre is the origin of curated metadata, which
-    // argues for assignment; but the pattern is chosen
-    // by whether the record is *complete*, not by who owns it. A sidecar is the
-    // device's complete state, so a missing note there means the user deleted
-    // it. A `calibredb list` row is nothing of the kind: it carries no page
-    // count at all, and its ISBN is empty far more often than not. Assigning it
-    // straight would blank fields calibre has no opinion about.
+    // `upsert_book` (the provider no-clobber merge), not straight assignment: a `calibredb list` row
+    // carries no page count and often no ISBN, so assigning it would blank fields calibre has no
+    // opinion about.
     let mut book = Book {
         title: cb.title.clone(),
         authors: cb.authors.clone(),
@@ -1119,24 +868,16 @@ async fn apply(
         isbn_10: cb.isbn_10.clone(),
         isbn_13: cb.isbn_13.clone(),
         description: cb.description.clone(),
-        // **Series is no longer dropped** (migration `0013`). It used to be,
-        // with a note saying there was nowhere to put it; there is now, and
-        // calibre is the one origin here that has curated the field by hand.
-        // The pair moves together or not at all — an index without the name it
-        // indexes is not a fact about anything — which is the same rule the
-        // federated merge and `MERGE_RULES`' pair guard follow.
+        // Series and index move together or not at all: an index without its name is not a fact.
         series: cb.series.clone(),
         series_index: cb.series_index,
-        // Subjects stay empty on purpose: calibre's `tags` are **minted
-        // shelves**, which is `book_tags`, and folding them into `subjects`
-        // would merge the two vocabularies migration `0013` exists to keep
-        // apart.
+        // Subjects stay empty: calibre's `tags` are minted shelves (`book_tags`) and must not merge into
+        // `subjects`.
         ..Default::default()
     };
     let created = book_id.is_none();
     let mut cover_copied = false;
-    // The cover is the providers' field, and calibre's is a different edition's
-    // as often as not — so it fills a gap and never replaces one.
+    // Calibre's cover is often another edition's, so it fills a gap and never replaces a cover.
     let have_cover = match book_id {
         Some(id) => storage
             .get_book(id)
@@ -1159,13 +900,9 @@ async fn apply(
         }
     }
 
-    // `enrich_book` for a book we have already identified, `upsert_book` only
-    // when creating one. `upsert_book`'s third branch — no `isbn_10`, no
-    // `isbn_13` — is a plain unconditional insert and ignores `Book::id`
-    // entirely, so using it on a match found by uuid or by file hash (neither of
-    // which implies an ISBN) silently makes a second copy of the book on every
-    // run. Found by `importing_the_same_library_twice_changes_nothing`, which is
-    // why that test asserts the library's *size* and not only the report.
+    // `enrich_book` for an identified book, `upsert_book` only when creating: with no ISBN
+    // `upsert_book` inserts unconditionally and ignores `Book::id`, duplicating the book on every
+    // run.
     let book_id = match book_id {
         Some(id) => {
             storage
@@ -1175,9 +912,8 @@ async fn apply(
         }
         None => storage.upsert_book(&book, Some(Source::Calibre)).await?,
     };
-    // `timestamp` is when the user added it to *calibre*, which is exactly what
-    // `books.created_at` means — and only for a book this import just created:
-    // for one we already had, when it arrived here is ours to know.
+    // `timestamp` is when it was added to calibre, which is what `created_at` means, but only for a
+    // book created here.
     if created && let Some(added) = cb.added {
         storage.set_book_created_at(book_id, added).await?;
     }
@@ -1189,13 +925,8 @@ async fn apply(
     let tags: Vec<(String, String)> = cb.tags.iter().map(|t| (slug_tag(t), t.clone())).collect();
     let tags_added = storage.add_book_tags(book_id, SOURCE, &tags).await?;
 
-    // The payoff arrives later and elsewhere, exactly as it does in
-    // `import_epub`: when this book's sidecar comes off the device, `match_book`
-    // takes its `md5` branch instead of guessing at the title — including when
-    // KOReader keeps sidecars in `dir` or `hash` mode, away from the book.
-    //
-    // `link_device_book`, never `set_device_link`: this is a scan, and a scan
-    // must not relabel a link the user made by hand.
+    // `link_device_book`, never `set_device_link`: a scan must not relabel a link the user made by
+    // hand.
     for md5 in hashes {
         storage
             .link_device_book(md5, book_id, LinkedBy::Auto)
@@ -1213,11 +944,8 @@ async fn apply(
     })
 }
 
-/// Copy calibre's cover into our own images dir.
-///
-/// Named from the uuid, not from calibre's path: every cover in a calibre
-/// library is called `cover.jpg`, so the source name would collide for every
-/// book after the first.
+/// Named from the uuid: every calibre cover is called `cover.jpg`, so the source name would
+/// collide.
 fn copy_cover(src: &Path, images_dir: &Path, cb: &CalibreBook) -> Result<PathBuf> {
     let ext = src
         .extension()
@@ -1234,23 +962,12 @@ fn copy_cover(src: &Path, images_dir: &Path, cb: &CalibreBook) -> Result<PathBuf
     Ok(dst)
 }
 
-/// Our normalization of a tag. The raw value is stored beside it, which is what
-/// makes this safe to change later — the same treatment a Goodreads shelf gets,
-/// and for the same reason: collections (shelves, tags) are not modelled yet —
-/// three systems minting them is a merge problem with no good default — so
-/// these rows are inert provenance, kept so that design can be made against
-/// real data.
+/// Our normalization of a tag; the raw value is stored beside it, so this can change later.
 fn slug_tag(tag: &str) -> String {
     tag.trim().to_lowercase().replace(' ', "-")
 }
 
-// ---- running a calibre tool -------------------------------------------------
-
-/// Run a calibre binary and return its stdout.
-///
-/// `tokio::process`, not `std::process`: `ebook-convert` on a large book runs for
-/// minutes, and blocking the executor thread for that would stop every other
-/// task in the frontend — including, in the TUI, the draw loop.
+/// `tokio::process`: `ebook-convert` can run for minutes and must not block the executor.
 async fn run(bin: &Path, tool: &str, argv: &[String]) -> Result<String> {
     let out = tokio::process::Command::new(bin)
         .args(argv)
@@ -1269,8 +986,6 @@ async fn run(bin: &Path, tool: &str, argv: &[String]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Calibre is chatty on failure and the interesting part is at the end. Trimmed
-/// so a diagnostic stays a line or two rather than a screen of Python.
 fn tail(stderr: &str) -> String {
     let msg: Vec<&str> = stderr
         .lines()
@@ -1290,10 +1005,7 @@ fn tail(stderr: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Recorded from calibre 9.11, not written from the documentation — the same
-    /// rule the Goodreads `recorded/` fixtures follow, and for the same reason:
-    /// generating a sample from our own understanding of another system's format
-    /// would prove only that we agree with ourselves.
+    /// Recorded from real calibre output, not written by hand.
     const RECORDED: &str = include_str!("../tests/fixtures/calibre/recorded/library.json");
 
     #[test]
@@ -1303,8 +1015,6 @@ mod tests {
 
         let p = &books[0];
         assert_eq!(p.title.as_deref(), Some("Grimms' Fairy Tales"));
-        // The trap: `authors` is a `&`-joined *string* where every other
-        // multi-valued field is a JSON array.
         assert_eq!(p.authors, vec!["Jacob Grimm", "Wilhelm Grimm"]);
         assert_eq!(
             p.uuid.as_deref(),
@@ -1325,8 +1035,6 @@ mod tests {
         assert!(p.cover.is_some());
     }
 
-    /// The second trap, and the one that would have shipped: an undated book
-    /// carries calibre's `UNDEFINED_DATE` rather than no `pubdate` at all.
     #[test]
     fn calibres_undefined_date_is_not_a_publication_year() {
         assert_eq!(year_of("0101-01-01T00:00:00+00:00"), None);
@@ -1337,13 +1045,9 @@ mod tests {
         let books = parse_library(RECORDED).unwrap();
         let undated = &books[1];
         assert_eq!(undated.publish_year, None, "0101 is a sentinel, not a year");
-        // …and its `timestamp` is a real date, so the sentinel filter is not
-        // simply dropping every date.
         assert!(undated.added.is_some());
     }
 
-    /// Calibre omits a field entirely when it has no value, rather than writing
-    /// null — so a minimal row must parse, not fail.
     #[test]
     fn a_row_with_almost_nothing_on_it_still_parses() {
         let books = parse_library(RECORDED).unwrap();
@@ -1369,11 +1073,6 @@ mod tests {
         assert_eq!(parse_library("[]").unwrap().len(), 0);
     }
 
-    /// Both shapes, because the point of accepting both is that we do not know
-    /// which one the next calibre writes.
-    /// calibre 9.11 lists an authorless book as `"authors": "Unknown"` — its
-    /// default author, a placeholder rather than a person — and that is no
-    /// author, in either shape. Anything else spelled that way is a name.
     #[test]
     fn calibres_unknown_author_is_no_author() {
         for json in [
@@ -1383,7 +1082,6 @@ mod tests {
             let rows = parse_library(json).unwrap();
             assert!(rows[0].authors.is_empty(), "{json}: {:?}", rows[0].authors);
         }
-        // Only the sentinel exactly as calibre writes it, and only alone.
         let lower = parse_library(r#"[{"id":1,"title":"T","authors":"unknown"}]"#).unwrap();
         assert_eq!(lower[0].authors, vec!["unknown"]);
         let beside = parse_library(r#"[{"id":1,"title":"T","authors":"Unknown & A"}]"#).unwrap();
@@ -1396,14 +1094,11 @@ mod tests {
         assert_eq!(joined[0].authors, vec!["A", "B"]);
         let listed = parse_library(r#"[{"id":1,"title":"T","authors":["A","B"]}]"#).unwrap();
         assert_eq!(listed[0].authors, vec!["A", "B"]);
-        // A tag with a space keeps it; the slug is where normalization happens.
         let tagged = parse_library(r#"[{"id":1,"title":"T","tags":["Victorian Lit"]}]"#).unwrap();
         assert_eq!(tagged[0].tags, vec!["Victorian Lit"]);
         assert_eq!(slug_tag("Victorian Lit"), "victorian-lit");
     }
 
-    /// An ISBN reaches `normalize_isbn` whichever column it came in, and
-    /// calibre's free-text identifier junk does not become one.
     #[test]
     fn an_isbn_is_validated_wherever_calibre_put_it() {
         let from_map =
@@ -1413,16 +1108,12 @@ mod tests {
         let from_col = parse_library(r#"[{"id":1,"title":"T","isbn":"9781900000178"}]"#).unwrap();
         assert_eq!(from_col[0].isbn_13.as_deref(), Some("9781900000178"));
 
-        // An ASIN is what that column holds as often as an ISBN.
         let junk =
             parse_library(r#"[{"id":1,"title":"T","identifiers":{"isbn":"B01N0Q4B5F"}}]"#).unwrap();
         assert_eq!(junk[0].isbn_10, None);
         assert_eq!(junk[0].isbn_13, None);
     }
 
-    /// The command lines, asserted rather than eyeballed — they are the whole
-    /// interface to another program, and a test is the only thing that notices a
-    /// flag going missing.
     #[test]
     fn the_command_lines_are_what_calibre_documents() {
         assert_eq!(
@@ -1440,17 +1131,12 @@ mod tests {
                 "all"
             ]
         );
-        // Conversion sends the two paths and nothing else: calibre reads both
-        // formats off the extensions, and every option beyond that is a decision
-        // about somebody's book that we have no standing to make.
         assert_eq!(
             convert_argv(Path::new("in.epub"), Path::new("out.azw3")),
             ["in.epub", "out.azw3"]
         );
     }
 
-    /// Absent is a first-class answer, and it is *typed* — the CLI branches on
-    /// it to say "calibre is not installed" rather than printing a failure.
     #[tokio::test]
     async fn an_absent_calibre_is_a_named_error_and_never_a_panic() {
         let none = Calibre::default();
@@ -1465,8 +1151,6 @@ mod tests {
         assert!(matches!(e, EngineError::CalibreMissing { .. }), "{e:?}");
     }
 
-    /// The guard that keeps a typo from creating a calibre library on the user's
-    /// disk. Verified against calibre 7.26, which does exactly that.
     #[test]
     fn a_directory_that_is_not_a_calibre_library_is_refused_before_anything_runs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1476,19 +1160,11 @@ mod tests {
 
         std::fs::write(tmp.path().join("metadata.db"), b"").unwrap();
         assert_eq!(library_root(Some(tmp.path())).unwrap(), Some(tmp.path()));
-        // No library asked for is calibre's own default, which is fine.
         assert_eq!(library_root(None).unwrap(), None);
     }
 
-    /// A directory named like a tool is not a tool, and neither is a file
-    /// nobody can run. Without the executable check, "calibre is absent" would
-    /// become "calibre fails on every call".
-    ///
-    /// Asserted on [`is_executable`] rather than on [`find_tool`], because
-    /// `find_tool` falls through to the real `PATH` — so on a developer machine
-    /// with calibre installed the negative half would find the real binary and
-    /// pass for the wrong reason. The positive half below *is* `find_tool`,
-    /// which is where "the extra directory is searched first" is pinned.
+    /// Asserted on `is_executable`, not `find_tool`: `find_tool` falls through to the real `PATH`, so
+    /// a machine with calibre installed would pass the negative half for the wrong reason.
     #[cfg(unix)]
     #[test]
     fn detection_wants_an_executable_file_not_a_name() {

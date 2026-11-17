@@ -1,57 +1,7 @@
-//! `gen-wellknown`: the offline index of well-known works that metadata
-//! search ranks and corrects typos against, pulled from **Wikidata** (CC0).
-//!
-//! **Live and opt-in.** This is the one generator here that talks to the
-//! network, and it is never run by a test or by CI: it is run by hand, its
-//! output is committed under `crates/engine/data/`, and the engine embeds that
-//! file. Re-running it is how the index is refreshed.
-//!
-//! # What is asked, and how politely
-//!
-//! Two phases, both against the public query service
-//! (`query.wikidata.org/sparql`), both **generic**: a class id, then batches
-//! of entity ids. Nothing from anybody's library is ever sent, and the
-//! `User-Agent` is `bookmole/<version>` and nothing else — the same rule
-//! as every request the app makes.
-//!
-//! 1. **Ids.** For each class of written work, every item that is a direct
-//!    instance of it, with its sitelink count (`wikibase:sitelinks`, the
-//!    notability figure). Merged, ranked by sitelinks (ties to the lower
-//!    Q-number) and cut at `--target`.
-//! 2. **Details.** The chosen ids in batches of `--chunk`: labels in the gated
-//!    Latin-script languages, English aliases, the original title (`P1476`),
-//!    authors (`P50`, with their ordinal and notability), publication dates
-//!    (`P577`), series and place (`P179`/`P1545`) and Open Library ids
-//!    (`P648`).
-//!
-//! One request at a time, a pause after each at least as long as the request
-//! took (the service gives each client about a minute of query time a
-//! minute), a `429` or `503` honoured for exactly its `Retry-After`, and a
-//! batch that times out split in half rather than asked again as it was.
-//!
-//! **Resumable**: each finished class and batch is written to the scratch
-//! directory, and a re-run skips what is there. `--assemble-only` writes the
-//! output from the scratch directory without asking anything.
-//!
-//! # The file
-//!
-//! One gzip of UTF-8 text, sorted by Q-number, so `gzcat | diff` shows what a
-//! refresh changed. Comment lines start with `#`. Every other line is one
-//! work, tab-separated:
-//!
-//! ```text
-//! qid  sitelinks  year  ol_works  author  series  series_pos  title…
-//! ```
-//!
-//! `ol_works` is comma-separated (`OL893414W`), `year` may be negative
-//! (antiquity) or empty, and every remaining field is a title:
-//! `[flags]langs=text`, `langs` comma-separated and sorted, where flag `*`
-//! marks the original title (`P1476`) and `~` an English alias. Labels that
-//! are the same string in several languages are one field.
-//!
-//! The engine's reader (`search/wellknown.rs`) is written against this
-//! description and shares no code with this file: this crate never depends on
-//! the engine, so a bug in one cannot hide behind the other.
+//! `gen-wellknown`: pulls the offline index of well-known works from Wikidata (CC0); run by hand,
+//! never by tests or CI. Queries are generic and the `User-Agent` is only `bookmole/<version>`.
+//! Output: a gzip of text sorted by Q-number; `#` lines are comments, others are tab-separated
+//! `qid sitelinks year ol_works author series series_pos title…`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -60,17 +10,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
 
-/// Bumped when the file's layout changes; the engine refuses a version it
-/// does not know.
+/// Bumped when the file's layout changes; the engine refuses a version it does not know.
 pub const FORMAT_VERSION: u32 = 1;
 
 const ENDPOINT: &str = "https://query.wikidata.org/sparql";
 const USER_AGENT: &str = concat!("bookmole/", env!("CARGO_PKG_VERSION"));
 
-/// The classes a work may be a direct instance of. Direct (`wdt:P31`), not the
-/// subclass closure: `P31/P279*` over written works times out, and these
-/// cover what a person searches a catalogue for. Series of works are left
-/// out on purpose — search finds books, and a series is not a book.
+/// Direct instances only (`wdt:P31`): the `P31/P279*` closure times out. Series are left out on
+/// purpose.
 pub const CLASSES: &[(&str, &str)] = &[
     ("Q7725634", "literary work"),
     ("Q47461344", "written work"),
@@ -87,34 +34,26 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("Q725377", "graphic novel"),
 ];
 
-/// The classes whose works with a single sitelink are worth asking about: the
-/// big ones, where a real book with one Wikipedia article lives.
 pub const SINGLE_SITELINK_CLASSES: &[(&str, &str)] = &[
     ("Q7725634", "literary work"),
     ("Q47461344", "written work"),
     ("Q571", "book"),
 ];
 
-/// Ids per "has a Wikipedia article" request.
 const WIKIPEDIA_BATCH: usize = 2000;
 
-/// The service stops a query at a minute, and a streamed answer cut there can
-/// still arrive with a 200: anything this slow is treated as cut off.
+/// A streamed answer cut at the service's one-minute limit can still arrive with a 200, so anything
+/// this slow counts as cut off.
 const CUT_OFF: Duration = Duration::from_secs(55);
 
-/// Labels are kept in these languages: English and the gated Latin-script
-/// languages search is required to handle (and benchmarked on), plus
-/// Wikidata's language-neutral `mul`.
 pub const LANGS: &[&str] = &["en", "fr", "de", "es", "it", "pt", "nl", "sv", "pl", "mul"];
 
-/// English aliases kept per work, shortest first.
 const MAX_ALIASES: usize = 4;
 
 pub struct Options {
     pub scratch: PathBuf,
     pub out: PathBuf,
     pub target: usize,
-    /// The final cut, made once every candidate's details are in.
     pub keep: Option<usize>,
     pub chunk: usize,
     pub min_sitelinks: u32,
@@ -131,7 +70,6 @@ pub fn default_scratch() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wellknown-scratch")
 }
 
-/// What a run wrote.
 pub struct Report {
     pub works: usize,
     pub bytes: u64,
@@ -147,7 +85,6 @@ pub fn generate(o: &Options) -> Result<Report, String> {
         Some(Client::new(o.min_pause)?)
     };
 
-    // ---- phase 1: ids ----
     let mut best: HashMap<u64, u32> = HashMap::new();
     for (class, name) in CLASSES {
         let path = o.scratch.join(format!("ids-{class}.tsv"));
@@ -165,12 +102,8 @@ pub fn generate(o: &Options) -> Result<Report, String> {
         }
     }
     if o.min_sitelinks <= 1 {
-        // One sitelink is mostly a Wikisource page (a chapter, a letter, a
-        // poem) and sometimes a real book with one Wikipedia article — a
-        // recent novel with an English article and nothing else. Only the
-        // second kind is kept. Asked in two steps, because asking both at
-        // once runs past the service's minute: the ids, partitioned by their
-        // last digit, then which of them have a Wikipedia article, in batches.
+        // One-sitelink works are kept only if they have a Wikipedia article (the rest are mostly Wikisource
+        // pages). Asked in two steps, ids then articles: both at once outruns the service's minute.
         let mut singles: Vec<u64> = Vec::new();
         for (class, name) in SINGLE_SITELINK_CLASSES {
             for digit in 0..10 {
@@ -238,10 +171,8 @@ pub fn generate(o: &Options) -> Result<Report, String> {
         selected.iter().map(|(_, s)| *s).min().unwrap_or(0)
     );
 
-    // ---- phase 2: details ----
-    // Kept per batch under `details/`, each file naming the ids it answered
-    // on its first line, so a resume asks for exactly the ids no file holds —
-    // whatever the selection has become since.
+    // Each batch file names the ids it answered on its first line, so a resume asks only for ids no
+    // file holds.
     let dir = o.scratch.join("details");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (done, rows) = read_batches(&dir)?;
@@ -271,7 +202,6 @@ pub fn generate(o: &Options) -> Result<Report, String> {
         }
     }
 
-    // ---- assemble ----
     let mut facts: BTreeMap<u64, Facts> = BTreeMap::new();
     for (q, sl) in &selected {
         let mut f = Facts {
@@ -283,9 +213,6 @@ pub fn generate(o: &Options) -> Result<Report, String> {
         }
         facts.insert(*q, f);
     }
-    // The final cut, made knowing each work's details: by notability, and
-    // among equals (most of the one-sitelink works) a work that looks like a
-    // book a catalogue holds — an Open Library id, an author, a year — first.
     if let Some(keep) = o.keep.filter(|k| *k < facts.len()) {
         type Rank = (std::cmp::Reverse<u32>, std::cmp::Reverse<u8>, u64);
         let mut ranked: Vec<(u64, Rank)> = facts
@@ -344,18 +271,14 @@ pub fn generate(o: &Options) -> Result<Report, String> {
     })
 }
 
-// ---- the network ------------------------------------------------------------
-
 struct Client {
     http: reqwest::blocking::Client,
     min_pause: Duration,
     last: Option<(Instant, Duration)>,
 }
 
-/// What one request came to.
 enum Answer {
     Ok(String),
-    /// The service ran out of time on this query: try a smaller one.
     TooBig,
 }
 
@@ -373,8 +296,6 @@ impl Client {
         })
     }
 
-    /// Wait out the pause owed for the last request: at least `min_pause`,
-    /// and at least as long as that request kept the service busy.
     fn pace(&mut self) {
         if let Some((at, took)) = self.last {
             let owed = self.min_pause.max(took);
@@ -385,9 +306,7 @@ impl Client {
         }
     }
 
-    /// One query, POSTed (a batch of ids is too long for a URL), with the
-    /// service's manners kept: `Retry-After` honoured, five transient failures
-    /// retried with a growing pause, a timeout reported as [`Answer::TooBig`].
+    /// POSTed because a batch of ids is too long for a URL.
     fn query(&mut self, sparql: &str, accept: &str) -> Result<Answer, String> {
         let mut backoff = Duration::from_secs(10);
         for attempt in 0..6 {
@@ -424,15 +343,12 @@ impl Client {
             }
             let body = match resp.text() {
                 Ok(b) => b,
-                // The answer stopped arriving: the service's minute ran out
-                // mid-stream, or the connection did.
                 Err(e) if e.is_timeout() || e.is_body() || e.is_decode() => {
                     eprintln!("  the answer was cut off after {took:?}: {e}");
                     return Ok(Answer::TooBig);
                 }
                 Err(e) => return Err(e.to_string()),
             };
-            // The whole answer, sent and read: what the service spent.
             let took = start.elapsed();
             self.last = Some((Instant::now(), took));
             if status == 200 && took >= CUT_OFF {
@@ -461,7 +377,6 @@ impl Client {
         Err("gave up after six attempts".into())
     }
 
-    /// Every direct instance of `class` with at least `min` sitelinks.
     fn ids_of(&mut self, class: &str, min: u32) -> Result<Vec<(u64, u32)>, String> {
         let q = format!(
             "SELECT ?item ?sl WHERE {{ ?item wdt:P31 wd:{class} ; wikibase:sitelinks ?sl . FILTER(?sl >= {min}) }}"
@@ -469,8 +384,6 @@ impl Client {
         match self.query(&q, TSV)? {
             Answer::Ok(body) => Ok(id_rows(&body)),
             Answer::TooBig => {
-                // Split by notability: the high band is small and fast, the
-                // low bands are where the rows are.
                 if min >= 64 {
                     return Err(format!("{class}: times out even at >= {min} sitelinks"));
                 }
@@ -482,10 +395,6 @@ impl Client {
         }
     }
 
-    /// Every direct instance of `class` with exactly one sitelink whose
-    /// Q-number ends in `suffix` — a tenth of them for one digit, which the
-    /// service usually sends inside its minute; when it does not, the ten
-    /// longer suffixes are asked instead.
     fn ids_with_one_sitelink(&mut self, class: &str, suffix: &str) -> Result<Vec<u64>, String> {
         let q = format!(
             "SELECT ?item WHERE {{ ?item wdt:P31 wd:{class} ; wikibase:sitelinks 1 . FILTER(STRENDS(STR(?item), \"{suffix}\")) }}"
@@ -510,9 +419,8 @@ impl Client {
         }
     }
 
-    /// Which of `ids` have a Wikipedia article (any language). In the order
-    /// written (`hint:optimizer "None"`): left to choose, the service starts
-    /// from every article of every Wikipedia and runs out of time.
+    /// Written in this order (`hint:optimizer "None"`): left to choose, the service starts from every
+    /// Wikipedia article and times out.
     fn with_wikipedia_article(&mut self, ids: &[u64]) -> Result<Vec<u64>, String> {
         let values: Vec<String> = ids.iter().map(|q| format!("wd:Q{q}")).collect();
         let q = format!(
@@ -545,8 +453,6 @@ impl Client {
         }
     }
 
-    /// The facts of a batch of works, as rows; a batch the service cannot
-    /// answer in time is asked again as two halves.
     fn details(&mut self, ids: &[u64]) -> Result<Vec<Row>, String> {
         match self.query(&details_query(ids), TSV)? {
             Answer::Ok(body) => parse_details_tsv(&body),
@@ -563,10 +469,6 @@ impl Client {
 
 const TSV: &str = "text/tab-separated-values";
 
-/// The ids query's answer, as tab-separated values: a header, then
-/// `<http://www.wikidata.org/entity/Q190192>\t77` per row. Tab-separated
-/// rather than JSON because a big class is a few hundred thousand rows, and
-/// the service's minute is spent sending them.
 fn id_rows(body: &str) -> Vec<(u64, u32)> {
     body.lines()
         .skip(1)
@@ -578,7 +480,6 @@ fn id_rows(body: &str) -> Vec<(u64, u32)> {
         .collect()
 }
 
-/// `Retry-After` as seconds or an HTTP date, capped at an hour.
 fn retry_after(h: &reqwest::header::HeaderMap) -> Option<Duration> {
     let v = h.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim();
     let secs = v.parse::<u64>().ok()?;
@@ -589,8 +490,8 @@ fn details_query(ids: &[u64]) -> String {
     let values: Vec<String> = ids.iter().map(|q| format!("wd:Q{q}")).collect();
     let langs: Vec<String> = LANGS.iter().map(|l| format!("\"{l}\"")).collect();
     let langs = langs.join(",");
-    // One branch per kind of fact, so a work with three authors and nine
-    // labels is twelve rows rather than twenty-seven.
+    // One branch per kind of fact, so a work with many authors and labels is a sum of rows, not a
+    // product.
     format!(
         r#"SELECT ?item ?k ?v ?x ?y WHERE {{
   VALUES ?item {{ {values} }}
@@ -618,14 +519,10 @@ fn details_query(ids: &[u64]) -> String {
     )
 }
 
-// ---- SPARQL answers ---------------------------------------------------------
-
-/// `http://www.wikidata.org/entity/Q190192` → 190192.
 fn qnum(uri: &str) -> Option<u64> {
     uri.rsplit('/').next()?.strip_prefix('Q')?.parse().ok()
 }
 
-/// One fact about one work, as the details query returns it.
 #[derive(Debug, Clone, PartialEq)]
 struct Row {
     item: u64,
@@ -635,9 +532,6 @@ struct Row {
     y: String,
 }
 
-/// The details query's answer as tab-separated values — a third the size of
-/// the JSON one, which matters when the answer, not the query, is the slow
-/// part. Columns `?item ?k ?v ?x ?y`, each an N-Triples term or empty.
 fn parse_details_tsv(body: &str) -> Result<Vec<Row>, String> {
     let mut lines = body.lines();
     let head = lines.next().unwrap_or_default();
@@ -665,8 +559,6 @@ fn parse_details_tsv(body: &str) -> Result<Vec<Row>, String> {
     Ok(out)
 }
 
-/// One N-Triples term's value: a literal's text unescaped (its language tag
-/// or datatype dropped), an IRI's text, or empty.
 fn term(t: &str) -> String {
     let t = t.trim();
     if let Some(iri) = t.strip_prefix('<') {
@@ -704,8 +596,6 @@ fn term(t: &str) -> String {
     }
     out
 }
-
-// ---- assembling one work -----------------------------------------------------
 
 #[derive(Default)]
 struct Facts {
@@ -770,8 +660,6 @@ impl Facts {
         }
     }
 
-    /// The first author: the lowest ordinal if any is numbered, else the most
-    /// notable, else the first by name.
     fn author(&self) -> Option<&str> {
         let numbered = self
             .authors
@@ -787,8 +675,6 @@ impl Facts {
             .map(|a| a.2.as_str())
     }
 
-    /// The series with an ordinal if one has one, else the first by name; its
-    /// position when the ordinal is a number.
     fn series(&self) -> Option<(&str, String)> {
         let s = self
             .series
@@ -812,8 +698,6 @@ impl Facts {
     }
 
     fn line(&self, q: u64) -> Option<String> {
-        // Titles: each distinct label string with the languages that use it,
-        // the original title marked, then English aliases not already there.
         let mut by_text: BTreeMap<&str, (BTreeSet<&str>, bool)> = BTreeMap::new();
         for (lang, text) in &self.labels {
             by_text
@@ -874,8 +758,6 @@ impl Facts {
     }
 }
 
-/// The year of an `xsd:dateTime` as the service writes it: `1965-01-01T…`,
-/// `-0800-01-01T…`.
 fn year_of(v: &str) -> Option<i32> {
     let v = v.trim();
     let (neg, rest) = match v.strip_prefix('-') {
@@ -889,8 +771,6 @@ fn year_of(v: &str) -> Option<i32> {
     }
     Some(if neg { -y } else { y })
 }
-
-// ---- scratch files -----------------------------------------------------------
 
 fn write_pairs(path: &Path, pairs: &[(u64, u32)]) -> Result<(), String> {
     let mut s = String::new();
@@ -948,7 +828,6 @@ fn write_batch(path: &Path, ids: &[u64], rows: &[Row]) -> Result<(), String> {
     write_atomic(path, s.as_bytes())
 }
 
-/// Every batch file in `dir`: the ids they answered, and their rows.
 fn read_batches(dir: &Path) -> Result<(std::collections::HashSet<u64>, Vec<Row>), String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -1015,8 +894,7 @@ fn rows_of_text(text: &str) -> Vec<Row> {
     out
 }
 
-/// Written beside, then renamed: a run killed mid-write leaves no half file
-/// for the resume to mistake for a finished one.
+/// Written beside, then renamed: a killed run leaves no half file for a resume to take as finished.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("part");
     let mut f = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
@@ -1026,8 +904,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    // No name and a zero mtime in the header, so the same text is the same
-    // bytes and the same sha256.
+    // No name and a zero mtime in the header: the same text gives the same bytes and sha256.
     let mut enc = flate2::GzBuilder::new()
         .mtime(0)
         .write(Vec::new(), flate2::Compression::best());
@@ -1039,7 +916,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Today's date in UTC, `YYYY-MM-DD`: the build date stamped on the file.
 #[allow(clippy::disallowed_methods)]
 fn today_utc() -> String {
     let secs = SystemTime::now()
@@ -1047,7 +923,6 @@ fn today_utc() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let days = (secs / 86_400) as i64;
-    // Howard Hinnant's civil-from-days.
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

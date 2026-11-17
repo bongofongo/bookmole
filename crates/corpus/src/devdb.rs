@@ -1,40 +1,5 @@
-//! A seeded library worth rendering.
-//!
-//! Every other tier here generates *import fixtures* — sidecars, CSV exports,
-//! epubs. This one generates a **populated database**, because without it a
-//! frontend is developed against an empty shelf or against a personal library
-//! that cannot be committed, and neither of those renders anything worth looking
-//! at.
-//!
-//! ## What it emits, and what it deliberately does not
-//!
-//! `seed.sql`, a pile of cover PNGs and a vault of markdown — and **not a
-//! schema**. The engine owns the schema and `sqlx::migrate!` owns the ledger it
-//! is recorded in (`_sqlx_migrations`, checksummed sha384 over each migration's
-//! raw bytes). A generator that created tables would be a second copy of the
-//! schema, free to drift; a generator that wrote the ledger would be a
-//! reimplementation of sqlx's bookkeeping, and a wrong checksum there is a
-//! `VersionMismatch` at startup rather than an obvious failure here. So
-//! `make dev-db` has the real binary create and migrate an empty database, and
-//! this file fills it.
-//!
-//! Everything is still `INSERT`s with **explicit column lists**, which is the
-//! property that keeps the drift loud: rename a column and the seed fails at
-//! `sqlite3` time naming it, instead of quietly leaving a NULL behind.
-//!
-//! ## The edge cases are the point
-//!
-//! The two hundred ordinary books are the backdrop. What this fixture is *for*
-//! is the twenty-odd deliberate hostilities at the front of it — `page_count`
-//! of zero (a false denominator for any percentage), a 1,400-page doorstop beside a
-//! 48-page pamphlet, no cover, a title long enough to need clipping, an RTL
-//! title, a mononym author, a book with no author at all. They are the visual
-//! regression suite, and they are also the exact inputs the engine's
-//! derived facts (progress, display names, sort keys) have to get right. `manifest.json` names each one so a screenshot
-//! reviewer knows what it is looking for.
-//!
-//! This module, like the rest of the crate, does **not** depend on
-//! `bookmole`.
+//! A seeded library worth rendering: `seed.sql`, cover PNGs and a markdown vault. No schema:
+//! the engine creates it, and INSERTs use explicit column lists so drift fails loudly.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -54,22 +19,13 @@ PRAGMA foreign_keys = ON;
 BEGIN;
 ";
 
-/// 2025-01-01 00:00:00 UTC. Fixed, never `now()` — a fixture whose timestamps
-/// move is a fixture whose goldens move, and a screenshot taken from it would
-/// differ every day for no reason.
+/// 2025-01-01 00:00:00 UTC; fixed so timestamps and goldens never move.
 const EPOCH: i64 = 1_735_689_600;
 const DAY: i64 = 86_400;
 
-/// Small enough that two hundred of them are a few hundred kilobytes, large
-/// enough that a shelf tile is not visibly a thumbnail. Aspect is 2:3, the
-/// ordinary trade paperback. The engine measures each stored cover's own
-/// aspect, so this is only the shape the generated covers happen to have.
 const COVER_W: u32 = 240;
 const COVER_H: u32 = 360;
 
-/// `corpus/generated/devdb`, beside the tier-2 corpus and gitignored for the
-/// same reason: it is large, it is reproducible from a seed, and a committed copy
-/// would be a second source of truth for what the dev library contains.
 pub fn default_out() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -79,11 +35,7 @@ pub fn default_out() -> PathBuf {
         .join("corpus/generated/devdb")
 }
 
-/// `<repo>/dev-data` — the same default `make dev-db` uses for `DEV_DB_DIR`.
-///
-/// The generator needs it because `cover_path` is a **whole path** in this
-/// schema (`Storage::set_cover` stores `images_dir.join(name)`), so the seed
-/// cannot state one without knowing where the library will be built.
+/// `cover_path` is a whole path in this schema, so the seed must know where the library lives.
 pub fn default_data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -93,12 +45,6 @@ pub fn default_data_dir() -> PathBuf {
         .join("dev-data")
 }
 
-/// How many of the generated books are deliberate hostilities.
-///
-/// Exposed so the one line that reports it reads the number rather than
-/// restating it. `make dev-db` once printed a hand-written "220 books, 20 of
-/// them", which went stale the moment a case was added — a fixture
-/// disagreeing with a claim about it, one line away from itself.
 pub fn edge_case_count() -> usize {
     edge_cases().len()
 }
@@ -120,7 +66,7 @@ pub fn generate(
     for i in 0..ordinary {
         books.push(ordinary_book(&mut rng, edge_count + i + 1));
     }
-    // History's books last, so every id before them is unchanged.
+    // History's books last, so every earlier id is unchanged.
     let history_first = books.len();
     books.extend(HISTORY.iter().map(history_book));
     for (i, b) in books.iter_mut().enumerate() {
@@ -131,8 +77,6 @@ pub fn generate(
     let mut notes = Vec::new();
     let mut highlight_id = 0i64;
     let mut reading_id = 0i64;
-    // Each book's readings as `(id, started, finished)`, for the Notes-final
-    // block below, which anchors a reflection and a review to a real read.
     let mut reads_of: Vec<(i64, Vec<ReadSpan>)> = Vec::new();
 
     for b in &books {
@@ -168,16 +112,14 @@ pub fn generate(
         }
     }
 
-    // Notes last, so their ids are contiguous and the link pass below can name
-    // them without a second bookkeeping pass.
+    // Notes last, so their ids are contiguous for the link pass.
     for (i, b) in notes.iter().enumerate() {
         let note_id = i as i64 + 1;
         let slug = format!("{:04}-{}", note_id, slug(&b.title));
         let path = format!("{slug}.md");
         let title = format!("On {}", display_title(&b.title));
-        // A dangling link on every third note. `note_links.to_note` is nullable
-        // precisely so an unresolved target survives as text, and a links view
-        // has to render both kinds — so both kinds have to exist here.
+        // A dangling link on every third note: `note_links.to_note` is nullable so unresolved targets
+        // survive, and both kinds must exist.
         let dangling = note_id % 3 == 0;
         let body = format!(
             "# {title}\n\n\
@@ -206,10 +148,7 @@ pub fn generate(
             q(&path),
             q(&title)
         ));
-        // The engine writes `notes_fts` from application code — there is no
-        // trigger on the table. A seeded note that skipped this row would be a
-        // note `SearchNotes` cannot find, which is the one thing a notes
-        // search exists to do.
+        // No trigger fills `notes_fts`; a note without this row is unfindable by search.
         sql.push_str(&format!(
             "INSERT INTO notes_fts (rowid, title, body) VALUES ({note_id}, {}, {});\n",
             q(&title),
@@ -241,7 +180,6 @@ pub fn generate(
         &books[history_first..],
         reading_id,
         notes.len() as i64 + extra as i64,
-        // `notes_final` typed one passage at `highlight_id + 1`.
         highlight_id + 1,
     )?;
 
@@ -272,30 +210,22 @@ pub fn generate(
     Ok(books.len())
 }
 
-/// A reading as the Notes-final block needs it: `(id, started, finished)`.
 type ReadSpan = (i64, i64, Option<i64>);
 
-/// One seeded note of the Notes-final block: what the engine would have
-/// written for it, stated by hand — this crate does not link the engine.
 struct SeedNote {
     id: i64,
     book_id: Option<i64>,
     reading_id: Option<i64>,
     kind: &'static str,
     title: String,
-    /// The raw body, part markers included.
     body: String,
     created: i64,
     page: Option<i64>,
-    /// `(to_note, target_title)` in body order; `None` is an unwritten target.
     links: Vec<(Option<i64>, String)>,
-    /// The instants of parts 2.. — the dates the body's markers state.
     parts_at: Vec<i64>,
 }
 
-/// A part marker, in the grammar `notes::PartMarker` writes and parses —
-/// spelled out here independently, which is the point of a generator that
-/// does not link the engine.
+/// Spelled out independently of `notes::PartMarker`: this crate does not link the engine.
 fn part_marker(n: i64, at: i64, page: Option<i64>) -> String {
     let stamp = format!(
         "{}T{:02}:{:02}:{:02}Z",
@@ -310,11 +240,6 @@ fn part_marker(n: i64, at: i64, page: Option<i64>) -> String {
     }
 }
 
-/// The notes block's cases: a reflection in three
-/// parts, a note in two, a review with a rating, a second linked cluster (the
-/// ordinary notes above already form one thread around note 1), an unwritten
-/// link, an unlinked mention, a note named by its `# heading`, and a passage
-/// typed in by hand. Returns how many notes it added.
 fn notes_final(
     sql: &mut String,
     vault: &Path,
@@ -323,8 +248,6 @@ fn notes_final(
     base: i64,
     last_highlight: i64,
 ) -> std::io::Result<usize> {
-    // The reread: a finished first read to reflect on and review, and an open
-    // second one for the typed passage to fall in.
     let Some(reread) = books.iter().find(|b| b.state == State::Reread) else {
         return Ok(0);
     };
@@ -436,8 +359,6 @@ fn notes_final(
             reading_id: None,
             kind: "note",
             title: "Atlas".into(),
-            // Says "maps that lie" without linking it: the unlinked mention.
-            // And a link to a note nobody has written yet.
             body: "Rereading, I kept thinking about maps that lie and the coasts on them. \
                    Someday: [[Coastlines nobody surveyed]]."
                 .into(),
@@ -448,8 +369,7 @@ fn notes_final(
         },
     ];
 
-    // Edges after every row: a link may name a note seeded after its source,
-    // and `note_links.to_note` is a foreign key.
+    // Edges after every row: a link may name a note seeded after its source (foreign key).
     let mut links = String::new();
     for n in &notes {
         let path = format!("{:04}-{}.md", n.id, slug(&n.title));
@@ -490,15 +410,13 @@ fn notes_final(
 
     sql.push_str(&links);
 
-    // The review's rating, on the scale migration `0007` seeds.
     sql.push_str(&format!(
         "INSERT INTO review_ratings (note_id, scale_id, value) \
          SELECT {}, id, 4.0 FROM rating_scales WHERE name = 'default';\n",
         base + 2
     ));
 
-    // A passage typed in by hand: `source = 'user'`, dated to the
-    // nanosecond inside the open read, as `Engine::create_highlight` dates one.
+    // A passage typed in by hand: `source = 'user'`, dated inside the open read.
     if let Some((open_id, open_started, _)) = open {
         let at = open_started + 5 * DAY + 4_321;
         let datetime = format!(
@@ -525,11 +443,7 @@ fn notes_final(
     Ok(notes.len())
 }
 
-// ---- History (2026-11-10) ---------------------------------------------------
-
-/// One read of the History block: `(title, author, pages, started, ended,
-/// kind, rating, passages, notes)`. Dates are `(y, m, d)`, fixed and never
-/// `now()`; `ended` is the finish or the put-down day, `None` while open.
+/// Dates are `(y, m, d)`; `ended` is the finish or put-down day, `None` while open.
 type HistoryRead = (
     &'static str,
     &'static str,
@@ -549,11 +463,6 @@ enum HistoryKind {
     PutDown,
 }
 
-/// The History block's reads: two years, so a year-over-year comparison has
-/// something to compare, two open reads, two put down (one with its instant
-/// recorded, one from before `0025` with none), ratings, and a busy October.
-/// A frontend's offline test fixture can draw the same titles, so it and the
-/// real library render the same history.
 const HISTORY: &[HistoryRead] = {
     use HistoryKind::*;
     &[
@@ -758,8 +667,7 @@ const HISTORY: &[HistoryRead] = {
     ]
 };
 
-/// The last day the History block writes anything on — fixed, so the seed
-/// does not move with the clock.
+/// Fixed last day, so the seed does not move with the clock.
 const HISTORY_TODAY: (i64, i64, i64) = (2026, 11, 8);
 
 fn history_book(r: &HistoryRead) -> Book {
@@ -773,7 +681,6 @@ fn history_book(r: &HistoryRead) -> Book {
         series: None,
         subjects: vec!["Fiction".into()],
         tags: vec![],
-        // The History block writes its own reads; the main loop writes none.
         state: State::Unread,
         highlights: 0,
         note: false,
@@ -781,8 +688,6 @@ fn history_book(r: &HistoryRead) -> Book {
     }
 }
 
-/// Days since the unix epoch for a civil date (Hinnant's `days_from_civil`,
-/// the inverse of `kostats::ymd`).
 fn civil((y, m, d): (i64, i64, i64)) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -793,24 +698,13 @@ fn civil((y, m, d): (i64, i64, i64)) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// A stated page count for one day of one read: none on two days in seven.
 fn pages_on(day: i64, book: i64) -> i64 {
     let h = (day.wrapping_mul(2_654_435_761) ^ book.wrapping_mul(40_503)).rem_euclid(1 << 31);
     if h % 7 < 2 { 0 } else { 6 + h % 31 }
 }
 
-/// History's reads, their passages, notes, rated reviews and **measured
-/// days** (2026-11-10). Returns how many notes it added.
-///
-/// The measured days are written as `reading_events` rows, `source =
-/// 'koreader'`, `confidence = 'measured'` — what `import_device_statistics`
-/// writes from a reader's `statistics.sqlite3`. That is the one table the
-/// Makefile otherwise leaves to the engine's own fillers, and the exception
-/// is deliberate: pages and minutes are **origin data** (a device measured
-/// them), not a derivation of anything else in the seed, and no device-free
-/// filler can produce them. `make dev-db`'s refill then merges its inferred
-/// rows into these with `EVENT_MERGE`'s no-clobber rule, exactly as it would
-/// after a real statistics import.
+/// Measured days are `reading_events` rows (`source = 'koreader'`, `confidence = 'measured'`):
+/// origin data that no device-free filler can produce, so the seed writes them.
 fn history(
     sql: &mut String,
     vault: &Path,
@@ -830,8 +724,7 @@ fn history(
         let (status, finished_at, put_down_at, page) = match kind {
             HistoryKind::Read => ("finished", end, None, Some(pages)),
             HistoryKind::Reading => ("reading", None, None, Some(pages * 2 / 3)),
-            // The 2025 one predates `0025`: no instant, and the engine must say
-            // *not recorded* rather than invent one.
+            // The 2025 one predates the put-down instant: none recorded, and the engine must not invent one.
             HistoryKind::PutDown => (
                 "abandoned",
                 None,
@@ -854,7 +747,6 @@ fn history(
 
         let last_day = end.map_or(today, |e| e.div_euclid(DAY)).min(today);
         let span_days = (last_day - start_day + 1).max(1);
-        // The measured days.
         for day in start_day..=last_day {
             let p = pages_on(day, book.id);
             if p == 0 {
@@ -870,7 +762,6 @@ fn history(
                 day * DAY,
             ));
         }
-        // Passages, spread over the read's days and attributed to it.
         for k in 0..passages as i64 {
             highlight_id += 1;
             let at =
@@ -896,8 +787,6 @@ fn history(
                 q(&hex(&hasher.finalize())),
             ));
         }
-        // Ordinary notes written during the read (placed by their date), and
-        // a rated review on every rated read.
         let mut seeded: Vec<(String, &'static str, Option<i64>, String, i64)> = (0..notes as i64)
             .map(|k| {
                 let at = (start_day + (k + 1) * span_days / (notes as i64 + 1)) * DAY + 22 * 3_600;
@@ -954,8 +843,6 @@ fn history(
     Ok(written)
 }
 
-/// Bumped when the *shape* of what is emitted changes, so a stale `dev-data/`
-/// is identifiable rather than mysterious. Same role as `gen-corpus`'s.
 pub const GENERATOR_VERSION: u32 = 4;
 
 #[derive(Serialize)]
@@ -988,37 +875,21 @@ struct Book {
     state: State,
     highlights: usize,
     note: bool,
-    /// Why this book is in the fixture. Empty for the ordinary two hundred;
-    /// the edge cases each say what they are for, and it lands in the manifest.
     why: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum State {
-    /// No reading row at all — on the shelf, never opened. The commonest state
-    /// in a real library and the one a "progress" column has no answer for.
     Unread,
     Reading,
     Finished,
     Abandoned,
-    /// Two readings: one finished, one open. A reread mints a second card
-    /// beside the first, so it must be possible to have two.
     Reread,
-    /// A status word this build does not know, written straight into
-    /// `readings.status`.
-    ///
-    /// `readings.status` has **no `CHECK` constraint** — the column comment in
-    /// `0005_readings.sql` names three words and the schema permits any — so
-    /// this is a state a real database can hold, not one invented for a
-    /// fixture. It is how a newer importer's vocabulary arrives, and the engine
-    /// answers it with `ReadingState::Other { raw }` rather than failing to
-    /// parse. A frontend's offline fixture modelled this case long before the
-    /// real library had a counterpart, which is exactly the drift
-    /// `edge-cases.json` exists to make loud.
+    /// A status word this build does not know, written straight into `readings.status`, which has
+    /// no `CHECK`.
     Unknown,
 }
 
-/// One reading row as written, and the window the engine reads it as.
 struct Read {
     id: i64,
     started: i64,
@@ -1048,16 +919,8 @@ impl Book {
             q("A Publisher"),
             1900 + (self.id % 125),
             self.isbn_13.as_deref().map(q).unwrap_or("NULL".into()),
-            // A **whole path**, because that is what the schema holds:
-            // `Storage::set_cover` stores `images_dir.join(name)` and nothing
-            // downstream joins a prefix back on. This was once relative,
-            // on the argument that an absolute path names one machine — but this
-            // seed is regenerated by `make dev-db` on the machine that runs it
-            // and is gitignored, so the argument protected nothing and the cost
-            // was real: a relative path resolves only from a process whose cwd
-            // is the data dir, so `measure_stored_covers` read none of the 202
-            // files, and a webview — which has no cwd at all — could resolve
-            // none of them either.
+            // A whole path: `Storage::set_cover` stores `images_dir.join(name)` and nothing joins a prefix
+            // back on; a relative one resolves only from a process whose cwd is the data dir.
             if self.cover {
                 q(&data_dir
                     .join(format!("database/images/dev-{:04}.png", self.id))
@@ -1090,9 +953,7 @@ impl Book {
                 finished.map(|f| f.to_string()).unwrap_or("NULL".into()),
                 page.map(|p| p.to_string()).unwrap_or("NULL".into()),
                 match (page, self.page_count) {
-                    // Absence is not zero. A book with no page count has no
-                    // percentage either — not 0.0, which every progress bar in
-                    // the world would draw as a full-width empty track.
+                    // Absence is not zero: no page count means no percentage, not 0.0.
                     (Some(p), Some(total)) if total > 0 =>
                         format!("{:.4}", p as f64 / total as f64),
                     _ => "NULL".into(),
@@ -1130,9 +991,7 @@ impl Book {
                     Some(self.page_count.unwrap_or(0) / 2),
                 );
             }
-            // Open-shaped — no `finished_at` — because that is what makes it
-            // reach `ReadingState::Other` rather than being read as a closed
-            // reading with an odd label.
+            // Open-shaped (no `finished_at`) so it reaches `ReadingState::Other`, not a closed reading.
             State::Unknown => push(
                 "paused",
                 start,
@@ -1143,19 +1002,12 @@ impl Book {
         out
     }
 
-    /// Which reading highlight `i` belongs to, and the instant it is dated —
-    /// inside that reading's window, so the engine's own attribution agrees.
     fn place<'a>(&self, reads: &'a [Read], i: usize) -> (Option<&'a Read>, i64) {
         let n = self.highlights;
-        // Contiguous runs, one per reading, the earlier passages to
-        // the earlier read.
         let chunk = n.div_ceil(reads.len().max(1));
         let read = reads.get(i / chunk.max(1));
-        // Spread evenly across the window, never on either bound: an
-        // instant shared with a neighbouring window is a tie the
-        // engine settles by its `ORDER BY`, and a seed should not lean
-        // on a tie-break. An open reading spreads over its first
-        // thirty days.
+        // Never on either bound: an instant shared with a neighbouring window is a tie the engine's
+        // `ORDER BY` settles. An open reading spreads over its first thirty days.
         let at = match read {
             Some(r) => {
                 let span = r.finished.unwrap_or(r.started + 30 * DAY) - r.started;
@@ -1163,27 +1015,13 @@ impl Book {
                 let of = chunk.min(n - (i / chunk) * chunk) as i64;
                 r.started + span * (k + 1) / (of + 1)
             }
-            // No reading for it to fall in: a date, and no window.
             None => EPOCH + self.id * DAY + i as i64 * 3_600,
         };
         (read, at)
     }
 
-    /// The book's highlights, each **dated inside a reading's window and
-    /// attributed to that reading**.
-    ///
-    /// The engine never takes `reading_id` from a source: on import,
-    /// `Storage::attribute_highlights` matches `ko_datetime` into a reading's
-    /// window (`started_at ..= finished_at`, open-ended while the reading is
-    /// open) and leaves a highlight no window holds `NULL`. The seed used to
-    /// write a fixed spread of 2025 dates that mostly missed every window and a
-    /// NULL `reading_id` on all of them, so no card on the wall had a passage.
-    /// Writing the id alone would be a database the engine's own rule
-    /// disagrees with — the next import touching the book would recompute it
-    /// and empty the card again — so the *date* is what is generated, inside
-    /// the window, and the id written is the one that rule would choose from
-    /// it. A reread splits its passages, the earlier half to the first read.
-    /// A book with no reading keeps `NULL`, which is the engine's answer too.
+    /// Each is dated inside a reading's window and attributed to it, as `attribute_highlights`
+    /// would, so a re-import does not move it.
     fn highlights(&self, reads: &[Read], next: &mut i64, rng: &mut ChaCha8Rng) -> Vec<String> {
         let n = self.highlights;
         (0..n)
@@ -1197,22 +1035,11 @@ impl Book {
                     at.rem_euclid(3_600) / 60,
                     at.rem_euclid(60)
                 );
-                // The passage alone, as a reader's highlight is. It used to
-                // carry " — a passage from <title>, of a length that has to
-                // wrap." on the end, which every surface then drew as if the
-                // reader had highlighted it (2026-11-10). Long and hostile
-                // passages are `edge-cases.json`'s job, not every row's.
+                // The passage alone: any suffix would be drawn as if the reader had highlighted it.
                 let text = format!("{}.", PHRASES[(rng.next_u32() as usize) % PHRASES.len()]);
                 let mut hasher = Sha256::new();
                 hasher.update(format!("{}|{datetime}||{text}", self.id));
-                // No `highlights_fts` row here, and that is the opposite of the
-                // note above about `notes_fts` rather than an oversight.
-                // Migration `0015` indexes highlights with triggers over an
-                // external-content table, so this INSERT fills the index on its
-                // way past — the seed is applied to an already-migrated
-                // database. It is also the reason triggers were chosen: this
-                // generator does not link the engine, so a hand-written Rust
-                // writer would have had to be re-implemented right here.
+                // No `highlights_fts` row: triggers on the external-content table fill the index on INSERT.
                 format!(
                     "INSERT INTO highlights (id, book_id, reading_id, text, chapter, page, ko_datetime, \
                      color, origin_note, annotation, source, identity_hash, created_at) VALUES \
@@ -1224,8 +1051,6 @@ impl Book {
                     q(&format!("Chapter {}", 1 + i % 12)),
                     1 + (i as i64 * 17) % self.page_count.unwrap_or(300).max(1),
                     q(&datetime),
-                    // A KOReader-attached note on every fourth one. The book view
-                    // has to render a highlight with and without one.
                     if i % 4 == 0 {
                         q("What did they mean by this?")
                     } else {
@@ -1239,9 +1064,6 @@ impl Book {
     }
 }
 
-/// The visual regression suite. Each one is a thing that has broken a real
-/// reading app's shelf or detail pane, and each carries the sentence explaining
-/// what to look at.
 fn edge_cases() -> Vec<Book> {
     let base = |title: &str, why: &'static str| Book {
         id: 0,
@@ -1454,9 +1276,6 @@ fn ordinary_book(rng: &mut ChaCha8Rng, n: usize) -> Book {
     let title = format!("{} {}", pick(rng, ADJECTIVES), pick(rng, NOUNS));
     let author = format!("{} {}", pick(rng, GIVEN), pick(rng, FAMILY));
     let pages = 90 + (rng.next_u32() % 600) as i64;
-    // Roughly a real shelf: most books unread, a handful open, a long tail
-    // finished. Not a uniform draw — a shelf where a third of everything is
-    // in progress does not look like anybody's library.
     let state = match rng.next_u32() % 100 {
         0..=57 => State::Unread,
         58..=64 => State::Reading,
@@ -1484,25 +1303,13 @@ fn ordinary_book(rng: &mut ChaCha8Rng, n: usize) -> Book {
     }
 }
 
-// ---- covers ---------------------------------------------------------------
-
-/// A flat two-tone cover, deterministic from the book id.
-///
-/// Not a picture of anything — the point is that a shelf of two hundred of these
-/// has two hundred *distinguishable* tiles, so a layout bug (every tile the same
-/// image, tiles off by one, a tile that failed to load) is visible at a glance
-/// rather than plausible.
 fn write_cover(path: &Path, id: i64) -> std::io::Result<()> {
-    // Golden-ratio hue stepping: consecutive ids are far apart in colour, which
-    // is what makes an off-by-one in a grid obvious.
     let hue = ((id as f64) * 137.507_764_05) % 360.0;
     let (r, g, b) = hsv_rgb(hue, 0.45, 0.72);
     let (dr, dg, db) = hsv_rgb(hue, 0.60, 0.38);
 
     let mut data = Vec::with_capacity((COVER_W * COVER_H * 3) as usize);
     for y in 0..COVER_H {
-        // A band across the upper third, so a vertically-flipped or
-        // wrongly-cropped cover is not symmetric enough to hide it.
         let band = y > COVER_H / 5 && y < COVER_H / 3;
         for x in 0..COVER_W {
             let spine = x < COVER_W / 16;
@@ -1544,11 +1351,6 @@ fn hsv_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
     (f(r), f(g), f(b))
 }
 
-// ---- text helpers ---------------------------------------------------------
-
-/// SQL single-quoted literal. The only escaping SQLite needs inside one is the
-/// doubled quote; newlines are legal in a string literal, so a note body with
-/// paragraphs travels whole.
 fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -1561,9 +1363,6 @@ fn json_array(xs: &[String]) -> String {
     format!("[{}]", inner.join(","))
 }
 
-/// What to call a book in prose the fixture itself writes. An empty title is a
-/// real state, and "" reads as a bug in the generator rather than as the case
-/// being exercised.
 fn display_title(t: &str) -> String {
     if t.is_empty() {
         "an untitled book".to_string()
@@ -1666,11 +1465,6 @@ const PHRASES: &[&str] = &[
 mod tests {
     use super::*;
 
-    /// The declaration both fixtures answer to.
-    ///
-    /// Read as text and parsed, rather than `include!`d as Rust, because the
-    /// other consumer is TypeScript: a shared declaration only shares anything
-    /// if neither side owns its syntax.
     const DECLARED: &str = include_str!("../edge-cases.json");
 
     fn declared() -> Vec<serde_json::Value> {
@@ -1697,10 +1491,6 @@ mod tests {
         }
     }
 
-    /// Every highlight of a book with a reading is dated inside the window of
-    /// the reading it is attributed to, and inside no other — the engine's
-    /// `attribute_highlights` rule, so a re-import cannot move it. A reread
-    /// gives each of its reads some of the passages.
     #[test]
     fn every_passage_is_dated_inside_the_reading_it_belongs_to() {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
@@ -1746,14 +1536,6 @@ mod tests {
         assert!(seen > 0 && reread);
     }
 
-    /// One end of a check made from both ends: `edge-cases.json` declares the
-    /// hostile set once, and any other fixture of the same library (a GUI
-    /// frontend's offline fake, for one) asserts the **same file**.
-    ///
-    /// This is what makes adding a hostile case to one fixture and not the
-    /// other a failure rather than a silence. It compares length first, so a
-    /// case *removed* fails as loudly as one added — the direction a per-case
-    /// loop misses.
     #[test]
     fn the_edge_cases_are_the_declared_ones() {
         let cases = declared();
@@ -1767,9 +1549,7 @@ mod tests {
         );
 
         for (i, (book, want)) in ours.iter().zip(cases.iter()).enumerate() {
-            // `id` is positional: `generate` numbers the hostile set 1..=n ahead
-            // of the ordinary books, so the declaration's id *is* the index, and
-            // asserting it keeps the two orders locked together.
+            // `id` is positional: the hostile set is numbered 1..=n ahead of the ordinary books.
             let id = i as i64 + 1;
             assert_eq!(want["id"].as_i64(), Some(id), "case {i} is out of order");
             let at = format!("case {id} ({})", want["title"].as_str().unwrap_or(""));
@@ -1810,12 +1590,7 @@ mod tests {
         }
     }
 
-    /// Exactly one declared case has no cover, and it is the one named for it.
-    ///
-    /// Asserted as a **partition** rather than by looking the title up, because
-    /// the value of the no-cover case is that it is alone: every cover-bearing
-    /// rule on the frontend's side is only assertable while exactly one row is
-    /// missing a jacket.
+    /// Asserted as a partition: the no-cover case is only testable while it is the sole one.
     #[test]
     fn exactly_one_declared_case_has_no_cover() {
         let cases = declared();
@@ -1827,12 +1602,7 @@ mod tests {
         assert_eq!(without, ["A Book With No Cover At All"]);
     }
 
-    /// A stored title is never NULL, so the untitled case is the empty *string*.
-    ///
-    /// `books.title` is `TEXT NOT NULL DEFAULT ''` (`0001_init.sql`), which makes
-    /// `Some("")` the reachable absence and `None` unreachable for anything that
-    /// came out of the database. A frontend fixture that modelled `null` here
-    /// would describe a state no library can produce.
+    /// `books.title` is NOT NULL, so the untitled case is the empty string, never null.
     #[test]
     fn the_untitled_case_is_an_empty_string_and_not_an_absence() {
         let untitled = declared()

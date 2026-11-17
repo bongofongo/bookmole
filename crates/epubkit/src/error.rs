@@ -1,5 +1,5 @@
-//! The two outcomes short of success: an [`Error`] (the book cannot be read)
-//! and a [`Warning`] (it can, but something in it is wrong).
+//! The two outcomes short of success: an [`Error`] (the book cannot be read) and a
+//! [`Warning`] (it can, but something in it is wrong).
 
 use std::fmt;
 
@@ -37,8 +37,6 @@ impl fmt::Display for Limit {
     }
 }
 
-/// Why a package, or a resource in it, could not be read.
-///
 /// Messages name archive paths and manifest ids, never the book's text.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -46,8 +44,8 @@ pub enum Error {
     /// The file could not be opened or read.
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
-    /// The bytes are not a zip archive this reader can open, or an entry in
-    /// it is corrupt, encrypted or compressed with an unsupported method.
+    /// The bytes are not a zip archive this reader can open, or an entry in it is corrupt,
+    /// encrypted or compressed with an unsupported method.
     #[error("zip error: {0}")]
     Zip(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The archive has no `META-INF/container.xml`.
@@ -76,8 +74,7 @@ pub enum Error {
         /// What the parser objected to.
         message: String,
     },
-    /// An XML document is not in an encoding this reader decodes (UTF-8,
-    /// UTF-16 with a byte-order mark, ISO-8859-1, US-ASCII).
+    /// Decoded encodings: UTF-8, UTF-16 with a byte-order mark, ISO-8859-1, US-ASCII.
     #[error("{path}: unsupported or invalid text encoding")]
     Encoding {
         /// The archive path of the document.
@@ -124,8 +121,8 @@ impl Error {
     }
 }
 
-/// Why a table-of-contents document — an NCX or an EPUB 3 navigation
-/// document — could not be read.
+/// Why a table-of-contents document — an NCX or an EPUB 3 navigation document — could not be
+/// read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TocProblem {
@@ -133,8 +130,7 @@ pub enum TocProblem {
     NotInManifest,
     /// The manifest item's file could not be read from the archive.
     Unreadable,
-    /// The file is not well-formed enough to read, or is in an unsupported
-    /// encoding.
+    /// The file is not well-formed enough to read, or is in an unsupported encoding.
     Malformed,
     /// Reading it ran into a limit.
     LimitExceeded,
@@ -144,8 +140,7 @@ pub enum TocProblem {
     NoNav,
 }
 
-/// What was wrong with a markup document that was read anyway. What came
-/// before the problem, or around it, was kept.
+/// What was wrong with a markup document that was read anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MarkupProblem {
@@ -155,30 +150,26 @@ pub enum MarkupProblem {
     Unclosed,
     /// An end tag closed elements it did not match, or matched nothing open.
     MismatchedEnd,
-    /// The text was in no encoding this reader recognises, and was decoded as
-    /// UTF-8 with replacement characters.
+    /// The text was in no encoding this reader recognises, and was decoded as UTF-8 with
+    /// replacement characters.
     Encoding,
-    /// A character reference named no valid character, or an attribute could
-    /// not be read; it was kept as text, or skipped.
+    /// A character reference named no valid character, or an attribute could not be read; it was
+    /// kept as text, or skipped.
     BadReference,
 }
 
 /// Something wrong in a book that was still readable.
-///
-/// Collected on the [`Package`](crate::Package) as it is found — at open for
-/// the package document, later for reads made on demand.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Warning {
-    /// A manifest `item` lacks an `id`, `href` or `media-type` and was
-    /// skipped.
+    /// A manifest `item` lacks an `id`, `href` or `media-type` and was skipped.
     ManifestItemIncomplete {
         /// Its position among the manifest's children.
         index: usize,
         /// The first required attribute it lacks.
         missing: &'static str,
     },
-    /// Two manifest items share an id; the later one is the one used.
+    /// The later item is the one used.
     DuplicateManifestId {
         /// The shared id.
         id: String,
@@ -215,9 +206,7 @@ pub enum Warning {
         /// The cover's manifest id.
         id: String,
     },
-    /// A document used a named entity that is neither one of XML's five nor
-    /// one of HTML 4's 253; it was kept as literal text. An entity declared
-    /// in a DTD is never expanded, and lands here too.
+    /// Kept as literal text; an entity declared in a DTD is never expanded and lands here too.
     UndeclaredEntity {
         /// The archive path of the document.
         path: String,
@@ -238,8 +227,8 @@ pub enum Warning {
         /// Why.
         problem: TocProblem,
     },
-    /// A markup document (a navigation document, a chapter) was not
-    /// well-formed, and was read as far as it could be.
+    /// A markup document (a navigation document, a chapter) was not well-formed, and was read as
+    /// far as it could be.
     MarkupRecovered {
         /// The archive path of the document.
         path: String,
@@ -249,9 +238,7 @@ pub enum Warning {
 }
 
 impl Warning {
-    /// A short, stable, `snake_case` name for this kind of warning that
-    /// carries none of its data — safe to log or count where a path, an id
-    /// or a book's text is not.
+    /// Carries none of the warning's data, so it is safe to log where a path, id or book text is not.
     pub fn kind(&self) -> &'static str {
         match self {
             Warning::ManifestItemIncomplete { .. } => "manifest_item_incomplete",

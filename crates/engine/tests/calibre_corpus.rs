@@ -1,19 +1,5 @@
-//! The calibre layer of the testing corpus, imported through the real
-//! `calibredb`.
-//!
-//! `cargo run -p corpus -- gen-calibre` builds a real calibre library at
-//! `corpus/generated/calibre/library/` and writes `calibre.lock.json` beside
-//! it: a **semantic** lock of what calibre reports (titles, `&`-joined authors,
-//! formats, tags, series, cover presence, isbn, publication year), never bytes.
-//! This file imports that library into an in-memory engine and asserts the
-//! engine saw what the lock says, that a second import changes nothing, and
-//! that every salted hostile case reaches its declared class.
-//!
-//! The fake-binary pattern in `calibre.rs` is what CI runs. Here the binary is
-//! the real one on purpose: the whole point of the layer is that the warts are
-//! calibre's own. The test is fixture-gated twice — `calibredb` on `PATH` and
-//! the generated layer — and skips loudly (`SKIPPED:`, failing under
-//! `BOOKMOLE_REQUIRE_FIXTURES=1`) when either is missing.
+//! The testing corpus's calibre layer, imported through the real `calibredb` and checked
+//! against its semantic lock.
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
@@ -25,12 +11,8 @@ use serde_json::Value;
 
 mod common;
 
-/// Hostile cases where the engine's observed behaviour contradicts the
-/// declared class in `hostile.json`. The declaration is **not** changed to
-/// match — it says what *should* happen — so the observation is pinned here
-/// instead, and this test
-/// goes red the day the engine is fixed and the entry must be removed and the
-/// case asserted as declared. Each is reported as a suspected engine bug.
+/// Hostile cases where the engine contradicts the declared class; pinned so the test fails when
+/// the engine is fixed.
 const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     (
         "isbn-excel-armour",
@@ -56,11 +38,7 @@ fn calibredb_dir() -> Option<PathBuf> {
     })
 }
 
-/// calibredb is single-instance per machine: a second `calibredb list` while
-/// one is running exits non-zero with "Another calibre program … is running".
-/// cargo runs these tests on threads, so every test holds this for its whole
-/// life. The engine surfaces that refusal as a typed `EngineError::Calibre`,
-/// which is right — it is calibre's lock, not ours.
+/// calibredb is single-instance per machine, so every test holds this for its whole life.
 static CALIBRE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Built {
@@ -141,8 +119,6 @@ async fn library_size(engine: &Engine) -> usize {
         .len()
 }
 
-/// Every row the lock names is accounted for, and every row the import
-/// created carries exactly what calibre reported.
 #[tokio::test]
 async fn the_engine_sees_what_the_lock_says() {
     let Some(b) = build().await else { return };
@@ -153,8 +129,7 @@ async fn the_engine_sees_what_the_lock_says() {
         lock_rows.len()
     );
 
-    // A book two calibre rows resolved to holds whichever row wrote last; its
-    // fields are asserted in the two-editions block below, not row by row.
+    // A book two calibre rows resolved to holds whichever row wrote last; asserted separately below.
     let mut per_book = std::collections::BTreeMap::<i64, usize>::new();
     for l in &b.first.books {
         *per_book.entry(l.book_id.unwrap()).or_default() += 1;
@@ -169,11 +144,11 @@ async fn the_engine_sees_what_the_lock_says() {
             r["title"]
         );
         if r.get("salted").is_some() {
-            continue; // asserted by class below
+            continue;
         }
         let line = b.first.books.iter().find(|l| l.calibre_id == id);
         let Some(line) = line.filter(|l| l.matched_by == CalibreMatch::New) else {
-            continue; // matched an earlier row's book; its fields are that book's
+            continue;
         };
         if per_book[&line.book_id.unwrap()] > 1 {
             continue;
@@ -193,15 +168,13 @@ async fn the_engine_sees_what_the_lock_says() {
             .split(" & ")
             .map(str::to_string)
             .collect();
-        // calibre writes its default author, `Unknown`, for a book with none
-        // (*Beowulf* here), and that placeholder is read as no author.
+        // Calibre writes `Unknown` for a book with no author; that is read as no author.
         if authors == ["Unknown"] {
             authors.clear();
         }
         assert_eq!(book.authors, authors, "{ctx}: authors");
 
-        // The index exists only where the series does; calibre's 1.0 on a
-        // series-less row is its default, not a claim.
+        // Calibre's 1.0 index on a series-less row is its default, not a claim.
         assert_eq!(
             book.series.as_deref(),
             r["series"].as_str(),
@@ -248,9 +221,8 @@ async fn the_engine_sees_what_the_lock_says() {
     assert!(checked >= 60, "only {checked} rows were field-checked");
     assert_eq!(library_size(&b.engine).await, b.first.created());
 
-    // Two editions of one title: the formatless Penguin copy must not become a
-    // silent second book. Matched to the Gutenberg one or offered as a
-    // candidate are both answers; `New` is the duplicate.
+    // Two editions of one title: the formatless copy must not become a silent second book; a match
+    // or a candidate are both fine, `New` is the duplicate.
     let edition = lock_rows
         .iter()
         .find(|r| r.get("why").is_some())
@@ -260,11 +232,8 @@ async fn the_engine_sees_what_the_lock_says() {
         !matches!(state, CalibreRowState::New),
         "second edition created a duplicate: {state:?}"
     );
-    // Observed, and reported as a suspected engine bug rather than blessed:
-    // the edition auto-matches the Gutenberg copy by title, and `enrich_book`
-    // then replaces that book's ISBN with the edition's (isbn_13 is
-    // `Merge::Coalesce` with the incoming value first). Two calibre rows on one
-    // book therefore rewrite each other's ISBN on every import, last row wins.
+    // Pinned observation: the edition auto-matches by title and `enrich_book` replaces the ISBN, so
+    // two calibre rows on one book overwrite each other's ISBN, last row wins.
     if let CalibreRowState::Linked { matched_by, .. } = state {
         assert_eq!(matched_by, CalibreMatch::Title, "edition matched by");
         let book = book_of(&b, edition["calibre_id"].as_i64().unwrap())
@@ -278,8 +247,6 @@ async fn the_engine_sees_what_the_lock_says() {
     }
 }
 
-/// Idempotency: every row finds itself by uuid and nothing is
-/// created, tagged, covered or identified twice.
 #[tokio::test]
 async fn a_second_import_changes_nothing() {
     let Some(b) = build().await else { return };
@@ -322,9 +289,6 @@ async fn a_second_import_changes_nothing() {
     );
 }
 
-/// Each salted row reaches the class `hostile.json` declares for its case,
-/// judged on what calibre handed over (`calibre_reported`), since a value the
-/// tool itself altered or refused is calibre's behaviour, not the engine's.
 #[tokio::test]
 async fn each_salted_case_reaches_its_declared_class() {
     let Some(b) = build().await else { return };
@@ -340,8 +304,6 @@ async fn each_salted_case_reaches_its_declared_class() {
         let reported = &s["calibre_reported"];
         let ctx = format!("case {case} ({field}, {expect}) on row {id}");
 
-        // no-crash, for every class: the import finished (we are here), the
-        // row is accounted for, and the library still answers a search.
         assert!(
             !matches!(b.first.row_state(id), CalibreRowState::Unreadable(_)),
             "{ctx}: unreadable"
@@ -386,10 +348,7 @@ async fn each_salted_case_reaches_its_declared_class() {
                 assert_eq!(book.title.as_deref(), s["normal"].as_str(), "{ctx}");
             }
             ("author", "verbatim") => {
-                // Against what calibre reported, not what was typed: calibre
-                // reads " and " in an author field as a separator, so
-                // `Wаr and Peаce` comes back as two authors and the import
-                // keeps calibre's answer.
+                // Against what calibre reported: it reads " and " in an author field as a separator.
                 let want: Vec<String> = reported
                     .as_str()
                     .unwrap_or(input)
@@ -412,14 +371,10 @@ async fn each_salted_case_reaches_its_declared_class() {
                 assert_eq!((&book.isbn_10, &book.isbn_13), (&None, &None), "{ctx}");
             }
             ("date", "normalised") => {
-                // The only normalised date is calibre's own sentinel, whose
-                // normal form is "no date".
                 assert_eq!(s["normal"].as_str(), Some(""), "{ctx}");
                 assert_eq!(book.publish_year, None, "{ctx}");
             }
             ("date", "rejected") => {
-                // calibredb itself refuses an impossible date; nothing may
-                // arrive in its place but the row's benign year (if any).
                 assert!(s["calibre_rejected"].is_string(), "{ctx}: calibre took it");
             }
             ("date", "verbatim") => {

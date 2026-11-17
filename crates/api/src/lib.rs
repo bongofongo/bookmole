@@ -1,70 +1,6 @@
-//! bookmole's API — the versioned surface, and the boundary that matters.
-//!
-//! **The boundary is the API, not the process.** This crate holds the whole
-//! surface a frontend may use; the daemon (`bookmoled`) is a thin transport
-//! wrapper over it with no logic of its own. That is what lets a host that has
-//! no daemon — an iOS app, or a desktop GUI whose backend is Rust — link the
-//! same crate in-process and get exactly the behaviour a socket client gets.
-//!
-//! So there are two ways to use this crate and they are the same code:
-//!
-//! - **In-process.** Hold an [`Api`] and call its typed methods. They take and
-//!   return [`dto`] types, so a caller is already speaking the wire vocabulary
-//!   and can adopt a transport later without rewriting a call site.
-//! - **Across a transport.** Hand [`Api::call`] a [`protocol::Call`] and write
-//!   back the [`protocol::Reply`]. `crates/daemon` does exactly that and
-//!   nothing else — it never names a method.
-//!
-//! [`Api::dispatch`] is the join between the two, and it is deliberately
-//! **pure fan-out**: one arm per request, unpacking arguments and calling the
-//! typed method of the same name. No arm decides anything. That is the property
-//! that keeps the two ways honest — a rule implemented in `dispatch` would be a
-//! rule the in-process caller does not get.
-//!
-//! ## Why a frontend links this crate and not the engine
-//!
-//! The CLI and TUI link the engine (`bookmole`) directly; they predate this
-//! crate and live beside it. A frontend written against the API instead —
-//! a desktop GUI, a mobile app — should depend on this crate **and nothing
-//! else** ([`Api::open`] exists so that it can). The point is discipline that
-//! the compiler enforces: when a screen needs a fact the surface does not
-//! carry, that is a compile error, and the fix is a new request or field here,
-//! backed by the engine — never a re-derivation of the rule in the frontend's
-//! own language, where it would quietly drift from the engine's. Derived facts
-//! (progress, sort keys, author display names, row states) therefore cross the
-//! wire already computed, and only phrasing and layout are left to a client.
-//!
-//! The engine's escape hatch for tests (`Engine::storage()`, behind its
-//! `internals` feature) is off in a plain `cargo check --workspace`, which is
-//! the build that proves no frontend reaches past this seam.
-//!
-//! ## Versioning
-//!
-//! [`API_VERSION`] moves only when a request or response is removed or changes
-//! meaning. Growth is additive: a new request, or a new field that is
-//! `#[serde(default)]` on the way in, so a payload written against an older
-//! build still parses to the call it always meant. Prefer adding a new request
-//! over adding a field to an existing one — code generated from these types
-//! (TypeScript via the `ts` feature) emits every field as required, so a field
-//! added to a request breaks typed clients even when the wire stays compatible.
-//!
-//! ## What crossing this seam costs, and why the cost is paid here
-//!
-//! The engine's domain types carry `PathBuf`, `OffsetDateTime` and `Duration`,
-//! take `&mut Book`, and wrap `sqlx::Error`. None of that can be serialized,
-//! and none of it *should* be — see [`dto`] and [`error`] for the arguments.
-//! This crate is where the translation lives so that neither the engine nor a
-//! frontend has to hold both vocabularies.
-//!
-//! ## Handles do not cross
-//!
-//! Three facade methods take a domain struct the caller was previously given
-//! back — `update_note_body(&NoteRecord)`, `delete_note(&NoteRecord)`,
-//! `file_path(&BookFile)`. Over a transport that would mean the client echoing
-//! state back, and a client holding a stale `NoteRecord` would write to a path
-//! that has since moved. Here they take an **id** and the row is re-read. Not a
-//! translation of the facade so much as a correction of it, and the reason the
-//! seam is worth building rather than generating.
+//! bookmole's API: the versioned surface, used in-process via [`Api`] or over a transport via
+//! [`Api::call`]. `Api::dispatch` is pure fan-out; a rule in an arm would skip in-process callers.
+//! Prefer a new request over a new field on an existing one: generated TypeScript requires it.
 
 pub mod dto;
 pub mod error;
@@ -79,19 +15,12 @@ use bookmole::{
     NoteRecord, NoteScope, RatingScale, ReadingFilter, ReadingQuery,
 };
 
-/// Where the library lives when no `--data-dir` is given. Re-exported so a
-/// frontend that links this crate and deliberately not the engine resolves the
-/// same location the CLI, TUI and daemon do.
 pub use bookmole::data_dir;
 pub use bookmole::data_dir::{DATA_DIR_ENV, DataDirError, LIBRARY_FOLDER_NAME};
 pub use dto::*;
 pub use error::{ApiError, ApiResult, ErrorCode};
 pub use protocol::{API_VERSION, CRATE_VERSION, Call, Outcome, Reply, Request, Response};
 
-/// The whole surface, over one engine.
-///
-/// Cheap to clone — it is an `Arc` — because a transport wants one per
-/// connection and they must all be the same library.
 #[derive(Clone)]
 pub struct Api {
     engine: Arc<Engine>,
@@ -102,41 +31,18 @@ impl Api {
         Api { engine }
     }
 
-    /// Open a library at `data_dir` and wrap it — for a client that should never
-    /// name the engine at all.
-    ///
-    /// `Api::new` requires an `Arc<Engine>`, so every caller of it depends on
-    /// `bookmole`. For `bookmoled` that is harmless: it is a byte pump
-    /// and names no method, so having the engine in scope tempts nothing. For a
-    /// **semantic** client — one that decides what to show — it is the whole
-    /// problem: a gap in this surface must be a compile error rather than a
-    /// temptation, and it cannot be either if the engine is one `use` away.
-    ///
-    /// So this exists to let a GUI backend depend on this crate and nothing
-    /// else. The knobs `EngineConfig` carries beyond the root — a calibre binary
-    /// directory, a Google key — are not parameters here on purpose: a client
-    /// that needs one is asking for a configuration surface, and that is a
-    /// request on this protocol, not a constructor argument.
+    /// Open a library at `data_dir` without the caller naming the engine.
+    /// `EngineConfig`'s other knobs are deliberately not parameters here.
     pub async fn open(data_dir: &Path) -> ApiResult<Api> {
         let engine = Engine::open(bookmole::EngineConfig::rooted_at(data_dir)).await?;
         Ok(Api::new(Arc::new(engine)))
     }
 
-    /// The engine underneath, for a host that also drives it directly — the
-    /// mount watcher and the **vault watcher**, neither of which this
-    /// vocabulary carries (see [`protocol`]).
-    ///
-    /// The vault watcher is the load-bearing case for this accessor. A watcher
-    /// is a long-lived thing a host owns, not a request/reply pair, so it is
-    /// deliberately kept off the wire: because the watcher performs the
-    /// re-index itself, a host that drives one has correct note searches with no
-    /// server-initiated frame, and a host that does not still has
-    /// `RefreshNoteFromDisk` and `Engine::reconcile_vault`.
+    /// The engine underneath, for a host that also drives the mount and vault watchers, which stay
+    /// off the wire.
     pub fn engine(&self) -> &Arc<Engine> {
         &self.engine
     }
-
-    // ---- meta and configuration -------------------------------------------
 
     pub fn api_version(&self) -> (u32, String) {
         (API_VERSION, CRATE_VERSION.to_string())
@@ -153,17 +59,10 @@ impl Api {
         }
     }
 
-    /// See [`Request::LibraryLocation`].
     pub fn library_location(&self) -> LibraryLocationDto {
         self.engine.library_location().into()
     }
 
-    /// Whether a key is set, **never the key**.
-    ///
-    /// A secret that has been written should not be readable back out over a
-    /// socket: nothing needs it (the engine already holds it), and a settings
-    /// screen shows a mask. `bool` is the honest answer to the only question
-    /// anyone actually asks.
     pub fn has_google_api_key(&self) -> bool {
         self.engine.google_api_key().is_some()
     }
@@ -172,18 +71,13 @@ impl Api {
         self.engine.set_google_api_key(key);
     }
 
-    /// Live-check a key against Google Books. The engine's own verifier, so
-    /// there is one definition of "this key works".
     pub async fn verify_google_key(&self, key: &str) -> ApiResult<bool> {
         match bookmole::verify_google_key(key).await {
             Ok(()) => Ok(true),
-            // A refused key is an answer, not a failure — the caller asked
-            // whether it works, and "no" is a valid reply to that question.
+            // A refused key is an answer, not a failure.
             Err(_) => Ok(false),
         }
     }
-
-    // ---- metadata search ---------------------------------------------------
 
     pub async fn search(&self, request: SearchRequestDto) -> ApiResult<SearchOutcomeDto> {
         Ok(self.engine.search(&request.into()).await?.into())
@@ -193,31 +87,20 @@ impl Api {
         Ok(self.engine.lookup_isbn(isbn).await?.map(Into::into))
     }
 
-    // ---- library -----------------------------------------------------------
-
     pub async fn save_book(&self, book: BookDto) -> ApiResult<BookDto> {
         Ok(self.engine.save_book(&book.into()).await?.into())
     }
 
-    /// One page of the library.
-    ///
-    /// One struct rather than four arguments because `limit` and `offset` are
-    /// both `i64` and adjacent, which is a swap no type checker catches. The
-    /// **request** carries the same four values flat, so a payload written
-    /// against the old two-field method still means what it did.
     pub async fn list_books(&self, query: BookQueryDto) -> ApiResult<Vec<BookDto>> {
         let query: BookQuery = query.into();
         Ok(map(self.engine.list_books(&query).await?))
     }
 
-    /// How many books match. See [`Request::CountBooks`] for why this is its own
-    /// call and not a field beside the rows.
     pub async fn count_books(&self, filter: Option<BookFilterDto>) -> ApiResult<i64> {
         let filter: BookFilter = filter.unwrap_or_default().into();
         Ok(self.engine.count_books(&filter).await?)
     }
 
-    /// What is behind each of these books, one call for a whole page.
     pub async fn book_summaries(&self, book_ids: &[i64]) -> ApiResult<Vec<BookSummaryDto>> {
         Ok(map(self.engine.book_summaries(book_ids).await?))
     }
@@ -226,9 +109,7 @@ impl Api {
         Ok(self.engine.get_book(id).await?.map(Into::into))
     }
 
-    /// A user-typed selector: id, ISBN, or title fragment. Empty means nothing
-    /// matched and more than one means ambiguous — both are answers the caller
-    /// resolves, not errors.
+    /// Empty means nothing matched; more than one means ambiguous. Both are answers, not errors.
     pub async fn resolve_books(&self, selector: &str) -> ApiResult<Vec<BookDto>> {
         Ok(map(self.engine.resolve_books(selector).await?))
     }
@@ -237,7 +118,6 @@ impl Api {
         Ok(map(self.engine.book_tags(book_id).await?))
     }
 
-    /// Ask the providers about a book we already have.
     pub async fn enrich_book(&self, book_id: i64) -> ApiResult<EnrichReportDto> {
         Ok(self
             .engine
@@ -246,12 +126,7 @@ impl Api {
             .into())
     }
 
-    /// Record a correction as the user's, and return the book as it now stands.
-    ///
-    /// Takes a `BookDto` and not a set of named columns, because the engine's
-    /// own signature is a partial `Book` and a second vocabulary here would be
-    /// a rule the in-process caller never meets. The four reading projections
-    /// on it are ignored downstream, where that rule already lives.
+    /// Record a correction as the user's. The reading projections on `fields` are ignored downstream.
     pub async fn set_book_fields(&self, book_id: i64, fields: BookDto) -> ApiResult<BookDto> {
         Ok(self
             .engine
@@ -260,7 +135,6 @@ impl Api {
             .into())
     }
 
-    /// Where each field of a book came from, and when.
     pub async fn field_provenance(&self, book_id: i64) -> ApiResult<Vec<FieldSourceDto>> {
         Ok(map(self.engine.field_provenance(book_id).await?))
     }
@@ -285,14 +159,6 @@ impl Api {
         Ok(self.engine.merge_books(src, dst).await?.into())
     }
 
-    // ---- readings ----------------------------------------------------------
-
-    /// Every reading of a book, oldest first, each carrying **its own**
-    /// progress.
-    ///
-    /// Through `readings_with_progress` rather than `list_readings`, because
-    /// pairing a read with the book's length is a derivation and this layer
-    /// must not do it — see `ReadingDto::progress`.
     pub async fn list_readings(&self, book_id: i64) -> ApiResult<Vec<ReadingDto>> {
         Ok(self
             .engine
@@ -303,20 +169,12 @@ impl Api {
             .collect())
     }
 
-    /// One page of the library's readings.
-    ///
-    /// One struct rather than four arguments, for [`Api::list_books`]' reason.
-    /// **Fallible before it reaches the engine**, and only because of the year:
-    /// the filter's `finished_in` is validated by the engine's own `DayRange`,
-    /// so an inverted span is refused here exactly as it is for
-    /// `ActivitySummary` rather than becoming a confident empty wall.
+    /// An inverted `finished_in` span is refused with `InvalidInput`, not turned into an empty page.
     pub async fn list_reading_rows(&self, query: ReadingQueryDto) -> ApiResult<Vec<ReadingRowDto>> {
         let query: ReadingQuery = query.try_into()?;
         Ok(map(self.engine.list_reading_rows(&query).await?))
     }
 
-    /// How many readings match. See [`Request::CountReadings`] for why this is
-    /// its own call and not a field beside the rows.
     pub async fn count_readings(&self, filter: Option<ReadingFilterDto>) -> ApiResult<i64> {
         let filter: ReadingFilter = filter
             .map(TryInto::try_into)
@@ -325,12 +183,7 @@ impl Api {
         Ok(self.engine.count_readings(&filter).await?)
     }
 
-    /// Which years this filter's readings ended in.
-    ///
-    /// Fallible for `list_reading_rows`' reason and through the identical
-    /// conversion: `finished_in` is a `DayRange` the engine validates, so an
-    /// inverted span is `InvalidInput` from both doors rather than a picker
-    /// that confidently offers nothing.
+    /// An inverted `finished_in` span is `InvalidInput`, as for `list_reading_rows`.
     pub async fn reading_years(
         &self,
         filter: Option<ReadingFilterDto>,
@@ -375,7 +228,6 @@ impl Api {
         Ok(self.engine.reread(book_id).await?)
     }
 
-    /// See [`Request::FinishReading`].
     pub async fn finish_reading(
         &self,
         book_id: i64,
@@ -388,7 +240,6 @@ impl Api {
             .into())
     }
 
-    /// See [`Request::SetPageCount`].
     pub async fn set_page_count(&self, book_id: i64, page_count: i64) -> ApiResult<BookDto> {
         Ok(self
             .engine
@@ -396,8 +247,6 @@ impl Api {
             .await?
             .into())
     }
-
-    // ---- highlights --------------------------------------------------------
 
     pub async fn list_highlights(&self, book_id: i64) -> ApiResult<Vec<HighlightDto>> {
         Ok(map(self.engine.list_highlights(book_id).await?))
@@ -407,19 +256,12 @@ impl Api {
         Ok(map(self.engine.highlights_for_reading(reading_id).await?))
     }
 
-    /// The passage the reader chose for this reading's card, or
-    /// `None`.
-    ///
-    /// Which passage is the engine's to answer, not this layer's and not a
-    /// client's; `Engine::card_passage` carries the argument. Served as its own method
-    /// rather than a field on `ReadingDto` so that the reader's highlight text
-    /// does not ride along on every row of every reading list.
+    /// The passage chosen for this reading's card, or `None`. Not a `ReadingDto` field, so highlight
+    /// text does not ride on every reading row.
     pub async fn card_passage(&self, reading_id: i64) -> ApiResult<Option<HighlightDto>> {
         Ok(self.engine.card_passage(reading_id).await?.map(Into::into))
     }
 
-    /// Choose, or clear, the passage a reading's card shows.
-    /// `Engine::set_card_passage` holds the rule and its refusals.
     pub async fn set_card_passage(
         &self,
         reading_id: i64,
@@ -431,7 +273,6 @@ impl Api {
             .await?)
     }
 
-    /// What a reading's card may choose from.
     pub async fn card_passage_candidates(&self, reading_id: i64) -> ApiResult<Vec<HighlightDto>> {
         Ok(map(self.engine.card_passage_candidates(reading_id).await?))
     }
@@ -444,13 +285,8 @@ impl Api {
         Ok(self.engine.set_annotation(highlight_id, annotation).await?)
     }
 
-    // ---- epub and owned files ----------------------------------------------
-
     pub async fn import_epub(&self, path: &Path) -> ApiResult<BookDto> {
         let book = self.engine.import_epub(path).await?;
-        // An importer that found a file brings the book into the library: point
-        // at the file (a `path` place on an own file copy), as the CLI's `epub`
-        // does. Idempotent for a path already recorded.
         if let Some(id) = book.id {
             self.engine.add_file_to_book(id, path).await?;
         }
@@ -477,7 +313,6 @@ impl Api {
         Ok(self.engine.identify_file(path).await?.into())
     }
 
-    /// See [`Request::ExpandBookPaths`].
     pub async fn expand_book_paths(&self, paths: &[String]) -> ApiResult<ExpandedPathsDto> {
         let paths = paths.iter().map(PathBuf::from).collect();
         Ok(self.engine.expand_book_paths(paths).await?.into())
@@ -487,11 +322,8 @@ impl Api {
         Ok(map(self.engine.book_files(book_id).await?))
     }
 
-    /// The book's own chapter list, from the first epub it owns.
-    ///
-    /// `None` means there is no file here we can read; `Some` with no entries
-    /// means the epub carries no navigable TOC. Both are ordinary and they are
-    /// different — see [`TableOfContentsDto`].
+    /// The book's chapter list from the first epub it owns. `None`: no readable file; `Some` with no
+    /// entries: the epub has no navigable TOC.
     pub async fn table_of_contents(&self, book_id: i64) -> ApiResult<Option<TableOfContentsDto>> {
         Ok(self
             .engine
@@ -500,11 +332,6 @@ impl Api {
             .map(Into::into))
     }
 
-    /// Where a file's bytes are, from its content address.
-    ///
-    /// By sha256, not by the `BookFile` the facade takes: see the crate doc on
-    /// handles. It also means the answer is derived from the row the engine
-    /// holds now rather than from whatever the client last saw.
     pub async fn file_path(&self, sha256: &str) -> ApiResult<String> {
         let file = self.engine.book_file(sha256).await?.ok_or_else(|| {
             ApiError::new(
@@ -519,8 +346,6 @@ impl Api {
         Ok(self.engine.remove_file(sha256).await?)
     }
 
-    // ---- koreader ----------------------------------------------------------
-
     pub async fn import_koreader(&self, path: &Path, dry_run: bool) -> ApiResult<ImportReportDto> {
         Ok(self.engine.import_koreader(path, dry_run).await?.into())
     }
@@ -533,13 +358,10 @@ impl Api {
         Ok(map(self.engine.sidecar_candidates(path).await?))
     }
 
-    /// Record that this sidecar is that book. Returns the `partial_md5` the
-    /// link was keyed on, so a caller can say what it recorded.
+    /// Record that this sidecar is that book; returns the `partial_md5` the link was keyed on.
     pub async fn link_sidecar(&self, path: &Path, book_id: i64) -> ApiResult<String> {
         Ok(self.engine.link_sidecar(path, book_id).await?)
     }
-
-    // ---- the device --------------------------------------------------------
 
     pub fn candidate_mounts(&self) -> Vec<String> {
         bookmole::candidate_mounts()
@@ -560,32 +382,23 @@ impl Api {
         Ok(map(self.engine.sync_device(paths).await?))
     }
 
-    // ---- the plugin --------------------------------------------------------
-
-    /// What bookmole's plugin looks like on a mounted reader. Read-only.
     pub async fn plugin_status(&self, mount: &Path) -> ApiResult<PluginStatusDto> {
         Ok(self.engine.plugin_status(mount).await?.into())
     }
 
-    /// Install or upgrade the plugin, and pair with the reader.
-    ///
-    /// **Never call this on a mount event.** See the request's doc.
+    /// Install or upgrade the plugin and pair with the reader. Never call this on a mount event.
     pub async fn install_plugin(&self, mount: &Path) -> ApiResult<InstallReportDto> {
         Ok(self.engine.install_plugin(mount).await?.into())
     }
 
-    /// Remove exactly what was installed, and forget the pairing.
     pub async fn uninstall_plugin(&self, mount: &Path) -> ApiResult<UninstallReportDto> {
         Ok(self.engine.uninstall_plugin(mount).await?.into())
     }
 
-    /// Every paired reader, without its token — see [`PairedDeviceDto`].
     pub async fn paired_devices(&self) -> ApiResult<Vec<PairedDeviceDto>> {
         Ok(map(self.engine.paired_devices().await?))
     }
 
-    /// Drop our half of a pairing. See [`Request::ForgetDevice`] for why this is
-    /// not `uninstall_plugin` without a path.
     pub async fn forget_device(&self, device_id: &str) -> ApiResult<bool> {
         Ok(self.engine.forget_device(device_id).await?)
     }
@@ -595,38 +408,27 @@ impl Api {
         Ok(self.engine.rename_device(device_id, label).await?)
     }
 
-    /// Bring across everything one mounted reader has to offer, and record that
-    /// we did. See [`Request::SyncMount`].
     pub async fn sync_mount(&self, mount: &Path) -> ApiResult<MountSyncDto> {
         Ok(self.engine.sync_mount(mount).await?.into())
     }
 
-    // ---- the wireless listener ---------------
-
-    /// Whether a paired reader could reach this computer over the LAN.
-    ///
-    /// See [`Request::ListenerStatus`]. `Off` is the default and the answer for
-    /// every host that has not asked for anything else.
     pub async fn listener_status(&self) -> ApiResult<ListenerStatusDto> {
         let status = self.engine.listener_status().await?;
         Ok(ListenerStatusDto::new(status, self.engine.lan_address()))
     }
 
-    /// Open the door. See [`Request::StartListening`] for what `minutes` means
-    /// and why `Some(0)` is *always* rather than *never*.
+    /// Open the door for `minutes`; `Some(0)` means always, not never.
     pub async fn start_listening(&self, minutes: Option<u32>) -> ApiResult<ListenerStatusDto> {
         let status = self.engine.start_listening(minutes).await?;
         Ok(ListenerStatusDto::new(status, self.engine.lan_address()))
     }
 
-    /// Close it. Idempotent.
+    /// Close the listener; idempotent.
     pub async fn stop_listening(&self) -> ApiResult<ListenerStatusDto> {
         let status = self.engine.stop_listening().await?;
         Ok(ListenerStatusDto::new(status, self.engine.lan_address()))
     }
 
-    /// Fetch from a paired reader whose window is open. See
-    /// [`Request::PullFromReader`].
     pub async fn pull_from_reader(&self, device_id: &str) -> ApiResult<Vec<PullReportDto>> {
         Ok(self
             .engine
@@ -637,8 +439,6 @@ impl Api {
             .collect())
     }
 
-    /// Pair with a reader over wifi, using the code on its screen. See
-    /// [`Request::PairWithReader`].
     pub async fn pair_with_reader(
         &self,
         code: &str,
@@ -647,49 +447,32 @@ impl Api {
         Ok(self.engine.pair_with_reader(code, host).await?.into())
     }
 
-    /// Measured reading time out of a mounted device's `statistics.sqlite3`,
-    /// as rows in the activity log.
-    ///
-    /// **Not on `sync_device`'s path**, deliberately — see the request's doc.
-    /// A device whose user never enabled the statistics plugin comes back with
-    /// an empty report carrying a warning, never an error.
+    /// Reading time from a device's `statistics.sqlite3`, as activity-log rows. Deliberately not part
+    /// of the mount sync; a device without the statistics plugin gives an empty report and a warning.
     pub async fn import_device_statistics(&self, mount: &Path) -> ApiResult<StatsImportReportDto> {
         Ok(self.engine.import_device_statistics(mount).await?.into())
     }
-
-    // ---- the activity log --------------------------------------------------
 
     /// Rebuild the log from what is already stored. Idempotent.
     pub async fn refill_reading_events(&self) -> ApiResult<RefillReportDto> {
         Ok(self.engine.refill_reading_events().await?.into())
     }
 
-    /// One book's activity log, oldest day first.
     pub async fn reading_events(&self, book_id: i64) -> ApiResult<Vec<ReadingEventDto>> {
         Ok(map(self.engine.reading_events(book_id).await?))
     }
 
-    /// What is known about a period.
-    ///
-    /// The two days are validated **here**, by the engine's own `DayRange`, so
-    /// an inverted or malformed span is an `InvalidInput` rather than a
-    /// confident zero — the failure `DayRange::new` exists to prevent, and one
-    /// this layer must not be able to route around.
+    /// The days are validated by `DayRange`, so an inverted or malformed span is `InvalidInput`.
     pub async fn activity_summary(&self, from: &str, to: &str) -> ApiResult<ActivitySummaryDto> {
         let range = DayRange::new(from, to)?;
         Ok(self.engine.activity_summary(&range).await?.into())
     }
 
-    /// The days of a period that carry an event, oldest first.
     pub async fn activity_by_day(&self, from: &str, to: &str) -> ApiResult<Vec<DayActivityDto>> {
         let range = DayRange::new(from, to)?;
         Ok(map(self.engine.activity_by_day(&range).await?))
     }
 
-    /// The months of a period that carry an event, oldest first.
-    ///
-    /// Validated through the engine's own `DayRange` like its two siblings, so
-    /// an inverted span is refused here too rather than becoming an empty year.
     pub async fn activity_by_month(
         &self,
         from: &str,
@@ -699,14 +482,8 @@ impl Api {
         Ok(map(self.engine.activity_by_month(&range).await?))
     }
 
-    // ---- moments -----------------------------------------------------------
-
-    /// What is worth noticing and has not been shown yet, newest first.
-    ///
-    /// Derived on every call and stored nowhere, so this is safe to poll — and
-    /// polling is the only way to read it, because this protocol has no push
-    /// channel and a moment stream would reopen the argument
-    /// [`protocol`]'s module doc settles about the mount watcher.
+    /// What is worth noticing and has not been shown yet, newest first. Derived on every call and
+    /// stored nowhere; there is no push channel, so polling is the only way to read it.
     pub async fn pending_moments(&self, limit: Option<i64>) -> ApiResult<Vec<MomentDto>> {
         Ok(map(self.engine.pending_moments(limit).await?))
     }
@@ -716,21 +493,12 @@ impl Api {
         Ok(self.engine.acknowledge_moment(id).await?)
     }
 
-    // ---- notes -------------------------------------------------------------
-
     pub async fn create_note(&self, note: NewNoteDto) -> ApiResult<CreatedNoteDto> {
         Ok(self.engine.create_note(note.into()).await?.into())
     }
 
-    /// Notes, newest first. Both narrowings absent is every note — see
-    /// [`Request::ListNotes`].
-    ///
-    /// The two ids are **alternatives, not a conjunction**, and the wire says so
-    /// by refusing the pair rather than by quietly preferring one: a reading
-    /// belongs to exactly one book, so `{book_id, reading_id}` is either
-    /// redundant or a contradiction whose honest answer is an empty list that a
-    /// client cannot tell from an empty vault. `NoteScope` is the shape below
-    /// this line and cannot represent it at all.
+    /// Notes, newest first; both narrowings absent is every note. `book_id` and `reading_id` are
+    /// alternatives, and giving both is refused.
     pub async fn list_notes(
         &self,
         book_id: Option<i64>,
@@ -750,11 +518,6 @@ impl Api {
         Ok(map(self.engine.list_notes(scope, limit).await?))
     }
 
-    /// Notes and highlights matching one query, as one ranked list.
-    ///
-    /// See [`Request::SearchMarks`] for why there is one method here and not
-    /// two, and `bookmole`'s `storage::fts` for the ordering rule and for
-    /// why `book_id` has to be answered below this line.
     pub async fn search_marks(
         &self,
         query: &str,
@@ -832,16 +595,11 @@ impl Api {
         Ok(map(self.engine.backlinks(note_id).await?))
     }
 
-    /// Both directions of a note's links, with book faces and, for a link in,
-    /// its paragraph. See `Request::LinkContexts`.
     pub async fn link_contexts(&self, note_id: i64) -> ApiResult<Vec<LinkContextDto>> {
         Ok(map(self.engine.link_contexts(note_id).await?))
     }
 
-    // ---- note rows, counts and the notes overview -------------------------
-
-    /// A page of note rows — see [`Request::ListNoteRows`]. The two ids are
-    /// alternatives, refused together for `list_notes`' reason.
+    /// A page of note rows. The two ids are alternatives, refused together as for `list_notes`.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_note_rows(
         &self,
@@ -856,8 +614,7 @@ impl Api {
             .await
     }
 
-    /// [`Api::list_note_rows`] with a keyset cursor — see
-    /// [`Request::ListNoteRowsAfter`]. `after: None` is the first page.
+    /// [`Api::list_note_rows`] with a keyset cursor; `after: None` is the first page.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_note_rows_after(
         &self,
@@ -905,9 +662,6 @@ impl Api {
         Ok(map(self.engine.note_rows(&query).await?))
     }
 
-    // ---- passages, book faces, read marks ----------------------------------
-
-    /// One passage by id, or `None`.
     pub async fn get_highlight(&self, id: i64) -> ApiResult<Option<HighlightDto>> {
         Ok(self.engine.get_highlight(id).await?.map(Into::into))
     }
@@ -917,7 +671,6 @@ impl Api {
         Ok(map(self.engine.book_faces(book_ids).await?))
     }
 
-    /// The books with linked notes — see [`Request::NoteBooks`].
     pub async fn note_books(&self) -> ApiResult<Vec<NoteBookDto>> {
         Ok(self
             .engine
@@ -931,12 +684,9 @@ impl Api {
             .collect())
     }
 
-    /// A read's notes and passages, newest first — see [`Request::ReadMarks`].
     pub async fn read_marks(&self, reading_id: i64, limit: i64) -> ApiResult<Vec<ReadMarkDto>> {
         Ok(map(self.engine.read_marks(reading_id, limit).await?))
     }
-
-    // ---- settings (migration 0024) -------------------------------------------
 
     pub async fn get_setting(&self, key: &str) -> ApiResult<Option<String>> {
         Ok(self.engine.get_setting(key).await?)
@@ -950,8 +700,6 @@ impl Api {
         Ok(map(self.engine.list_settings(prefix).await?))
     }
 
-    // ---- reading history and the library table -----------------------------
-
     pub async fn history_timeline(
         &self,
         since: Option<i64>,
@@ -961,7 +709,6 @@ impl Api {
         Ok(map(self.engine.history_timeline(&span).await?))
     }
 
-    /// The open reads — see [`Request::HistoryReadingNow`].
     pub async fn history_reading_now(&self) -> ApiResult<Vec<HistoryReadDto>> {
         Ok(map(self.engine.history_reading_now().await?))
     }
@@ -1051,7 +798,6 @@ impl Api {
             .collect())
     }
 
-    /// `note_periods` in the reader's zone — see [`Request::NotePeriodsIn`].
     pub async fn note_periods_in(&self, utc_offset_minutes: i32) -> ApiResult<Vec<NotePeriodDto>> {
         Ok(self
             .engine
@@ -1062,8 +808,6 @@ impl Api {
             .collect())
     }
 
-    /// Which parts of a note a search query matches — see
-    /// [`Request::MatchedParts`].
     pub async fn matched_parts(&self, note_id: i64, query: &str) -> ApiResult<Vec<i64>> {
         Ok(self.engine.matched_parts(note_id, query).await?)
     }
@@ -1140,8 +884,6 @@ impl Api {
         Ok(self.engine.preview_links(title, body).await?.into())
     }
 
-    // ---- reflection and review ---------------------------------------------
-
     pub async fn open_reflection(
         &self,
         book_id: i64,
@@ -1162,8 +904,6 @@ impl Api {
         Ok(self.engine.open_review(book_id, reading_id).await?.into())
     }
 
-    // ---- ratings -----------------------------------------------------------
-
     pub async fn set_rating(&self, note_id: i64, value: f64) -> ApiResult<()> {
         Ok(self.engine.set_rating(note_id, value).await?)
     }
@@ -1176,11 +916,8 @@ impl Api {
         Ok(self.engine.clear_review_rating(note_id).await?)
     }
 
-    /// This review on Goodreads' 0–5 in quarters (migration `0026`).
-    ///
-    /// An unmapped value is [`ErrorCode::UnmappedRating`] and never a rounded
-    /// integer — the lookup table exists precisely to refuse that, and a
-    /// transport is not a reason to start guessing.
+    /// This review on Goodreads' 0–5 in quarters. An unmapped value is `ErrorCode::UnmappedRating`,
+    /// never a rounded integer.
     pub async fn goodreads_rating(&self, note_id: i64) -> ApiResult<Option<f64>> {
         Ok(self.engine.goodreads_rating(note_id).await?)
     }
@@ -1225,17 +962,12 @@ impl Api {
             .collect())
     }
 
-    /// Map one point of a scale onto a Goodreads value (0–5 in quarters).
-    ///
-    /// By `scale_id`, and the scale is re-read here — the facade takes a whole
-    /// `&RatingScale`, and a client echoing one back could map a point against
-    /// bounds that have since been redefined.
+    /// Map one point of a scale onto a Goodreads value (0–5 in quarters). The scale is re-read by id,
+    /// not echoed by the client.
     pub async fn map_rating(&self, scale_id: i64, value: f64, goodreads: f64) -> ApiResult<()> {
         let scale = self.scale(scale_id).await?;
         Ok(self.engine.map_rating(&scale, value, goodreads).await?)
     }
-
-    // ---- citations ---------------------------------------------------------
 
     pub async fn cite(&self, note_id: i64, highlight_id: i64) -> ApiResult<()> {
         Ok(self.engine.cite(note_id, highlight_id).await?)
@@ -1249,16 +981,11 @@ impl Api {
         Ok(map(self.engine.citations_for(note_id).await?))
     }
 
-    /// Which passages each of these notes cites, in one call.
-    ///
-    /// One entry per id, in the order asked, empties included — the shape
-    /// `book_summaries` set, and for the same reason: a caller zips it against
-    /// a page it already has. Ids rather than rows; see [`NoteCitationsDto`].
+    /// Which passages each of these notes cites: one entry per id, in the order asked, empties
+    /// included.
     pub async fn citations_for_notes(&self, note_ids: &[i64]) -> ApiResult<Vec<NoteCitationsDto>> {
         Ok(map(self.engine.citations_for_notes(note_ids).await?))
     }
-
-    // ---- goodreads ---------------------------------------------------------
 
     pub async fn import_goodreads(
         &self,
@@ -1284,18 +1011,11 @@ impl Api {
         Ok((csv, map(warnings)))
     }
 
-    /// Record that a Goodreads row is that book, keyed on Goodreads' `Book Id`.
     pub async fn link_goodreads_row(&self, external_id: &str, book_id: i64) -> ApiResult<()> {
         Ok(self.engine.link_goodreads_row(external_id, book_id).await?)
     }
 
-    // ---- calibre -----------------------------------------------------------
-
-    /// Which calibre tools this machine has.
-    ///
-    /// Both `None` is a perfectly good answer and **not an error**: calibre is
-    /// feature-detected, so a client shows the feature as absent and never tells
-    /// anyone to install anything.
+    /// Which calibre tools this machine has. Both `None` is not an error: the feature shows as absent.
     pub fn calibre_status(&self) -> CalibreStatusDto {
         self.engine.calibre().into()
     }
@@ -1337,18 +1057,12 @@ impl Api {
             .into())
     }
 
-    /// Record that a calibre book is that book of ours, keyed on calibre's uuid.
     pub async fn link_calibre_book(&self, uuid: &str, book_id: i64) -> ApiResult<()> {
         Ok(self.engine.link_calibre_book(uuid, book_id).await?)
     }
 
-    // ---- flashcards --------------------------------------------------------
-
-    /// Capture a card. `true` created, `false` you already had it.
-    ///
-    /// Both ids are re-read in the engine before anything is written — the pair
-    /// is two handles a client supplies independently, and nothing in the
-    /// schema stops them naming different books.
+    /// Capture a card. `true` created, `false` you already had it. Both ids are re-read first, since
+    /// nothing in the schema stops them naming different books.
     pub async fn create_flashcard(
         &self,
         book_id: i64,
@@ -1398,8 +1112,6 @@ impl Api {
             .into())
     }
 
-    // ---- the two lookups the id-taking methods share -----------------------
-
     async fn note(&self, note_id: i64) -> ApiResult<NoteRecord> {
         self.engine
             .get_note(note_id)
@@ -1416,13 +1128,7 @@ impl Api {
             .ok_or_else(|| ApiError::from(EngineError::NotFound(format!("scale id {scale_id}"))))
     }
 
-    // ---- the join ----------------------------------------------------------
-
-    /// Run one call and produce a reply that is always well-formed.
-    ///
-    /// Never returns `Err`: a transport's job is to write *something* back for
-    /// every line it read, and a failure it has to invent a reply for is a
-    /// failure it has to have logic about.
+    /// Run one call and produce a reply that is always well-formed; never returns `Err`.
     pub async fn call(&self, call: Call) -> Reply {
         match self.dispatch(call.request).await {
             Ok(response) => Reply::ok(call.id, response),
@@ -1430,12 +1136,7 @@ impl Api {
         }
     }
 
-    /// One arm per request, and **no arm decides anything**.
-    ///
-    /// Every line here unpacks arguments and calls the typed method above it.
-    /// A rule that lived in this match would be a rule an in-process caller
-    /// never met, and the two ways of using this crate would stop being the
-    /// same code.
+    /// One arm per request, and no arm decides anything: a rule here would skip in-process callers.
     pub async fn dispatch(&self, request: Request) -> ApiResult<Response> {
         use Request as R;
         Ok(match request {
@@ -1456,9 +1157,6 @@ impl Api {
             R::LookupIsbn { isbn } => Response::Book(self.lookup_isbn(&isbn).await?),
 
             R::SaveBook { book } => Response::Book(Some(self.save_book(book).await?)),
-            // Assembling the struct is unpacking, not deciding: the request
-            // carries the four values flat for wire compatibility and the typed
-            // method takes them as one. No arm here may do more than this.
             R::ListBooks {
                 limit,
                 sort,
@@ -1950,7 +1648,6 @@ impl Api {
                 include_exported,
             } => Response::AnkiSaved(self.save_anki_export(book_id, include_exported).await?),
 
-            // ---- lists ----
             R::ListLists { sort, preview } => {
                 Response::ListSummaries(self.list_lists(sort, preview).await?)
             }
@@ -2028,7 +1725,6 @@ impl Api {
                 Response::Unit
             }
 
-            // ---- copies ----
             R::CopiesForBook { book_id } => Response::Copies(self.copies_for_book(book_id).await?),
             R::AddCopy {
                 book_id,
@@ -2101,7 +1797,6 @@ impl Api {
             }
             R::LibraryCopies => Response::LibraryCopies(self.library_copies().await?),
 
-            // ---- reading-app imports ----
             R::ImportPreviewAnnotations { book_id } => {
                 Response::PreviewImport(self.import_preview_annotations(book_id).await?)
             }
@@ -2137,7 +1832,6 @@ impl Api {
                 self.import_kindle_notebook(&path, book_id, dry_run).await?,
             ),
 
-            // ---- a copy's files ----
             R::CopyFiles { book_id } => Response::CopyFiles(self.copy_files(book_id).await?),
             R::CopyHighlightSources { book_id } => {
                 Response::CopyHighlightSources(self.copy_highlight_sources(book_id).await?)
@@ -2152,12 +1846,10 @@ impl Api {
     }
 }
 
-/// `Vec<Domain>` to `Vec<Dto>`, once, instead of at forty call sites.
 fn map<T, U: From<T>>(items: Vec<T>) -> Vec<U> {
     items.into_iter().map(U::from).collect()
 }
 
-/// The fields of an `AddCopy`, as one value (the request carries them flat).
 #[derive(Debug, Clone)]
 pub struct NewCopyDto {
     pub book_id: i64,
@@ -2172,7 +1864,6 @@ pub struct NewCopyDto {
     pub note: Option<String>,
 }
 
-/// The fields of an `UpdateCopy`, as one value.
 #[derive(Debug, Clone)]
 pub struct CopyEditDto {
     pub form: Option<CopyFormDto>,
@@ -2192,8 +1883,6 @@ fn copy_not_found(id: i64) -> ApiError {
     ApiError::from(EngineError::NotFound(format!("copy id {id}")))
 }
 
-// ---- lists ---------------------------------------------------------------
-
 impl Api {
     pub async fn list_lists(
         &self,
@@ -2206,8 +1895,6 @@ impl Api {
             .await?))
     }
 
-    /// A list with its counts, composed from the entries: the book count, the
-    /// entries not in the library, and whether the Timeline is ready.
     async fn list_dto(&self, list: bookmole::BookList) -> ApiResult<ListDto> {
         let entries = self
             .engine
@@ -2274,7 +1961,6 @@ impl Api {
             .into())
     }
 
-    /// Lists stage B: a search result onto a list without owning it.
     pub async fn add_candidate_to_list(
         &self,
         list_id: i64,
@@ -2333,11 +2019,7 @@ impl Api {
     }
 }
 
-// ---- copies --------------------------------------------------------------
-
 impl Api {
-    /// A copy with the facts the engine derives for it (format, whether it can
-    /// be kept here, the reader's name).
     async fn copy_dto(&self, copy: bookmole::Copy) -> ApiResult<CopyDto> {
         let facts = self.engine.copy_facts(&copy).await?;
         Ok(CopyDto::from_parts(copy, facts))
@@ -2351,23 +2033,21 @@ impl Api {
         Ok(out)
     }
 
-    /// **Keep a copy here**: an engine error (a copy with no file on this
-    /// computer is `invalid_input`) is mapped as it is.
+    /// Keep a copy here. An engine error (a copy with no file on this computer is `invalid_input`)
+    /// passes through.
     pub async fn keep_copy_here(&self, copy_id: i64) -> ApiResult<CopyDto> {
         self.engine.keep_copy_here(copy_id).await?;
         let copy = self.copy(copy_id).await?;
         self.copy_dto(copy).await
     }
 
-    /// Where each of a book's highlights came from.
     pub async fn highlight_origins(&self, book_id: i64) -> ApiResult<Vec<HighlightOriginFactDto>> {
         Ok(map(self.engine.highlight_origins(book_id).await?))
     }
 
     /// Record a copy. `learned_from` is always `user` here.
     pub async fn add_copy(&self, new: NewCopyDto) -> ApiResult<CopyDto> {
-        // A copy of a book that is not there is `not_found`, not a foreign-key
-        // failure surfacing as something vaguer.
+        // A copy of a missing book is `not_found`, not a foreign-key failure.
         if self.engine.get_book(new.book_id).await?.is_none() {
             return Err(EngineError::NotFound(format!("book id {}", new.book_id)).into());
         }
@@ -2420,7 +2100,6 @@ impl Api {
         self.write_copy(copy).await
     }
 
-    /// *I don't have it any more.*
     pub async fn end_copy(&self, copy_id: i64, ended_at: Option<i64>) -> ApiResult<CopyDto> {
         let mut copy = self.copy(copy_id).await?;
         copy.have_now = Some(false);
@@ -2430,7 +2109,6 @@ impl Api {
         self.write_copy(copy).await
     }
 
-    /// *I have it again.*
     pub async fn resume_copy(&self, copy_id: i64) -> ApiResult<CopyDto> {
         let mut copy = self.copy(copy_id).await?;
         copy.have_now = Some(true);
@@ -2455,13 +2133,9 @@ impl Api {
     }
 }
 
-// ---- reading-app imports -------------------------------------------------
-//
-// Each method is the engine's of the same name; a client's `path` is a string
-// here and is re-checked by the engine (exists, is a file, right kind).
+// A client's `path` is a string here and the engine re-checks it (exists, is a file, right kind).
 
 impl Api {
-    /// Preview: re-read the book's PDFs, mtime-gated.
     pub async fn import_preview_annotations(&self, book_id: i64) -> ApiResult<PreviewImportDto> {
         Ok(self
             .engine
@@ -2470,7 +2144,6 @@ impl Api {
             .into())
     }
 
-    /// Preview: add this PDF to the book and import its annotations now.
     pub async fn import_preview_file(
         &self,
         book_id: i64,
@@ -2483,12 +2156,10 @@ impl Api {
             .into())
     }
 
-    /// Apple Books, from where this machine keeps it.
     pub async fn import_apple_books(&self, dry_run: bool) -> ApiResult<AppleBooksReportDto> {
         Ok(self.engine.import_apple_books(dry_run).await?.into())
     }
 
-    /// This Apple Books asset is this book: the copy that now holds it.
     pub async fn link_apple_books_asset(&self, asset_id: &str, book_id: i64) -> ApiResult<CopyDto> {
         let copy_id = self
             .engine
@@ -2498,7 +2169,6 @@ impl Api {
         self.copy_dto(copy).await
     }
 
-    /// The clippings files on mounted volumes.
     pub fn find_kindle_clippings(&self) -> Vec<String> {
         self.engine
             .find_kindle_clippings()
@@ -2517,7 +2187,6 @@ impl Api {
         Ok(KindleClippingsReportDto::new(path, report))
     }
 
-    /// One report per clippings file found; none mounted is empty.
     pub async fn import_mounted_kindle_clippings(
         &self,
         dry_run: bool,
@@ -2531,8 +2200,7 @@ impl Api {
             .collect())
     }
 
-    /// The manual attach of one unmatched title. Never a dry run: it is the
-    /// answer to a report the reader has already seen.
+    /// Never a dry run: it answers a report the reader has already seen.
     pub async fn attach_kindle_title(
         &self,
         path: &str,
@@ -2560,16 +2228,12 @@ impl Api {
             .into())
     }
 
-    /// `resolve_books` over the library only.
     pub async fn resolve_library_books(&self, selector: &str) -> ApiResult<Vec<BookDto>> {
         Ok(map(self.engine.resolve_library_books(selector).await?))
     }
 }
 
-// ---- a copy's files -------------------------------------------------------
-
 impl Api {
-    /// The files of a book's copies, with whether each is on disk now.
     pub async fn copy_files(&self, book_id: i64) -> ApiResult<Vec<CopyFileDto>> {
         Ok(map(self.engine.copy_files(book_id).await?))
     }
@@ -2582,7 +2246,6 @@ impl Api {
         Ok(map(self.engine.copy_highlight_sources(book_id).await?))
     }
 
-    /// *Find the file…*: the copy, as `CopiesForBook` would carry it.
     pub async fn relocate_copy_file(&self, copy_id: i64, path: &str) -> ApiResult<CopyDto> {
         let copy = self
             .engine

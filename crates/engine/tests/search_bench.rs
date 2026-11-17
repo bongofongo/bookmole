@@ -1,33 +1,7 @@
-//! The search benchmark: the gate on book-search quality.
-//!
-//! About 190 public, famous-book queries in eleven categories, each with the
-//! book a person typing it wants. A category's figures may never drop below
-//! the committed baseline, so a ranking change that helps one kind of query
-//! by hurting another fails here rather than in somebody's search box.
-//!
-//! Every provider is **replayed** from responses recorded off the real service,
-//! served over loopback to the real provider code through its `with_base` seam
-//! — so URL building and response parsing are inside the measurement, and
-//! nothing here reaches the network. The figures are the right book at position
-//! 1, in the top five, and the mean reciprocal rank, per category and overall;
-//! `baseline.json` holds them, and this test fails when a gated figure drops
-//! below it.
-//!
-//! - `make search-bench` prints the table (`--nocapture`; cargo captures a
-//!   passing test's output).
-//! - `UPDATE_BASELINE=1` rewrites `baseline.json` from this run.
-//! - `BOOKMOLE_SEARCH_RECORD=1` (`make search-bench-record`) is the only
-//!   mode that touches the network: it fetches what is missing (everything with
-//!   `ALL=1`) at one request a second, prunes recordings no query uses, and
-//!   verifies every expected identity against live Open Library.
-//! - `SEARCH_BENCH_VERBOSE=1` adds one line per query: where the right book
-//!   landed and the top three rows.
-//!
-//! **One test function, on purpose.** nextest runs each test in its own
-//! process, and the run shares one engine and one replay server.
-//!
-//! `fixtures/search/README.md` says what is recorded and why a recording is
-//! never edited by hand.
+//! The search benchmark: a category's figures may never drop below `baseline.json`.
+//! Providers are replayed from recorded responses over loopback; nothing here reaches the
+//! network except `BOOKMOLE_SEARCH_RECORD=1`.
+//! One test function on purpose: the run shares one engine and one replay server.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -49,31 +23,20 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const BENCH_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/search/bench");
 
-/// What a provider is sent as `User-Agent` while recording: the app's name and
-/// version and nothing else, the same rule the shipped providers follow — a
-/// request should not carry anything about the person or the machine.
+/// App name and version only: a request must carry nothing about the person or machine.
 const USER_AGENT: &str = concat!("bookmole/", env!("CARGO_PKG_VERSION"));
 
-/// The smallest gap between two live requests to one host. Open Library's
-/// published anonymous rate is one a second; the margin is for clock jitter.
+/// Open Library's published anonymous rate is one a second; the margin is for clock jitter.
 const LIVE_GAP: Duration = Duration::from_millis(1100);
 
-// ---- the function a search change swaps ------------------------------------
-
-/// One row of a search's answer, in the order shown — the shape the scoring
-/// reads, whatever the search underneath returns.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BenchRow {
     title: Option<String>,
     authors: Vec<String>,
-    /// Open Library's key for the row: a work (`/works/…W`) from the search,
-    /// an edition (`/books/…M`) from an ISBN lookup.
     ol_key: Option<String>,
     isbn_10: Option<String>,
     isbn_13: Option<String>,
-    /// A Wikidata id, once a provider supplies one. `None` today.
     wikidata: Option<String>,
-    /// The library book this row says you already hold.
     held: Option<i64>,
 }
 
@@ -91,38 +54,18 @@ impl BenchRow {
     }
 }
 
-/// **The search being measured.** Every figure in `baseline.json` comes through
-/// this one function, so it is the only thing a change to search alters in this
-/// file: it began as a plain [`Engine::search`] and is now the search session
-/// run to `done` and flattened, and because the queries and recordings did not
-/// change with it, the numbers stay comparable across those versions.
-///
-/// Called exactly as a frontend's add-a-book box calls it: the trimmed text as
-/// the free-text `query`, every fielded parameter `None`, `limit: 20`, and each
-/// result's `shelf_id` as the held answer. **An ISBN is typed into the same
-/// box** — that is what a person does, and the session sends it straight to
-/// each provider's edition lookup (results are works with their editions
-/// inside, and an ISBN names an edition), so the requests are the same ones
-/// the earliest version recorded. Before that, an ISBN went through a separate
-/// `lookup_isbn` call.
+/// Every baseline figure comes through this function, called as a frontend's add-a-book box
+/// calls it: trimmed free-text `query`, fielded parameters `None`, `limit: 20`. An ISBN is
+/// typed into the same box.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Answer {
     rows: Vec<BenchRow>,
-    /// The `Display` of every warning the search returned.
     warnings: Vec<String>,
 }
 
-/// The answer to one benchmark query, by the path its category measures.
-///
-/// **Every category but one** is `bench_answer`, the flattened search. **_You
-/// already have it_** (which expects the right `Held`) reads the fact the
-/// category is about, which the flattened search has no field for: the work
-/// rows of a search session run to its end, each row held when its work says
-/// [`bookmole::Held::Certain`] or [`bookmole::Held::Likely`] of a book
-/// — the same session, the same providers and the same recordings as every
-/// other query. An earlier version read the flattened row's `shelf_id`, an
-/// ISBN join on the default edition, and a work the library held under no
-/// shared ISBN could never be found held that way.
+/// All categories but *you already have it* use `bench_answer`; that one reads each work row's
+/// `Held::Certain`/`Held::Likely`, because the flattened row's `shelf_id` misses works held
+/// under no shared ISBN.
 async fn bench_search(engine: &Engine, q: &BenchQuery) -> Answer {
     match q.category.as_str() {
         HELD if q.scope.as_deref() == Some(LIBRARY) => bench_library(engine, &q.query).await,
@@ -131,9 +74,6 @@ async fn bench_search(engine: &Engine, q: &BenchQuery) -> Answer {
     }
 }
 
-/// The library's own search ("where is that book of mine?"): the books in
-/// the library that answer, best first, each row the book it names. Local
-/// only, so it needs no recording and sends nothing anywhere.
 async fn bench_library(engine: &Engine, query: &str) -> Answer {
     Answer {
         warnings: Vec::new(),
@@ -150,8 +90,6 @@ async fn bench_library(engine: &Engine, query: &str) -> Answer {
     }
 }
 
-/// A search session as an add-a-book box runs it, polled to its end,
-/// as rows: each work flattened, held as its `Held` says.
 async fn bench_held(engine: &Engine, query: &str) -> Answer {
     let mut snap = engine
         .start_search(query.trim(), SearchScope::Everything, 20)
@@ -191,12 +129,8 @@ async fn bench_answer(engine: &Engine, query: &str) -> Answer {
     }
 }
 
-// ---- the query set ----------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 struct QuerySet {
-    /// The library the *you already have it* queries are asked against, built
-    /// by [`seed_library`]. Public books; never the user's.
     library: Vec<Seed>,
     queries: Vec<BenchQuery>,
 }
@@ -208,7 +142,6 @@ struct Seed {
     authors: Vec<String>,
     #[serde(default)]
     isbn_13: Option<String>,
-    /// The work this book is, for the recorder's live check of `isbn_13`.
     ol_work: String,
 }
 
@@ -219,9 +152,7 @@ struct BenchQuery {
     query: String,
     #[serde(default = "yes")]
     gates: bool,
-    /// `library`: asked of the library's own search (`Engine::search_library`)
-    /// rather than the add-a-book search. Only *you already have it* has such
-    /// queries: a person looking for a book of theirs, typed loosely.
+    /// `library`: ask the library's own search instead of the add-a-book search.
     #[serde(default)]
     scope: Option<String>,
     expect: Expect,
@@ -231,8 +162,6 @@ fn yes() -> bool {
     true
 }
 
-/// The book a query wants, as a set of acceptable identities: any one of them
-/// on a row makes it the right row.
 #[derive(Debug, Deserialize)]
 struct Expect {
     #[serde(default, deserialize_with = "one_or_many")]
@@ -241,15 +170,12 @@ struct Expect {
     wikidata: Vec<String>,
     #[serde(default)]
     isbns: Vec<String>,
-    /// The fallback identity, with `author`: any of these titles, compared
-    /// folded (case, diacritics, punctuation, one leading article). A book in
-    /// translation is right under its title in that language, too.
+    /// Fallback identity, with `author`: compared folded (case, diacritics, punctuation, one
+    /// leading article); a translated title is right too.
     #[serde(default, deserialize_with = "one_or_many")]
     title: Vec<String>,
-    /// Acceptable spellings of the author.
     #[serde(default, deserialize_with = "one_or_many")]
     author: Vec<String>,
-    /// For *you already have it*: the [`Seed`] the answer must say is held.
     #[serde(default)]
     held: Option<String>,
 }
@@ -271,7 +197,6 @@ const AUTHOR_ONLY: &str = "author_only";
 const HELD: &str = "held";
 const LIBRARY: &str = "library";
 
-/// The order categories print in.
 const CATEGORY_ORDER: &[&str] = &[
     "typos",
     "title_author",
@@ -286,12 +211,8 @@ const CATEGORY_ORDER: &[&str] = &[
     HELD,
 ];
 
-// ---- folding and matching ---------------------------------------------------
-
-/// The bench's own folding, deliberately not the engine's: a scorer that
-/// borrowed the code it scores would agree with it by construction. Lowercase,
-/// Latin diacritics and ligatures folded by table, anything not a letter or
-/// digit a space, whitespace collapsed.
+/// Deliberately not the engine's folding: a scorer borrowing the code it scores agrees by
+/// construction.
 fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars().flat_map(char::to_lowercase) {
@@ -314,7 +235,7 @@ fn fold(s: &str) -> String {
             'æ' => out.push_str("ae"),
             'œ' => out.push_str("oe"),
             'ё' => out.push('е'),
-            // An apostrophe joins (`philosopher's` is one word), as typed.
+            // An apostrophe joins (`philosopher's` is one word).
             '\'' | '’' | 'ʼ' => {}
             c if c.is_alphanumeric() => out.push(c),
             _ => out.push(' '),
@@ -323,8 +244,7 @@ fn fold(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// [`fold`], less one leading English article — judged before folding, so the
-/// French `À` is not taken for `a`.
+/// [`fold`], less one leading English article, judged before folding so French `À` is not `a`.
 fn fold_title(s: &str) -> String {
     let s = s.trim();
     let first = s.split_whitespace().next().unwrap_or_default();
@@ -334,11 +254,8 @@ fn fold_title(s: &str) -> String {
     }
 }
 
-/// Whether `got` names the person one of `expected`'s spellings names: one
-/// folded name inside the other (`ursula k le guin` / `ursula k leguin` are not,
-/// so spaces go too), or the same surname with the same first initial
-/// (`J.R.R. Tolkien` / `John Ronald Reuel Tolkien`, but not `Frank Herbert` /
-/// `Brian Herbert`).
+/// One folded name inside the other (spaces removed), or the same surname and first initial:
+/// `J.R.R. Tolkien` matches `John Ronald Reuel Tolkien`, `Frank Herbert` not `Brian Herbert`.
 fn same_author(expected: &[String], got: &str) -> bool {
     let g: String = fold(got).chars().filter(|c| !c.is_whitespace()).collect();
     if g.is_empty() {
@@ -373,7 +290,6 @@ fn isbn13_of(raw: &str) -> Option<String> {
     }
 }
 
-/// Whether `row` is the book `expect` describes.
 fn is_the_book(expect: &Expect, row: &BenchRow) -> bool {
     if let Some(k) = &row.ol_key
         && expect.ol_work.iter().any(|w| w == k)
@@ -402,16 +318,11 @@ fn is_the_book(expect: &Expect, row: &BenchRow) -> bool {
         && (expect.author.is_empty() || row.authors.is_empty() || by_author(expect, row))
 }
 
-// ---- scoring ----------------------------------------------------------------
-
-/// How one query went.
 #[derive(Debug, Clone, Copy, Default)]
 struct Score {
-    /// The right answer is the first row.
     at1: bool,
     /// In the first five (for *author only*: four of the first five are hers).
     top5: bool,
-    /// One over the rank of the first right row; zero if there is none.
     rr: f64,
 }
 
@@ -452,8 +363,7 @@ fn score(
     (s, rank)
 }
 
-/// A category's three figures. Rounded to four places when compared and when
-/// written, so the ratchet never trips on the last bit of a float.
+/// Rounded to four places so the ratchet never trips on float noise.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 struct Figures {
     n: usize,
@@ -482,17 +392,11 @@ fn figures(scores: &[Score]) -> Figures {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Baseline {
-    /// What produced these figures — the one line a reader of the diff needs.
     measured: String,
-    /// Gated categories plus `overall`. Reported-only ones are not here: there
-    /// is nothing to hold them to.
+    /// Gated categories plus `overall`; reported-only categories are absent.
     figures: BTreeMap<String, Figures>,
 }
 
-// ---- recordings -------------------------------------------------------------
-
-/// A provider as the replay knows it: the path prefix its loopback base
-/// carries, and the live host that prefix stands for.
 struct Host {
     name: &'static str,
     prefix: &'static str,
@@ -521,12 +425,10 @@ struct Entry {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Index {
-    /// Scrubbed request URL → the file holding the body the provider sent.
     recordings: BTreeMap<String, Entry>,
 }
 
-/// A request the replay could not answer. `live` carries the URL as the
-/// provider built it (a key included) and is never written anywhere.
+/// `live` carries the URL as built, key included, and is never written anywhere.
 #[derive(Debug, Clone)]
 struct Miss {
     host: &'static str,
@@ -536,7 +438,6 @@ struct Miss {
 
 #[derive(Default)]
 struct Tape {
-    /// Every request the replay was sent, answered or not, by provider.
     requests: HashMap<&'static str, usize>,
     indexes: HashMap<&'static str, Index>,
     bodies: HashMap<String, Vec<u8>>,
@@ -577,7 +478,6 @@ fn recorded_dir(host: &Host) -> PathBuf {
     Path::new(BENCH_DIR).join("recorded").join(host.name)
 }
 
-/// Map a loopback request back to the live URL it stands for, scrubbed.
 fn canonical(url: &url::Url) -> Option<(&'static Host, String, String)> {
     let path = url.path();
     let host = HOSTS.into_iter().find(|h| path.starts_with(h.prefix))?;
@@ -589,8 +489,6 @@ fn canonical(url: &url::Url) -> Option<(&'static Host, String, String)> {
     Some((host, scrub_key(&live), live))
 }
 
-/// The loopback server's one responder: the recorded answer, or a 501 naming
-/// the URL and a note on the tape, so the query fails by name.
 struct Replay(Arc<Mutex<Tape>>);
 
 impl Respond for Replay {
@@ -629,7 +527,6 @@ impl Respond for Replay {
     }
 }
 
-/// The live half, used only while recording.
 struct Recorder {
     client: reqwest::Client,
     last: HashMap<&'static str, Instant>,
@@ -662,9 +559,7 @@ impl Recorder {
         self.last.insert(host, Instant::now());
     }
 
-    /// One live GET, paced, retried twice on a transport error or a 5xx. A 429
-    /// stops the run: the recording is the provider's answer, and *slow down*
-    /// is not one.
+    /// A 429 stops the run: *slow down* is not a recording of the provider's answer.
     async fn get(&mut self, host: &'static str, url: &str) -> (u16, String, Vec<u8>) {
         let mut last_err = String::new();
         for attempt in 0..3 {
@@ -705,7 +600,6 @@ impl Recorder {
         );
     }
 
-    /// Fetch one missed request and put it on the tape and on disk.
     async fn record(&mut self, tape: &Arc<Mutex<Tape>>, miss: &Miss) {
         let host = HOSTS
             .into_iter()
@@ -752,8 +646,6 @@ fn write_index(host: &Host, index: &Index) {
     std::fs::write(dir.join("index.json"), text + "\n").expect("write index");
 }
 
-/// After a recording run: drop every recording no query asked for, and every
-/// file no index names, so the committed set is exactly what replays.
 fn prune(tape: &mut Tape) {
     for host in HOSTS {
         let Some(index) = tape.indexes.get_mut(host.name) else {
@@ -778,9 +670,6 @@ fn prune(tape: &mut Tape) {
     }
 }
 
-/// While recording, check every expected identity against live Open Library
-/// rather than trusting the file: each `ol_work` must exist and be by the
-/// expected author, and each ISBN must be an edition of its work.
 async fn verify_live(set: &QuerySet, tape: &Arc<Mutex<Tape>>, rec: &mut Recorder) {
     let mut wanted: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for q in &set.queries {
@@ -837,7 +726,6 @@ async fn verify_live(set: &QuerySet, tape: &Arc<Mutex<Tape>>, rec: &mut Recorder
             }
         }
     }
-    // ISBN queries: their edition lookup is on the tape already.
     for q in set.queries.iter().filter(|q| q.category == "isbn") {
         let isbn = normalize_isbn(&q.query).expect("an isbn query is an isbn");
         let url = format!("https://openlibrary.org/isbn/{isbn}.json");
@@ -852,7 +740,6 @@ async fn verify_live(set: &QuerySet, tape: &Arc<Mutex<Tape>>, rec: &mut Recorder
             None => problems.push(format!("{}: {url} was not recorded", q.id)),
         }
     }
-    // The seeded library's ISBNs are not asked for by any query; ask now.
     for s in &set.library {
         if let Some(isbn) = &s.isbn_13 {
             let url = format!("https://openlibrary.org/isbn/{isbn}.json");
@@ -893,16 +780,13 @@ fn check_edition_work(what: &str, body: &[u8], works: &[String], problems: &mut 
     }
 }
 
-// ---- the run ----------------------------------------------------------------
-
 fn env_on(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    // Built literally, never through `EngineConfig::rooted_at`, which would
-    // read the ambient `GOOGLE_BOOKS_API_KEY` (see `tests/common/mod.rs`).
+    // Built literally: `EngineConfig::rooted_at` would read the ambient `GOOGLE_BOOKS_API_KEY`.
     let config = EngineConfig {
         db_url: "sqlite::memory:".into(),
         images_dir: tmp.path().join("database/images"),
@@ -917,11 +801,7 @@ async fn engine() -> (tempfile::TempDir, Engine) {
     (tmp, engine)
 }
 
-/// The *you already have it* library, by code: public books, some with the
-/// ISBN of a real edition, most without, two under a title other than the one
-/// a person types. Each has a copy, so each is **in the library** by the
-/// copies rule — what the library's own search answers with, and the
-/// editions a work defaults to.
+/// Each seed has a copy, so each is in the library by the copies rule.
 async fn seed_library(engine: &Engine, seeds: &[Seed]) -> HashMap<String, i64> {
     let mut ids = HashMap::new();
     for s in seeds {
@@ -949,7 +829,6 @@ async fn seed_library(engine: &Engine, seeds: &[Seed]) -> HashMap<String, i64> {
 
 enum Outcome {
     Scored(Score, Option<usize>, Vec<BenchRow>),
-    /// A request the replay had no recording for, by URL.
     Unrecorded(Vec<String>),
 }
 
@@ -975,9 +854,8 @@ async fn search_bench() {
         return;
     }
 
-    // Google is asked only when it was recorded, or is being recorded with a
-    // key. Without one every keyless call is a 429, so its half of
-    // each query is "not recorded" and left out — not a failure.
+    // Google is asked only when recorded or recording with a key; keyless calls are all 429s,
+    // so its half is left out rather than failed.
     let google_key = std::env::var("GOOGLE_BOOKS_API_KEY")
         .ok()
         .filter(|k| !k.is_empty());
@@ -992,15 +870,12 @@ async fn search_bench() {
         .respond_with(Replay(tape.clone()))
         .mount(&server)
         .await;
-    // `no_proxy`: a loopback request must not be routed anywhere else by the
-    // ambient environment.
+    // `no_proxy`: the ambient environment must not route a loopback request elsewhere.
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
         .expect("client");
-    // No rate limit on the loopback replay: it is a file server, and the
-    // limit (`Manners`) is tested on its own under paused time. While
-    // recording, the `Recorder` keeps the live rate itself.
+    // No rate limit on the replay; while recording, the `Recorder` keeps the live rate itself.
     let mut providers: Vec<Box<dyn MetadataProvider>> = vec![Box::new(
         OpenLibraryProvider::with_base(
             client.clone(),
@@ -1009,7 +884,6 @@ async fn search_bench() {
         .with_manners(Arc::new(Manners::unlimited())),
     )];
     if with_google {
-        // The replayed key is a placeholder: requests are matched scrubbed.
         let key = if record {
             google_key.clone()
         } else {
@@ -1024,9 +898,8 @@ async fn search_bench() {
 
     let (_tmp, engine) = engine().await;
     engine.replace_providers(providers);
-    // The offline index the build ships, built once into the
-    // target's scratch directory and reopened by every later run: the
-    // benchmark measures the real index, never a fixture.
+    // The shipped offline index, built once into the target scratch dir: the real index, not a
+    // fixture.
     let index_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wellknown");
     engine.use_wellknown(Loader::Embedded {
         dir: index_dir.clone(),
@@ -1075,7 +948,6 @@ async fn search_bench() {
         verify_live(&set, &tape, rec).await;
     }
 
-    // ---- the report ----
     let mut by_cat: BTreeMap<&str, Vec<Score>> = BTreeMap::new();
     let mut gated_cat: BTreeMap<&str, bool> = BTreeMap::new();
     let mut unrecorded = Vec::new();
@@ -1172,10 +1044,7 @@ async fn search_bench() {
         unrecorded.join("\n  ")
     );
 
-    // ---- correction: how often, and what it is worth ----
     if !record {
-        // A correction counted per query, off a session run to its end: on
-        // typos it is the point, anywhere else it is a false correction.
         let mut fired: BTreeMap<&str, usize> = BTreeMap::new();
         let mut false_fixes = Vec::new();
         for (q, o) in &outcomes {
@@ -1200,8 +1069,6 @@ async fn search_bench() {
                 }
             }
         }
-        // The same queries as typed, never corrected: the delta is
-        // correction's whole worth.
         let mut as_typed: BTreeMap<&str, Vec<Score>> = BTreeMap::new();
         for (q, o) in &outcomes {
             if !matches!(o, Outcome::Scored(..)) || q.category == HELD {
@@ -1260,7 +1127,6 @@ async fn search_bench() {
         );
     }
 
-    // ---- the repeat and offline runs ----
     if !record {
         let first: Vec<(&BenchQuery, &Vec<BenchRow>)> = outcomes
             .iter()
@@ -1279,8 +1145,6 @@ async fn search_bench() {
             )
         };
 
-        // Every query again: a kept answer younger than a day is the answer,
-        // so Open Library is not asked once, and the order is the first's.
         let asked_before = tape.lock().unwrap().requests.get("openlibrary").copied();
         let mut repeat = Vec::new();
         let mut moved = Vec::new();
@@ -1305,9 +1169,6 @@ async fn search_bench() {
             "repeat", f.n, f.at1, f.top5, f.mrr
         );
 
-        // Offline: the kept answers made stale (a stale one is refreshed), and
-        // Open Library pointed at a port nothing listens on. The kept answers
-        // stand in, and every answer says so.
         engine
             .storage()
             .age_kept_searches(2 * 86_400)
@@ -1357,8 +1218,7 @@ async fn search_bench() {
             "the repeat run answered differently: {moved:?}"
         );
         if !with_google {
-            // Google is never kept, so with it recorded its rows are missing
-            // offline by design and only Open Library's half can be compared.
+            // Google is never kept, so its rows are missing offline by design; compare Open Library's half.
             assert!(
                 differ.is_empty(),
                 "offline answered differently from the first run: {differ:?}"
@@ -1371,7 +1231,6 @@ async fn search_bench() {
         );
     }
 
-    // ---- the ratchet ----
     let path = Path::new(BENCH_DIR).join("baseline.json");
     if env_on("UPDATE_BASELINE") {
         let baseline = Baseline {

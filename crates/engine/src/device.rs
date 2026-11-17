@@ -1,19 +1,3 @@
-//! Reading a mounted KOReader device.
-//!
-//! Two verbs, and the difference between them is the whole module: [`scan_device`]
-//! is read-only and answers *what is the state of each book on this device*;
-//! [`sync_device`] writes, and pulls a chosen selection in.
-//!
-//! It lives here rather than in [`crate::koreader`] because a scan is not an
-//! import. `import`'s `dry_run` already walks a tree and previews it, so a scan
-//! looks nearly free — and is not, twice over. It evaluates every sidecar's Lua
-//! in mlua before it can say anything, which on a device with several hundred
-//! books is several hundred VM evaluations *every time the screen opens*; and
-//! its answer is an `ImportReport`, which says what would import, not what state
-//! each book is in. This module consumes `koreader`'s parsing and matching and
-//! adds the pre-filter cache (`sidecar_seen`, migration `0006`) that makes the
-//! first problem go away.
-
 use std::path::{Path, PathBuf};
 
 use crate::diagnostic::Diagnostic;
@@ -25,27 +9,13 @@ use crate::koreader::{
 use crate::storage::DeviceDigest;
 use crate::storage::{NewHighlight, SidecarFacts, Storage};
 
-/// Where a KOReader install sits relative to a mount root, in the order worth
-/// looking.
-///
-/// Not just `koreader/`: only Kindle puts it at the root of the USB volume.
-/// Kobo installs into `.adds/koreader`, PocketBook into `applications/koreader`.
-/// A device screen that only knew the Kindle layout would report the other two
-/// as "not a KOReader device" with the device plainly mounted.
+/// Kindle keeps KOReader at the volume root, Kobo in `.adds/koreader`, PocketBook in
+/// `applications/koreader`.
 const KOREADER_DIRS: [&str; 3] = ["koreader", ".adds/koreader", "applications/koreader"];
 
-/// What has to be inside that directory before we believe it.
-///
-/// A bare directory named `koreader` is not a KOReader install — it is just as
-/// likely a folder somebody made. These three are present in every build:
-/// `reader.lua` is the entry point, `frontend/` the library, `plugins/` where a
-/// plugin would go.
-///
-/// **This is not cosmetic.** bookmole refuses to write to an unrecognised
-/// volume, and this predicate is the gate the plugin installer
-/// (`plugin.rs`) relies on before it writes anything. It lives here, in the
-/// read-only module, so the same test decides both what a scan looks at and
-/// what an install may touch.
+/// A bare `koreader` folder is not an install. This predicate also gates the plugin installer's
+/// writes,
+/// so bookmole never writes to an unrecognised volume.
 const KOREADER_MARKERS: [(&str, Kind); 3] = [
     ("reader.lua", Kind::File),
     ("frontend", Kind::Dir),
@@ -58,16 +28,9 @@ enum Kind {
     Dir,
 }
 
-/// Mount points to look under, per platform.
 const MOUNT_ROOTS: [&str; 1] = ["/Volumes"];
-/// Mount points that are per-user on Linux; `$USER` is appended.
 const USER_MOUNT_ROOTS: [&str; 2] = ["/run/media", "/media"];
 
-/// The KOReader install directory inside a mount, if this looks like one.
-///
-/// Returned rather than discarded because the plugin installer needs exactly
-/// this path, and having two functions disagree about where KOReader lives is
-/// the failure mode worth designing out now.
 pub fn koreader_dir(mount: &Path) -> Option<PathBuf> {
     KOREADER_DIRS
         .iter()
@@ -88,17 +51,11 @@ fn has_markers(dir: &Path) -> bool {
     })
 }
 
-/// Does this volume hold a KOReader install?
 pub fn is_koreader_mount(p: &Path) -> bool {
     koreader_dir(p).is_some()
 }
 
-/// The directories this platform mounts removable volumes into, as they exist
-/// on this machine.
-///
-/// Public because [`crate::watch`] watches exactly these, and a watcher looking
-/// at a different set of directories from the one [`candidate_mounts`] walks is
-/// the failure mode where a device is listed but never noticed.
+/// Public because the watcher must watch exactly the directories `candidate_mounts` walks.
 pub fn mount_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = MOUNT_ROOTS.iter().map(PathBuf::from).collect();
     if let Ok(user) = std::env::var("USER") {
@@ -108,26 +65,15 @@ pub fn mount_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Would we offer this path as a mounted reader?
-///
-/// [`is_koreader_mount`] plus the symlink rule, in one place because the watcher
-/// and the lister must agree: a volume one of them announces and the other never
-/// lists is a device the user is told about and cannot open.
+/// `is_koreader_mount` plus the symlink rule; the watcher and the lister must agree on it.
 pub fn offers_reader(path: &Path) -> bool {
-    // `/Volumes/Macintosh HD` is a symlink to `/` on macOS. Following it would
-    // offer the boot disk as a removable device.
+    // `/Volumes/Macintosh HD` is a symlink to `/` on macOS; following it would offer the boot disk.
     let is_link = std::fs::symlink_metadata(path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false);
     !is_link && is_koreader_mount(path)
 }
 
-/// Mounted volumes that hold a KOReader install.
-///
-/// Filtered rather than listed: an unfiltered list of `/Volumes` is something
-/// the caller could produce itself, and every caller would then have to
-/// re-apply [`is_koreader_mount`] — including the one that is about to write to
-/// the volume.
 pub fn candidate_mounts() -> Vec<PathBuf> {
     let mut found = Vec::new();
     for root in mount_roots() {
@@ -146,12 +92,8 @@ pub fn candidate_mounts() -> Vec<PathBuf> {
     found
 }
 
-/// Every Kindle `documents/My Clippings.txt` on a volume directly under one of
-/// `roots` ([`mount_roots`] in product; a temp dir in a test). Read-only and
-/// bounded: one directory level per root, then
-/// [`crate::kindle_clippings::clippings_path_on`], nothing deeper. A symlinked
-/// volume is skipped for [`offers_reader`]'s reason (`/Volumes/Macintosh HD`
-/// is `/`). Sorted, deduplicated.
+/// Kindle `documents/My Clippings.txt` files on volumes directly under `roots`. Symlinked volumes
+/// are skipped.
 pub fn kindle_clippings_on(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for root in roots {
@@ -176,41 +118,26 @@ pub fn kindle_clippings_on(roots: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-// ---- the scan ---------------------------------------------------------------
-
-/// What one book on the device is, relative to the library.
-///
-/// Four states, and deliberately no more. `Unreadable`
-/// carries the existing [`Diagnostic`] vocabulary rather than a parallel error
-/// taxonomy of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeviceState {
-    /// Not in the library. `candidates` is the ambiguous band — non-empty means
-    /// "and here is what it probably already is", which is the difference
-    /// between a decision and a dead end.
+    /// Not in the library. Non-empty `candidates` are likely matches to an existing book.
     New { candidates: Vec<MatchCandidate> },
-    /// Linked, and the device has nothing we do not already hold.
     Unchanged,
-    /// Linked, with annotations to bring across. `refreshed` counts rows whose
-    /// device-owned fields the sidecar disagrees with — the same distinction
-    /// `BookImportStats::updated` draws, for the same reason: without it a note
-    /// edited on the device is indistinguishable from nothing at all.
+    /// Linked, with annotations to bring across. `refreshed` counts rows whose device-owned fields
+    /// differ.
     Updated {
         new_highlights: usize,
         refreshed: usize,
     },
-    /// The file could not be read or could not be parsed. Never fatal: one bad
-    /// sidecar must not cost you the view of the other four hundred.
+    /// The sidecar could not be read or parsed. Never fatal to the scan.
     Unreadable(Diagnostic),
 }
 
 impl DeviceState {
-    /// Is there anything for a sync to do here?
     pub fn is_syncable(&self) -> bool {
         matches!(self, DeviceState::New { .. } | DeviceState::Updated { .. })
     }
 
-    /// One word, for a list row.
     pub fn label(&self) -> &'static str {
         match self {
             DeviceState::New { .. } => "new",
@@ -221,7 +148,6 @@ impl DeviceState {
     }
 }
 
-/// One book as it exists on the device.
 #[derive(Debug, Clone)]
 pub struct DeviceBook {
     pub path: PathBuf,
@@ -236,12 +162,7 @@ pub struct DeviceBook {
 }
 
 impl DeviceBook {
-    /// Something to put in a list row.
-    ///
-    /// Falls back to the `.sdr` directory's name, which is the ebook's filename
-    /// and is the only thing an unreadable sidecar can be identified by at all —
-    /// a row reading "unknown title" tells the user nothing about *which* file
-    /// to go and look at.
+    /// Falls back to the `.sdr` directory name, the only identifier an unreadable sidecar has.
     pub fn display_title(&self) -> String {
         if let Some(t) = &self.title {
             return t.clone();
@@ -254,19 +175,13 @@ impl DeviceBook {
     }
 }
 
-/// The result of walking a mounted device.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceScan {
     pub root: PathBuf,
     pub books: Vec<DeviceBook>,
     pub warnings: Vec<Diagnostic>,
-    /// Sidecars whose Lua was evaluated by this scan.
-    ///
-    /// Reported, not logged, because the pre-filter's whole claim is that this
-    /// number is zero on a second scan of an unmodified tree — and a claim a
-    /// test can only check by timing is not a claim at all.
+    /// Sidecars whose Lua was evaluated by this scan; zero on a second scan of an unmodified tree.
     pub parsed: usize,
-    /// Sidecars answered from `sidecar_seen` without touching the parser.
     pub cached: usize,
 }
 
@@ -276,42 +191,25 @@ impl DeviceScan {
     }
 }
 
-/// What one whole-device sync did.
-///
-/// The reply to *bring everything across*, and it carries the scan it was
-/// decided from rather than only the imports: **"nothing to bring across" and
-/// "there is nothing on this device" are different answers**, and a report that
-/// held only `reports` would render them as the same empty list.
+/// Carries the scan as well as the imports: "nothing to bring across" and "nothing on the device"
+/// differ.
 #[derive(Debug, Default)]
 pub struct MountSync {
     pub mount: PathBuf,
-    /// The paired reader this mount turned out to be, when it is one.
-    ///
-    /// `None` covers two ordinary cases and neither is an error: a KOReader
-    /// volume we have never installed onto, and one carrying a `pairing.lua`
-    /// minted by somebody else's copy of bookmole. The sync happens either
-    /// way — importing sidecars has never needed a pairing — and only the
-    /// `last_synced_at` stamp is skipped.
+    /// `None` for an unpaired or foreign-paired volume; the sync still runs but `last_synced_at` is not
+    /// stamped.
     pub device_id: Option<String>,
-    /// Books the scan found, syncable or not.
     pub found: usize,
-    /// Books that had something to bring across, and so were imported.
     pub synced: usize,
     pub reports: Vec<PullReport>,
-    /// The **scan's** warnings. Each report carries its own import's.
+    /// The scan's warnings; each report carries its own import's.
     pub warnings: Vec<Diagnostic>,
 }
 
-/// Walk a mounted device (or any library tree) and report the state of every
-/// book on it. Read-only.
-///
-/// Never fails on one bad file: an unreadable or unparsable sidecar becomes a
-/// row in [`DeviceState::Unreadable`], not an error.
+/// Read-only. An unreadable sidecar becomes `DeviceState::Unreadable`, not an error.
 #[tracing::instrument(skip(storage), fields(root = %root.display()))]
 pub async fn scan_device(storage: &Storage, root: &Path) -> Result<DeviceScan> {
-    // One token for the whole scan, stamped onto every cache row it touches.
-    // Nanoseconds, and compared for equality rather than order — see
-    // `Storage::forget_sidecars_under`.
+    // Nanoseconds, compared for equality rather than order.
     let seen_at = nanos(std::time::SystemTime::now());
     let mut scan = DeviceScan {
         root: root.to_path_buf(),
@@ -333,9 +231,7 @@ pub async fn scan_device(storage: &Storage, root: &Path) -> Result<DeviceScan> {
     }
     (scan.parsed, scan.cached) = counts;
 
-    // A sidecar deleted from the device leaves a cache row that will never be
-    // seen again. Scoped to this root, so unplugging one device does not forget
-    // another.
+    // Scoped to this root so unplugging one device does not forget another's cache rows.
     let forgotten = storage
         .forget_sidecars_under(&root.to_string_lossy(), seen_at)
         .await?;
@@ -350,7 +246,6 @@ pub async fn scan_device(storage: &Storage, root: &Path) -> Result<DeviceScan> {
     Ok(scan)
 }
 
-/// The state of one sidecar. `counts` is `(parsed, cached)`.
 async fn scan_one(
     storage: &Storage,
     path: &Path,
@@ -362,7 +257,6 @@ async fn scan_one(
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            // Cannot even `stat` it, so there is nothing to key a cache row on.
             let err = EngineError::from(e);
             return Ok(unreadable(
                 path,
@@ -373,8 +267,6 @@ async fn scan_one(
     let size = meta.len() as i64;
     let mtime = mtime_nanos(&meta);
 
-    // `stat` first. A row whose size and mtime still agree with the file is
-    // what the file says, so the parse is skipped entirely.
     let fresh = storage
         .sidecar_facts(&key)
         .await?
@@ -384,7 +276,6 @@ async fn scan_one(
     let facts = match fresh {
         Some(f) => {
             counts.1 += 1;
-            // Seen this scan, so the prune must not take it.
             storage.touch_sidecar_seen(&key, seen_at).await?;
             f
         }
@@ -392,10 +283,7 @@ async fn scan_one(
             counts.0 += 1;
             let sc = match read_sidecar(path) {
                 Ok(sc) => sc,
-                // A file that does not parse has nothing to cache — every
-                // column of `sidecar_seen` is something the file *said*. It is
-                // re-read on every scan, which is the right price for the one
-                // or two of these a real device has.
+                // An unparsable file has nothing to cache; it is re-read on every scan.
                 Err(diag) => return Ok(unreadable(path, diag)),
             };
             let f = facts_of(&sc, size, mtime);
@@ -405,11 +293,8 @@ async fn scan_one(
         }
     };
 
-    // The matcher reads only `partial_md5`, `title` and `authors`, all three of
-    // which `sidecar_seen` keeps verbatim, so a cache hit reaches exactly the
-    // verdict a fresh parse would. `authors` joined that list when the matcher
-    // gained its veto: cached but unread it would have been fine, read but
-    // uncached it would have made a cache hit and a fresh parse disagree.
+    // The matcher reads only `partial_md5`, `title` and `authors`, which the cache keeps verbatim,
+    // so a hit and a fresh parse reach the same verdict.
     let probe = KoSidecar {
         title: facts.title.clone(),
         authors: facts.authors.clone(),
@@ -437,8 +322,6 @@ async fn scan_one(
         return Ok(book);
     };
     let Some(book_id) = matched.id else {
-        // Storage always assigns an id; treat the impossible as unmatched
-        // rather than panicking mid-scan.
         tracing::error!(title = %matched.display_title(), "matched book has no id");
         book.state = DeviceState::New {
             candidates: Vec::new(),
@@ -451,22 +334,14 @@ async fn scan_one(
         book.title = Some(matched.display_title().to_string());
     }
 
-    // The cheap half. A file we did not re-read, whose annotations the library
-    // already holds exactly, has nothing to bring across — and saying so costs
-    // one query rather than an mlua evaluation.
-    //
-    // A row *count* was the first cut here, and it is wrong: a note rewritten
-    // on the device leaves the count identical, so the edit was reported by the
-    // one scan that happened to re-read the file and by no scan after it — the
-    // cache then said "unchanged" forever about a change it had already seen.
-    // The digest covers the device-owned payload, so it cannot miss that.
+    // A row count would miss a note rewritten on the device; the digest covers the device-owned
+    // payload.
     if highlights.is_none() && storage.device_highlight_digest(book_id).await? == facts.entry_digest
     {
         book.state = DeviceState::Unchanged;
         return Ok(book);
     }
 
-    // Otherwise the numbers have to be real, and only the file has them.
     let highlights = match highlights {
         Some(h) => h,
         None => {
@@ -498,8 +373,6 @@ async fn scan_one(
     Ok(book)
 }
 
-/// A row for a file we could not read. Everything but the path is unknown, by
-/// definition — that is what makes it unreadable.
 fn unreadable(path: &Path, diagnostic: Diagnostic) -> DeviceBook {
     DeviceBook {
         path: path.to_path_buf(),
@@ -514,7 +387,6 @@ fn unreadable(path: &Path, diagnostic: Diagnostic) -> DeviceBook {
     }
 }
 
-/// Read and parse, turning either failure into the existing diagnostic for it.
 fn read_sidecar(path: &Path) -> std::result::Result<KoSidecar, Diagnostic> {
     let src = std::fs::read_to_string(path).map_err(|e| {
         let err = EngineError::from(e);
@@ -527,8 +399,8 @@ fn read_sidecar(path: &Path) -> std::result::Result<KoSidecar, Diagnostic> {
     })
 }
 
-/// The part of a parse a scan needs later. Highlight text is not in it — it is
-/// the user's private reading, and `highlights` is where it already lives.
+/// Highlight text is deliberately not kept: it is private reading and already lives in
+/// `highlights`.
 fn facts_of(sc: &KoSidecar, size: i64, mtime: i64) -> SidecarFacts {
     SidecarFacts {
         size,
@@ -536,9 +408,8 @@ fn facts_of(sc: &KoSidecar, size: i64, mtime: i64) -> SidecarFacts {
         partial_md5: sc.partial_md5.clone(),
         entry_count: sc.highlights.len() as i64,
         entry_digest: digest_of(&sc.highlights),
-        // `doc_props.title` exactly, not a prettier fallback: this value is fed
-        // back to the matcher, which must reach the same verdict from a cache
-        // hit as from a fresh parse.
+        // Must equal `doc_props.title` exactly: the matcher must reach the same verdict from cache or
+        // parse.
         title: sc.title.clone(),
         authors: sc.authors.clone(),
         ko_percent: sc.percent_finished,
@@ -550,10 +421,8 @@ fn facts_of(sc: &KoSidecar, size: i64, mtime: i64) -> SidecarFacts {
     }
 }
 
-/// The file's side of the scan's comparison. The library's side is
-/// `Storage::device_highlight_digest`, and both go through `DeviceDigest` —
-/// one formula, or the two would drift and the scan would quietly stop
-/// noticing device edits.
+/// Must share `DeviceDigest` with `Storage::device_highlight_digest`, or the scan stops noticing
+/// device edits.
 fn digest_of(highlights: &[NewHighlight]) -> String {
     let mut digest = DeviceDigest::new();
     for h in highlights {
@@ -566,9 +435,7 @@ fn mtime_nanos(meta: &std::fs::Metadata) -> i64 {
     meta.modified().ok().map(nanos).unwrap_or(0)
 }
 
-/// Nanoseconds since the epoch. A pre-1970 stamp — which a device with a dead
-/// clock does produce — collapses to 0 rather than failing the scan; the worst
-/// it costs is a re-parse.
+/// A pre-1970 stamp (dead device clock) collapses to 0; the cost is a re-parse.
 fn nanos(t: std::time::SystemTime) -> i64 {
     t.duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -576,24 +443,13 @@ fn nanos(t: std::time::SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
-// ---- the sync ---------------------------------------------------------------
-
-/// Pull a chosen selection of the device in: one [`PullReport`] per book.
-///
-/// A directory expands to every sidecar under it, so a report is always about
-/// exactly one book — a caller showing per-book progress needs that, and it is
-/// what lets the TUI drain the queue one book per redraw.
-///
-/// A sidecar that fails to read or parse is an **error** here, unlike in a
-/// scan. A scan is a view and degrades; a sync is something the user asked for
-/// by name, and a silent success with no book is worse than a refusal.
+/// A directory expands to every sidecar under it, so each report covers one book.
+/// Unlike a scan, an unreadable sidecar is an error here.
 #[tracing::instrument(skip_all, fields(paths = paths.len()))]
 pub async fn sync_device(storage: &Storage, paths: &[PathBuf]) -> Result<Vec<PullReport>> {
     sync_device_for(storage, paths, None).await
 }
 
-/// [`sync_device`] for a caller that knows which paired reader the paths are
-/// on (`Engine::sync_mount` does, from the mount's `pairing.lua`).
 pub async fn sync_device_for(
     storage: &Storage,
     paths: &[PathBuf],
@@ -613,10 +469,8 @@ async fn sync_one(
     sidecar: &Path,
     device_id: Option<&str>,
 ) -> Result<PullReport> {
-    // Import first: it is the path that matches an existing book and records
-    // the link. Creating from the sidecar unconditionally would take the
-    // ISBN-less insert branch and put a second copy of an already-linked book
-    // on the shelf.
+    // Import first: it matches an existing book; creating directly would duplicate an already-linked
+    // book.
     let mut report = koreader::import_for_device(storage, sidecar, false, device_id).await?;
     if let Some(stats) = report.imported.pop() {
         return Ok(PullReport {
@@ -625,9 +479,6 @@ async fn sync_one(
         });
     }
 
-    // Unmatched. Syncing a row the scan showed as `New` *is* the decision to
-    // create it — the candidate band was already offered, on the screen this
-    // selection came from.
     let mut pulled =
         koreader::import_book_from_sidecar_for_device(storage, sidecar, device_id).await?;
     let mut warnings = report.warnings;
@@ -636,18 +487,8 @@ async fn sync_one(
     Ok(pulled)
 }
 
-/// Build a plausible KOReader install under `root`.
-///
-/// One definition of "this is really a reader", because that is the whole point
-/// of [`is_koreader_mount`]: it gates the read path and the write path alike,
-/// and two fixture builders would be two opinions about what it gates on.
-/// `plugin.rs`'s unit tests and `crates/engine/tests/` both build their mounts
-/// with it.
-///
-/// **Test-only**, behind the same `internals` feature that carries
-/// `Engine::storage` and `pdf::synthetic_pdf`, for that function's own reason —
-/// a fixture builder is what the feature is for, and a plain
-/// `cargo check --workspace` is what keeps it out of a shipped build.
+/// One definition of a plausible reader, shared by every fixture, since `is_koreader_mount` gates
+/// reads and writes.
 #[cfg(any(test, feature = "internals"))]
 pub fn install_fake_reader(root: &Path) {
     let dir = root.join("koreader");
@@ -675,21 +516,17 @@ pub(crate) mod tests {
         }
     }
 
-    /// The predicate that will gate writing to a volume. An ordinary directory
-    /// is not a device, and neither is a folder that merely shares the name.
     #[test]
     fn an_ordinary_directory_and_a_look_alike_are_both_refused() {
         let plain = tempfile::tempdir().unwrap();
         assert!(!is_koreader_mount(plain.path()));
         assert_eq!(koreader_dir(plain.path()), None);
 
-        // Someone's own folder called "koreader" — the look-alike.
         let fake = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(fake.path().join("koreader")).unwrap();
         std::fs::write(fake.path().join("koreader/notes.txt"), "mine").unwrap();
         assert!(!is_koreader_mount(fake.path()));
 
-        // Two of the three markers is still not an install.
         let partial = tempfile::tempdir().unwrap();
         let dir = partial.path().join("koreader");
         std::fs::create_dir_all(dir.join("frontend")).unwrap();
@@ -699,7 +536,6 @@ pub(crate) mod tests {
             "plugins/ is missing, and that is where we would write"
         );
 
-        // `reader.lua` as a *directory* must not satisfy the file marker.
         let typed = tempfile::tempdir().unwrap();
         let dir = typed.path().join("koreader");
         std::fs::create_dir_all(dir.join("frontend")).unwrap();
@@ -708,9 +544,6 @@ pub(crate) mod tests {
         assert!(!is_koreader_mount(typed.path()));
     }
 
-    /// `candidate_mounts` reads real system paths, so what it returns here
-    /// depends on the machine. What must hold on any machine is that every
-    /// entry it *does* return passes the predicate.
     #[test]
     fn every_offered_mount_is_one_we_would_accept() {
         for m in candidate_mounts() {

@@ -1,5 +1,4 @@
-//! The bounded zip layer. Entries are looked up and decompressed into memory
-//! under [`Limits`]; nothing is ever written to disk.
+//! The bounded zip layer: entries decompress into memory under [`Limits`], never to disk.
 
 use std::borrow::Cow;
 use std::io::{Read, Seek};
@@ -12,8 +11,7 @@ use crate::{Limits, path};
 pub(crate) struct Archive<R> {
     zip: ZipArchive<R>,
     limits: Limits,
-    /// Decompressed bytes read through this handle so far, failed reads
-    /// included.
+    /// Decompressed bytes read through this handle so far, failed reads included.
     consumed: u64,
 }
 
@@ -37,9 +35,9 @@ impl<R: Read + Seek> Archive<R> {
         &self.limits
     }
 
-    /// The entry index a name refers to: the name exactly, then
-    /// percent-decoded (the `epub` 2.x crate's order), then — new — with its
-    /// `.`/`..` segments folded, so `OEBPS/../cover.jpg` finds `cover.jpg`.
+    /// The entry index a name refers to: the name exactly, then percent-decoded (the `epub` 2.x
+    /// crate's order), then — new — with its `.`/`..` segments folded, so `OEBPS/../cover.jpg`
+    /// finds `cover.jpg`.
     pub(crate) fn locate(&self, name: &str) -> Option<usize> {
         if let Some(i) = self.zip.index_for_name(name) {
             return Some(i);
@@ -61,18 +59,15 @@ impl<R: Read + Seek> Archive<R> {
         self.locate(name).is_some()
     }
 
-    /// Every entry name, in central-directory order. Names the zip cannot
-    /// decode are skipped.
+    /// Every entry name, in central-directory order.
     pub(crate) fn names(&self) -> impl Iterator<Item = String> + '_ {
         self.zip
             .file_names()
             .filter_map(|n| n.ok().map(|n| n.into_owned()))
     }
 
-    /// The decompressed bytes of an entry, bounded by the single-entry cap
-    /// and by what is left of the whole-package budget. The bound is enforced
-    /// on the bytes actually produced; the archive's declared size is only a
-    /// fast way to refuse early.
+    /// Bounded by the single-entry cap and the remaining package budget, enforced on the bytes
+    /// actually produced; the declared size only refuses early.
     pub(crate) fn read(&mut self, name: &str) -> Result<Vec<u8>, Error> {
         let index = self.locate(name).ok_or_else(|| Error::MissingEntry {
             path: name.to_string(),
@@ -97,8 +92,8 @@ impl<R: Read + Seek> Archive<R> {
         self.consumed = self.consumed.saturating_add(buf.len() as u64);
         read.map_err(
             |e| match e.get_ref().map(|r| r.is::<zip::result::ZipError>()) {
-                // zip reports a corrupt stream or a bad checksum as an i/o error
-                // wrapping its own; it is still the archive's fault, not the disk's.
+                // zip reports a corrupt stream or bad checksum as an i/o error wrapping its own; that is the
+                // archive's fault, not the disk's.
                 Some(true) => Error::Zip(Box::new(e)),
                 _ => Error::Io(e),
             },

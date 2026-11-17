@@ -1,7 +1,4 @@
-//! Copies (migration `0027`): the in-library rule, `touched`, the
-//! places, merging, and the library scope on the book list.
-//!
-//! Offline, `sqlite::memory:`.
+//! Copies: the in-library rule, `touched`, places, merging and the library scope on the book list.
 
 mod common;
 use bookmole::{
@@ -79,13 +76,10 @@ const ALL_TOUCHES: [Touch; 5] = [
     Touch::Flashcard,
 ];
 
-/// The in-library rule, every cell: have_now true / false / NULL against touched / not.
-/// Also: no copy at all is never in the library, touched or not.
 #[tokio::test]
 async fn the_in_library_truth_table() {
     let (_tmp, engine) = engine().await;
     let cases = [
-        // (have_now, touched, in_library)
         (Some(true), false, true),
         (Some(true), true, true),
         (None, false, true),
@@ -107,14 +101,12 @@ async fn the_in_library_truth_table() {
         );
     }
 
-    // No copy: not in the library, whatever you did with it.
     let bare = seed_book(&engine, "Bare").await;
     assert!(!engine.in_library(bare).await.unwrap());
     touch(&engine, bare, Touch::Note).await;
     assert!(!engine.in_library(bare).await.unwrap());
 }
 
-/// One copy still held keeps the book in even when another was given up.
 #[tokio::test]
 async fn one_live_copy_is_enough_and_two_print_copies_are_two() {
     let (_tmp, engine) = engine().await;
@@ -138,8 +130,6 @@ async fn one_live_copy_is_enough_and_two_print_copies_are_two() {
     assert!(!engine.in_library(b).await.unwrap());
 }
 
-/// Each source of "touched" counts by itself; being on a shelf or having a
-/// copy does not.
 #[tokio::test]
 async fn touched_per_source() {
     let (_tmp, engine) = engine().await;
@@ -153,9 +143,6 @@ async fn touched_per_source() {
     }
 }
 
-/// Edge cases that are pure data rules: the engine never flips `have_now`
-/// (a past due date, a missing place), a lent-out copy is still held, and an
-/// expired loan is still a loan until the user says otherwise.
 #[tokio::test]
 async fn the_engine_never_ends_a_copy_by_itself() {
     let (_tmp, engine) = engine().await;
@@ -163,8 +150,8 @@ async fn the_engine_never_ends_a_copy_by_itself() {
     let mut new = NewCopy::new(b, Some(CopyForm::App), Tenure::Borrowed, LearnedFrom::User);
     new.app = Some("Libby".into());
     new.have_now = Some(true);
-    new.due_at = Some(1); // long past
-    new.lent_to = Some("  ".into()); // empty text is NULL
+    new.due_at = Some(1);
+    new.lent_to = Some("  ".into());
     let c = engine.add_copy(&new).await.unwrap();
     assert_eq!(c.lent_to, None);
     engine
@@ -180,7 +167,6 @@ async fn the_engine_never_ends_a_copy_by_itself() {
     assert_eq!(c.places[0].missing_since, Some(5));
     assert!(engine.in_library(b).await.unwrap());
 
-    // Lent out: still own, still held.
     let o = seed_book(&engine, "Lent").await;
     let mut lent = NewCopy::new(o, Some(CopyForm::Print), Tenure::Own, LearnedFrom::User);
     lent.have_now = Some(true);
@@ -230,7 +216,6 @@ async fn places_refresh_go_missing_and_come_back() {
         PlaceAttach::Present
     );
 
-    // Same place, new bytes: the same copy with a new hash.
     assert!(
         engine
             .refresh_place(PlaceKind::Path, "/Users/me/a.pdf", Some("bbb"), Some(200))
@@ -247,7 +232,6 @@ async fn places_refresh_go_missing_and_come_back() {
     assert_eq!(found.places[0].last_mtime, Some(200));
     assert!(found.places[0].last_seen_at.is_some());
 
-    // Missing keeps the earliest instant; un-miss clears it.
     assert!(
         engine
             .mark_place_missing(PlaceKind::Path, "/Users/me/a.pdf", 10)
@@ -287,8 +271,6 @@ async fn places_refresh_go_missing_and_come_back() {
     );
 }
 
-/// A place held by another copy of the same book is the same copy: merged.
-/// Held by a copy of another book: refused, nothing moves.
 #[tokio::test]
 async fn a_shared_place_merges_copies_of_one_book_only() {
     let (_tmp, engine) = engine().await;
@@ -335,7 +317,6 @@ async fn a_shared_place_merges_copies_of_one_book_only() {
     assert!(engine.merge_copies(keep.id, theirs.id).await.is_err());
 }
 
-/// `merge_books` repoints copies, and places travel with them.
 #[tokio::test]
 async fn merging_books_carries_their_copies() {
     let (_tmp, engine) = engine().await;
@@ -358,8 +339,6 @@ async fn merging_books_carries_their_copies() {
     assert!(engine.in_library(dst).await.unwrap());
 }
 
-/// `LibraryScope` partitions the list and the count agrees with the page; the
-/// default is `All`.
 #[tokio::test]
 async fn the_library_scope_filters_the_list() {
     let (_tmp, engine) = engine().await;
@@ -421,9 +400,6 @@ async fn the_library_scope_filters_the_list() {
     }
 }
 
-/// The CLI and TUI have no "how do you have it" step: a book they **create**
-/// keeps its place on the shelf through an `unrecorded` copy; saving an
-/// existing book again adds nothing.
 #[tokio::test]
 async fn a_frontend_save_that_creates_a_book_records_an_unrecorded_copy() {
     let (_tmp, engine) = engine().await;
@@ -441,13 +417,10 @@ async fn a_frontend_save_that_creates_a_book_records_an_unrecorded_copy() {
     assert_eq!(copies[0].have_now, None);
     assert!(engine.book_standing(id).await.unwrap().in_library);
 
-    // The user answers the question later; saving again must not undo that.
     engine.delete_copy(copies[0].id).await.unwrap();
     engine.save_book_unrecorded(&book).await.unwrap();
     assert!(engine.copies_for_book(id).await.unwrap().is_empty());
 }
-
-// ---- derived facts: format, keep-here, the reader's name -------------------
 
 #[tokio::test]
 async fn copy_facts_say_format_keepability_and_the_readers_name() {
@@ -457,11 +430,9 @@ async fn copy_facts_say_format_keepability_and_the_readers_name() {
     let book = seed_book(&engine, "Facts").await;
     let copy = copy_of(&engine, book, Some(true), Tenure::Own).await;
 
-    // No place: nothing is known, nothing can be kept.
     let facts = engine.copy_facts(&copy).await.unwrap();
     assert_eq!((facts.format, facts.can_keep_here), (None, false));
 
-    // A file on this computer.
     let file = tmp.path().join("Facts.EPUB");
     std::fs::write(&file, b"not really an epub").unwrap();
     let path = file.display().to_string();
@@ -474,7 +445,6 @@ async fn copy_facts_say_format_keepability_and_the_readers_name() {
     assert_eq!(facts.format.as_deref(), Some("epub"));
     assert!(facts.can_keep_here);
 
-    // A missing file cannot be kept.
     engine
         .mark_place_missing(PlaceKind::Path, &path, 5)
         .await
@@ -483,14 +453,12 @@ async fn copy_facts_say_format_keepability_and_the_readers_name() {
     assert!(!engine.copy_facts(&missing).await.unwrap().can_keep_here);
     engine.unmiss_place(PlaceKind::Path, &path).await.unwrap();
 
-    // Kept: a store place exists, so there is nothing left to do.
     engine.keep_copy_here(copy.id).await.unwrap();
     let kept = engine.get_copy(copy.id).await.unwrap().unwrap();
     let facts = engine.copy_facts(&kept).await.unwrap();
     assert!(!facts.can_keep_here);
     assert_eq!(facts.format.as_deref(), Some("epub"));
 
-    // A reader place names the paired device by its id in `detail`.
     engine
         .storage()
         .record_pairing("dev-1", Some("Kobo Libra"), "tok", 1, None, 0)
@@ -509,7 +477,6 @@ async fn copy_facts_say_format_keepability_and_the_readers_name() {
         vec![("md5-x".to_string(), "Kobo Libra".to_string())]
     );
 
-    // And a highlight made in that copy reports it.
     let h = highlight("a line", "2026-01-01 10:00:00");
     engine.storage().insert_highlight(book, &h).await.unwrap();
     engine
@@ -536,12 +503,6 @@ async fn keeping_a_copy_with_no_file_is_invalid_input() {
     ));
 }
 
-// ---- the book page's Copies place: files, highlight sources, find the file ----
-
-/// One row per file of a file-bearing place: a `path` file on disk with its
-/// size, the same path once it is gone (`on_disk` false, never guessed from
-/// `missing_since`), a stored file, and a calibre place with and without
-/// recorded paths. Reader places give no row; an unknown book is `NotFound`.
 #[tokio::test]
 async fn copy_files_are_where_they_are_now() {
     use bookmole::PlaceFile;
@@ -574,7 +535,6 @@ async fn copy_files_are_where_they_are_now() {
     assert_eq!(r.calibre_library, None);
     assert!(r.last_seen_at.is_some());
 
-    // Kept here: a store row, with the stored size.
     engine.keep_copy_here(copy.id).await.unwrap();
     let rows = engine.copy_files(book).await.unwrap();
     let store = rows.iter().find(|r| r.kind == PlaceKind::Store).unwrap();
@@ -582,7 +542,6 @@ async fn copy_files_are_where_they_are_now() {
     assert_eq!(store.format.as_deref(), Some("epub"));
     assert!(store.path.as_ref().unwrap().starts_with(tmp.path()));
 
-    // Moved away: no scan marked it, the look says so.
     std::fs::remove_file(&file).unwrap();
     let rows = engine.copy_files(book).await.unwrap();
     let gone = rows.iter().find(|r| r.kind == PlaceKind::Path).unwrap();
@@ -591,7 +550,6 @@ async fn copy_files_are_where_they_are_now() {
         (Some(false), None, None)
     );
 
-    // A calibre copy: recorded paths are rows; none recorded is one bare row.
     let cal = copy_of(&engine, book, None, Tenure::Own).await;
     let mut place = NewPlace::new(PlaceKind::Calibre, "uuid-1");
     place.detail = Some("/Books/Calibre\tepub,azw3".into());
@@ -645,7 +603,6 @@ async fn copy_files_are_where_they_are_now() {
     assert_eq!(cal_rows[1].format.as_deref(), Some("epub"), "lowercased");
     assert_eq!((cal_rows[1].on_disk, cal_rows[1].size), (Some(false), None));
     assert!(cal_rows.iter().all(|r| r.copy_id == cal.id));
-    // Copy order, then place order.
     let order: Vec<i64> = rows.iter().map(|r| r.copy_id).collect();
     let mut sorted = order.clone();
     sorted.sort();
@@ -657,9 +614,6 @@ async fn copy_files_are_where_they_are_now() {
     ));
 }
 
-/// A place's recorded files follow the place: a copy merge carries them, and
-/// deleting the place (or its copy) takes them with it. A place that does not
-/// exist records nothing.
 #[tokio::test]
 async fn place_files_travel_with_their_place() {
     use bookmole::PlaceFile;
@@ -719,9 +673,6 @@ async fn place_files_travel_with_their_place() {
     );
 }
 
-/// One row per `(copy, origin)`, no counts: a KOReader copy names its reader
-/// and when the reader was last seen, a Kindle row has no "last read in", and
-/// a highlight made here has no copy. An unknown book is `NotFound`.
 #[tokio::test]
 async fn highlight_sources_group_by_copy_and_origin() {
     use bookmole::{HighlightOrigin, ImportedHighlight};
@@ -781,9 +732,6 @@ async fn highlight_sources_group_by_copy_and_origin() {
     ));
 }
 
-/// *Find the file…* for a moved epub: the new path is a place of the same
-/// copy, the old one (gone from disk, never marked) is removed, the calibre
-/// place stays, `have_now` is untouched.
 #[tokio::test]
 async fn finding_a_moved_file_repoints_the_copy_and_keeps_calibre() {
     let (tmp, engine) = engine().await;
@@ -828,13 +776,10 @@ async fn finding_a_moved_file_repoints_the_copy_and_keeps_calibre() {
     assert!(place.last_mtime.is_some());
     assert_eq!(engine.copies_for_book(book).await.unwrap().len(), 1);
 
-    // Named again: the same place, refreshed, nothing duplicated.
     let again = engine.relocate_copy_file(copy.id, &new).await.unwrap();
     assert_eq!(again.places.len(), found.places.len());
 }
 
-/// Refusals: an unknown copy, a path that is not there or not a file, and a
-/// file (by place or by bytes) that is another book's copy.
 #[tokio::test]
 async fn finding_the_file_refuses_what_is_not_this_copys() {
     use bookmole::EngineError;
@@ -865,7 +810,6 @@ async fn finding_the_file_refuses_what_is_not_this_copys() {
     let r = engine.relocate_copy_file(copy.id, &file).await;
     assert!(matches!(r, Err(EngineError::InvalidInput(_))), "{r:?}");
 
-    // The same bytes somewhere else are still theirs.
     engine.keep_copy_here(theirs.id).await.unwrap();
     let elsewhere = tmp.path().join("elsewhere.epub");
     std::fs::write(&elsewhere, b"their bytes").unwrap();

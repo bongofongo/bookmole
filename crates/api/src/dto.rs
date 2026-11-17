@@ -1,37 +1,6 @@
-//! The wire types.
-//!
-//! Every one of these is the serializable mirror of a domain type, with a
-//! `From` in the direction the data actually flows. **The domain types stay
-//! free of `serde`, and that is the decision this module exists to keep.**
-//!
-//! Three reasons, and none of them is taste:
-//!
-//! - `Book` carries `OffsetDateTime`, `FileIdentity` and half the reports carry
-//!   `PathBuf`, and `Diagnostic` carries a `Duration`. Deriving `Serialize` on
-//!   those picks a wire encoding for each **by accident** — whatever the
-//!   dependency happens to do this year — and then that accident is the API.
-//! - A `#[derive(Serialize)]` on a domain struct makes every field name a
-//!   public promise. Renaming `ko_percent` would then be a breaking API change
-//!   rather than a refactor.
-//! - The engine would gain `serde` on its hot path for the benefit of a caller
-//!   it cannot see.
-//!
-//! ## Paths and JSON
-//!
-//! A `PathBuf` is bytes on unix and JSON is UTF-8, so a path crosses this seam
-//! as `String` via `to_string_lossy`. **A path that is not valid UTF-8 does not
-//! round-trip** — it comes back with replacement characters and names a
-//! different file. That is a real limit and not a hidden one: there is no
-//! lossless JSON encoding of an arbitrary unix path short of base64, which
-//! would make every path in the protocol unreadable to a human debugging it.
-//! The trade is made deliberately in favour of the ordinary case.
-//!
-//! ## Optional fields
-//!
-//! Everything nullable or repeated carries `#[serde(default)]`, so a payload
-//! written by an older client still deserializes when a field is added. Nothing
-//! carries `skip_serializing_if`: an explicit `null` is a stable shape, and a
-//! field that vanishes when empty is a field every client has to special-case.
+//! Wire types: serializable mirrors of the domain types; the domain types stay free of `serde`.
+//! Paths cross as lossy UTF-8 strings, so a non-UTF-8 path does not round-trip.
+//! Nullable or repeated fields take `#[serde(default)]` and never `skip_serializing_if`.
 
 use std::path::{Path, PathBuf};
 
@@ -58,7 +27,6 @@ use bookmole::{
     TableOfContents, TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
 };
 
-/// A path, as far as JSON can carry one. See the module doc.
 fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
@@ -66,8 +34,6 @@ fn path_str(p: &Path) -> String {
 fn opt_path(p: &Option<PathBuf>) -> Option<String> {
     p.as_deref().map(path_str)
 }
-
-// ---- books ----------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -110,156 +76,53 @@ pub struct BookDto {
     pub description: Option<String>,
     #[serde(default)]
     pub first_sentence: Option<String>,
-    /// What a provider says this book is about (migration `0013`). **Not
-    /// `book_tags`**, which are minted shelves — see `Book::subjects`.
-    ///
-    /// Merges as a set, whole or not at all: `[]` on the way in means "this
-    /// record does not say", never "this book has no subjects", so a client
-    /// cannot clear them by omission and `save_book` has no way to clear them at
-    /// all. That is `Engine::set_book_fields`' rule, not a wire limitation.
+    /// Provider subjects, merged as a set; `[]` means "not stated", never "no subjects".
     #[serde(default)]
     pub subjects: Vec<String>,
-    /// The series, and the place in it. **A pair**: `series_index` is only
-    /// meaningful beside `series`, and sending an index alone writes a number
-    /// under whatever name the row already had. The engine's own merge refuses
-    /// that (`Rule::pair`), but this struct is a record rather than a merge, and
-    /// a rule enforced here would be a rule the in-process caller never meets —
-    /// the same reason `Api::dispatch` decides nothing.
+    /// Series name; `series_index` is meaningful only beside it.
     #[serde(default)]
     pub series: Option<String>,
-    /// Fractional on purpose: novellas are 0.5.
     #[serde(default)]
     pub series_index: Option<f64>,
-    /// The **shelf tier** of the cover: a downscaled sibling written when the
-    /// stored jacket is bigger than a grid cell can use, else the jacket
-    /// itself, else absent.
-    ///
-    /// **Derived, read-only, and the field a grid should load.** Providers are
-    /// now asked for the largest cover they publish, which is right for a hero
-    /// shot and wrong for sixty tiles; this is the one place "thumb, else the
-    /// original" is decided, because a frontend reading `cover_thumb_path`
-    /// directly shows nothing for every cover small enough not to have one.
-    /// `cover_path` stays exactly what it was — a **whole path** — and is still
-    /// the field a detail view wants.
+    /// Cover a grid should load: the thumbnail if one exists, else the original, else absent.
+    /// Read-only.
     #[serde(default)]
     pub cover_shelf_path: Option<String>,
-    /// Width over height of the stored cover — the box a tile reserves before
-    /// the image loads.
-    ///
-    /// **Derived, read-only.** `None` means the cover has not been measured
-    /// (a library predating migration `0014`, until
-    /// `Engine::measure_stored_covers` runs), never that there is no cover; a
-    /// frontend meeting `None` falls back to whatever it did before — a fixed
-    /// box, say, or (as the TUI does) decoding the file.
+    /// Cover width over height; `None` means not yet measured, not that there is no cover. Read-only.
     #[serde(default)]
     pub cover_aspect: Option<f64>,
-    /// The cover's border colour, which is what a spine or a placeholder gets
-    /// when there is no spine art — and there never is, since providers ship
-    /// front covers only.
-    ///
-    /// **Derived, read-only, and a value rather than a name.** Channels, not a
-    /// hex string: `#a02020` is CSS's spelling and a terminal wants floats, so
-    /// the wire carries the measurement and each frontend writes it its own
-    /// way. Unclamped — the TUI's legibility band is its own policy.
+    /// The cover's border colour as channels. Unclamped. Read-only.
     #[serde(default)]
     pub cover_accent: Option<AccentDto>,
-    /// Read-only projections of the **current** reading. Sending them back in a
-    /// `save_book` changes nothing: `upsert_book` has ignored them since
-    /// migration `0005`, and `update_progress` is the writer.
+    /// Read-only projections of the current reading; ignored by `save_book`.
     #[serde(default)]
     pub current_page: Option<i64>,
     #[serde(default)]
     pub finished: bool,
-    /// The current reading's state, or absent when the book has no reading at
-    /// all — which is the commonest state in a real library and the one
-    /// `finished: false` cannot be told apart from *abandoned*.
-    ///
-    /// **Typed, though it once crossed as a bare `String`.** It is stored as
-    /// one and always will be (an importer can write a status this
-    /// build does not know, and a parse that refused one would turn a foreign
-    /// device's vocabulary into an error on the read path) — but a *wire* that
-    /// hands a frontend a bare string hands every frontend the same `switch`
-    /// with the same three magic words in it, and the one that misspells
-    /// `abandoned` styles a put-down book as an active read. `Other { raw }`
-    /// carries the unknown value whole, so nothing is lost. See
-    /// [`bookmole::ReadingState`], and note there is deliberately **no
-    /// variant for "no reading"** — that is this field's `None`.
+    /// The current reading's state; absent when the book has no reading. Read-only.
     #[serde(default)]
     pub reading_state: Option<ReadingStateDto>,
     #[serde(default)]
     pub date_started: Option<i64>,
     #[serde(default)]
     pub date_finished: Option<i64>,
-    /// How far into the current reading this is.
-    ///
-    /// **Derived, read-only, and ignored on the way in.** Here rather than left
-    /// to each frontend because the arithmetic has three hazards that a
-    /// frontend reading `current_page` and `page_count` cannot see: a real book
-    /// with `page_count = 0` (a false denominator, not a length), a real book
-    /// with `page_count = NULL` (absence, not zero), and the device's own
-    /// `ko_percent`, which is the better answer for a book whose length we do
-    /// not know and which no `BookDto` field exposes. See
-    /// [`bookmole::Progress`].
+    /// Progress through the current reading. Read-only and ignored on the way in.
     #[serde(default)]
     pub progress: ProgressDto,
-    /// The series and its place in it, written the way a person writes it:
-    /// `Dune #2`, never `Dune #2.0`.
-    ///
-    /// **Derived, read-only.** `series_index` is a `REAL`, so a frontend
-    /// formatting the pair itself will eventually print `#2.5` one way and
-    /// `#2.50` another — `bookmole::Book::series_label` exists precisely so
-    /// two frontends cannot disagree. Without it on this struct, a JavaScript
-    /// client reconstructing the pair would agree only because JS happens to
-    /// print whole floats without a decimal point — agreement by coincidence.
+    /// The series and index as a person writes it (`Dune #2`, never `Dune #2.0`). Read-only.
     #[serde(default)]
     pub series_label: Option<String>,
-    /// The authors, each written the way a person says it — `Jorge Luis
-    /// Borges`, never `Borges, Jorge Luis`.
-    ///
-    /// **Derived, read-only.** `authors` stays exactly as the origin spelled
-    /// it, because that is the record; this is the parse. The **join** between
-    /// names is still phrasing and still the frontend's, which is why this is a
-    /// list and not a sentence.
+    /// Authors as a person says them (`Jorge Luis Borges`). Read-only.
     #[serde(default)]
     pub authors_display: Vec<String>,
-    /// The name this book files under — the first author's surname, as the
-    /// origin cased it: `Le Guin` for `Ursula K. Le Guin`, `Borges` for
-    /// `Borges, Jorge Luis`, `Colette` for `Colette`. Absent for a book with no
-    /// author, which `BookSort::Author` files last.
-    ///
-    /// **Derived, read-only, and the surname half of `books.sort_author`
-    /// rather than the column itself.** The column is a packed, lowercased
-    /// tuple (`'0' SEP last SEP whole`, `SEP = \u{1}`) whose only job is to
-    /// make `ORDER BY` compare like `names::sort_key`; `sort.rs` keeps it off
-    /// the wire so no frontend can print a string full of `\u{1}`, and that
-    /// still holds. This is the same parse, off the same author, through the
-    /// same [`bookmole::names::last_name`] — so a run heading cut on its
-    /// first letter cuts exactly where the engine's Author order turns over,
-    /// and no frontend re-derives a surname above the seam to get there.
-    ///
-    /// `optional = nullable` in TypeScript because the field is additive to a
-    /// struct that clients build as literals; a payload without it is a book
-    /// with no filing name yet, not an error.
+    /// Surname the book files under, as the origin cased it; absent for authorless books. Read-only.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub sort_author: Option<String>,
-    /// What shape this edition is, in multiples of its own height
-    /// ([`bookmole::EditionShape`]).
-    ///
-    /// **Derived, read-only.** A shelf needs it *per row*, and a frontend that
-    /// links this crate and not the engine would otherwise have to re-derive
-    /// the arithmetic in its own language to draw three hundred spines — where
-    /// it would eventually disagree with the TUI's Unicode book about how fat
-    /// *Infinite Jest* is, with nothing on either screen looking wrong. One
-    /// derivation, in the engine, is the only way to prevent that.
-    ///
-    /// Never `None`: a book always has *a* shape, and
-    /// [`EditionShapeDto::width_source`]/`thickness_source` say which of its two
-    /// numbers were assumed.
+    /// Edition shape in multiples of its own height. Read-only.
     #[serde(default)]
     pub shape: EditionShapeDto,
-    /// Unix seconds. `OffsetDateTime`'s own serde format is a dependency's
-    /// choice; an integer is ours.
+    /// Unix seconds.
     #[serde(default)]
     pub created_at: Option<i64>,
     #[serde(default)]
@@ -268,15 +131,10 @@ pub struct BookDto {
 
 impl From<Book> for BookDto {
     fn from(b: Book) -> Self {
-        // Derived first, because the literal below moves the fields they read.
-        // Every one of these is a value the engine decided; none of them is a
-        // word a user sees.
         let reading_state = b.reading_state().map(ReadingStateDto::from);
         let progress = ProgressDto::from(Progress::of_book(&b));
         let series_label = b.series_label();
         let authors_display = b.authors_in_display_order();
-        // `names::sort_key`'s own choice of author — the first non-blank one —
-        // so the name here is the one the stored key was derived from.
         let sort_author = b
             .authors
             .iter()
@@ -286,8 +144,6 @@ impl From<Book> for BookDto {
         let cover_shelf_path = b.shelf_cover_path().map(str::to_string);
         let cover_aspect = b.cover_aspect();
         let cover_accent = b.cover_accent_rgb().map(AccentDto::from);
-        // The cover's stored dimensions are what make this a division of two
-        // columns rather than three hundred image decodes.
         let shape =
             EditionShapeDto::from(EditionShape::of_book(&b, cover_aspect.map(|a| a as f32)));
         BookDto {
@@ -331,26 +187,7 @@ impl From<Book> for BookDto {
 }
 
 impl From<BookDto> for Book {
-    /// The way back, for `save_book`.
-    ///
-    /// `created_at`/`last_modified` are **dropped, not parsed back**: they are
-    /// the storage layer's to stamp, and a client that could set them could
-    /// backdate a row by mistake. The reading projections are carried
-    /// through because the struct has the fields, and are ignored downstream by
-    /// `upsert_book` — which is where that rule already lives, and where it
-    /// should stay rather than being re-implemented here.
-    ///
-    /// The **derived** fields — `progress`, `series_label`, `authors_display`,
-    /// `sort_author`, `shape`, and the three cover measurements — are dropped
-    /// outright. They are readings of other columns and there is nothing to write them to; a client
-    /// that sends a `series_label` of "Dune #2" and a `series_index` of 3 has
-    /// not asked for anything, and taking the label would be inventing a second
-    /// writer for a pair that already has one. The cover measurements are
-    /// stronger than that: `Storage::set_cover` is their only writer *by
-    /// design*, since a width arriving without the file it measures is a row
-    /// describing an image it is not pointing at. `ko_percent` is dropped for
-    /// the same reason it is not on this struct: it is device-owned and
-    /// `update_progress` is its writer.
+    /// `created_at` and `last_modified` are dropped: storage stamps them. Derived fields are ignored.
     fn from(d: BookDto) -> Self {
         Book {
             id: d.id,
@@ -380,10 +217,8 @@ impl From<BookDto> for Book {
             subjects: d.subjects,
             series: d.series,
             series_index: d.series_index,
-            // Not on this struct at all, and that is the point: the wire carries
-            // the three *readings* above and no way to write the columns behind
-            // them. `Storage::set_cover` writes all four beside the file it
-            // measured, or none of them.
+            // Cover dimensions are not on the wire: `Storage::set_cover` writes them with the file or not
+            // at all.
             cover_width: None,
             cover_height: None,
             cover_accent: None,
@@ -394,17 +229,6 @@ impl From<BookDto> for Book {
     }
 }
 
-/// A colour as its three channels, 0–255.
-///
-/// The wire shape of a cover's border accent. **Channels rather than a hex
-/// string**: `#a02020` is CSS's spelling and the TUI wants floats in 0..1, so a
-/// hex string would be one frontend's dialect crossing the seam and the other
-/// one parsing it back out. This is the measurement; the spelling stays where
-/// the spelling belongs.
-///
-/// It is not a colour *name* and never will be: the engine hands over facts and
-/// leaves the wording to frontends, and that holds even for a value a user never
-/// reads as words.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -423,9 +247,7 @@ impl From<[u8; 3]> for AccentDto {
     }
 }
 
-/// A reading's state, typed. The mirror of [`bookmole::ReadingState`], and
-/// deliberately the same shape as [`KoStatusDto`] — one is our vocabulary, the
-/// other is the device's, and both have to survive a word neither build knows.
+/// A reading's state; `Other` carries a word this build does not know.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -436,9 +258,6 @@ impl From<[u8; 3]> for AccentDto {
 pub enum ReadingStateDto {
     Reading,
     Finished,
-    /// Put down. Never *failed*, never *did not finish* — the word a frontend
-    /// chooses is its own, but this is the state it must be able to see
-    /// without a stringly comparison.
     Abandoned,
     Other {
         raw: String,
@@ -467,8 +286,6 @@ impl From<ReadingStateDto> for ReadingState {
     }
 }
 
-/// Where a fraction came from. A frontend may say so or not; what it may not do
-/// is compute one and forget which it was.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -477,9 +294,7 @@ impl From<ReadingStateDto> for ReadingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FractionSourceDto {
-    /// `current_page / page_count`, with an honest denominator.
     Pages,
-    /// The device's own percentage, for a book whose length we do not know.
     Device,
 }
 
@@ -492,16 +307,8 @@ impl From<FractionSource> for FractionSourceDto {
     }
 }
 
-/// How far into a book a reading is. The mirror of [`bookmole::Progress`],
-/// and the point of it: the arithmetic crosses the wire as a value so that no
-/// frontend does it.
-///
-/// `percent` is carried beside `fraction` rather than left to
-/// `Math.round(fraction * 100)` on the other side, and it is not redundant: the
-/// page-based percentage is an **integer division**, and `29/100` is
-/// `0.28999999999999998` in binary, so flooring the float gives 28 where the
-/// division gives 29. Two frontends already did it in integers and were right
-/// to; this is how the third gets the same number.
+/// How far into a book a reading is. `percent` is carried because integer division and float
+/// flooring differ.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -510,20 +317,16 @@ impl From<FractionSource> for FractionSourceDto {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "progress", rename_all = "snake_case")]
 pub enum ProgressDto {
-    /// Nothing recorded. **Not zero**, and not *unread* — a book nobody opened
-    /// and a book opened at page one are the same here, and the difference is
-    /// `reading_state`.
+    /// Nothing recorded; not zero and not unread.
     #[default]
     Untouched,
     Started {
         #[serde(default)]
         page: Option<i64>,
-        /// The length. **Never `Some(0)`**: a zero page count is a false
-        /// denominator and is absence by the time it reaches here.
+        /// The length; never `Some(0)`.
         #[serde(default)]
         of: Option<i64>,
-        /// `0.0..=1.0`, or absent — a page with no length has no percentage,
-        /// and a bar must not draw an empty track over one.
+        /// `0.0..=1.0`, or absent when the length is unknown.
         #[serde(default)]
         fraction: Option<f64>,
         #[serde(default)]
@@ -531,8 +334,6 @@ pub enum ProgressDto {
         #[serde(default)]
         source: Option<FractionSourceDto>,
     },
-    /// Closed as read. Carries no page: every frontend that had this case
-    /// dropped the numbers for a word.
     Finished,
 }
 
@@ -564,11 +365,8 @@ pub enum BookSortDto {
     LastModified,
     Title,
     Progress,
-    /// Alphabetically by the first author's last name, authorless books last.
-    /// The one key SQL cannot express, since it is a parse of a human
-    /// name; see [`BookSort::Author`].
+    /// Alphabetically by first author's surname, authorless books last.
     Author,
-    /// Newest first, undated last.
     Year,
 }
 
@@ -584,16 +382,7 @@ impl From<BookSortDto> for BookSort {
     }
 }
 
-/// Which books a list is about, before it is ordered or paged.
-///
-/// Every field absent is *every book*, so a client with no opinion sends
-/// nothing — and `Request::ListBooks` carries this as an `Option`, which is why
-/// the default and the absence are the same answer twice over rather than a
-/// distinction nobody wanted.
-///
-/// The mirror of [`bookmole::BookFilter`]; the predicates and their
-/// case-sensitivity are documented there, because they are properties of the
-/// SQL and not of the wire.
+/// Which books a list is about. Every field absent means every book.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -603,25 +392,17 @@ impl From<BookSortDto> for BookSort {
 pub struct BookFilterDto {
     #[serde(default)]
     pub status: Option<StatusFilterDto>,
-    /// A substring of the title, case-insensitive — the same rule `author`
-    /// states below it, and **not** the full-text index `SearchMarks` uses.
-    ///
-    /// A title search is a predicate here rather than a seventh endpoint
-    /// because every list is already a filter + sort + page over one shared
-    /// `WHERE`, and this joins the five that were already there: it
-    /// composes with `CountBooks`, with the offset paging and with every sort,
-    /// none of which a separate method would get. The engine's `BookFilter`
-    /// carries the argument for `LIKE` over fts5 in full.
+    /// Case-insensitive title substring; not the full-text index.
     #[serde(default)]
     pub title: Option<String>,
-    /// A substring of the stored author list, case-insensitive.
+    /// Case-insensitive substring of the stored author list.
     #[serde(default)]
     pub author: Option<String>,
     #[serde(default)]
     pub year: Option<i64>,
     #[serde(default)]
     pub language: Option<String>,
-    /// A minted shelf name out of `book_tags` — **not** `subjects`.
+    /// A minted shelf name from `book_tags`, not `subjects`.
     #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
@@ -637,29 +418,15 @@ impl From<BookFilterDto> for BookFilter {
             year: f.year,
             language: f.language,
             tag: f.tag,
-            // This conversion serves only `ListBooks` and `CountBooks`, the
-            // library's own listing: books you have (a copy decides membership;
-            // a book known only from a search or an import is not "in" the
-            // library). Search, `GetBook`, history, notes and lists never build
-            // a `BookFilter` from this DTO and keep `All`.
+            // Only the library listing converts this DTO; a book known only from a search is not in the
+            // library.
             library: bookmole::LibraryScope::InLibrary,
             has_cover: f.has_cover,
         }
     }
 }
 
-/// What the current reading's state has to be for a book to be in the answer.
-///
-/// Four reachable cases: the three states this build writes, an importer's own
-/// word through [`ReadingStateDto::Other`], and **absence**.
-///
-/// [`StatusFilterDto::NoReading`] is here rather than as a fifth
-/// `ReadingStateDto` variant, and that placement is deliberate: absence is a
-/// question somebody asked once, not a permanent claim about every book. A
-/// variant is a thing a UI filters on, counts, and eventually puts a badge
-/// beside — the task-completion framing bookmole avoids (nothing counts
-/// what the reader has not done), and which
-/// `no_reading_is_absence_rather_than_a_variant` exists to keep out.
+/// Required state of the current reading. Absence is `NoReading`, not a state.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -668,9 +435,7 @@ impl From<BookFilterDto> for BookFilter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "match", rename_all = "snake_case")]
 pub enum StatusFilterDto {
-    /// The book's current reading is in this state.
     State { is: ReadingStateDto },
-    /// The book has no reading at all.
     NoReading,
 }
 
@@ -683,13 +448,7 @@ impl From<StatusFilterDto> for StatusFilter {
     }
 }
 
-/// One page of the library: which books, in what order, and which slice.
-///
-/// The typed argument to [`crate::Api::list_books`]. `Request::ListBooks`
-/// carries the same four values **flat**, so a payload of `{"limit":20,
-/// "sort":"title"}` still means what it always did and no client had to change
-/// when paging arrived — the offset and the filter are additive, and an omitted one is
-/// the old behaviour exactly.
+/// One page of the library: filter, order and slice. `Request::ListBooks` carries these flat.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -701,13 +460,9 @@ pub struct BookQueryDto {
     pub sort: BookSortDto,
     #[serde(default)]
     pub filter: Option<BookFilterDto>,
-    /// **Negative means no limit.** The whole-library read, and the same reading
-    /// SQLite gives `LIMIT -1`.
+    /// Negative means no limit.
     pub limit: i64,
-    /// Rows to skip. **Pagination here is an offset and not a cursor**: two of
-    /// the five sorts have no cursor key that exists in the database, and they
-    /// are the two whose pages are already expensive. See
-    /// [`Request::ListBooks`](crate::Request::ListBooks) for the rest.
+    /// Rows to skip; offset paging, since two sorts have no cursor key.
     #[serde(default)]
     pub offset: i64,
 }
@@ -723,18 +478,6 @@ impl From<BookQueryDto> for BookQuery {
     }
 }
 
-/// What is behind one book — one call per page of a list instead of four calls
-/// per row.
-///
-/// **Counts, not marks.** A tile saying *3 highlights* and a tile showing a dot
-/// are different products, and this is the more informative one at the same
-/// cost; a frontend that wants the dot reads `> 0`, which
-/// [`bookmole::BookSummary::has`] spells once so twelve components do not
-/// each spell it.
-///
-/// Every number here is **past tense** — highlights taken, notes written, files
-/// owned. Nothing in this struct counts what has not been done, and nothing
-/// derived from it may.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -759,13 +502,7 @@ impl From<BookSummary> for BookSummaryDto {
     }
 }
 
-/// The physical shape of one edition, in multiples of its own height.
-///
-/// **Derived, read-only**, and here because `EditionShape` lives in the engine
-/// while a GUI links this crate and not the engine — so a 3D shelf either gets
-/// this field or re-derives the arithmetic in its own language, where it would
-/// drift from the TUI's. Height is `1.0` and is not
-/// a field; see [`bookmole::EditionShape`] for why millimetres were refused.
+/// Edition shape in multiples of its own height (height is 1.0).
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -779,11 +516,6 @@ pub struct EditionShapeDto {
     pub thickness_source: ShapeSourceDto,
 }
 
-/// Whether one of [`EditionShapeDto`]'s numbers came from anything recorded.
-///
-/// Mirrored as an enum rather than flattened to `width_assumed: bool`, for
-/// `DiagnosticKind`'s reason: the vocabulary is the information, and a boolean
-/// named after one of two states is a coin flip about which way it reads.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -792,9 +524,7 @@ pub struct EditionShapeDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShapeSourceDto {
-    /// Derived from something recorded about this edition.
     Recorded,
-    /// Nobody recorded it, so a trade paperback stood in.
     Assumed,
 }
 
@@ -808,10 +538,7 @@ impl From<ShapeSource> for ShapeSourceDto {
 }
 
 impl Default for EditionShapeDto {
-    /// The trade paperback the engine stands in with when nothing was recorded,
-    /// **through the engine's own function** — a literal here would be a second
-    /// copy of the fallback, and the two would part company the day the curve
-    /// moves.
+    // Goes through the engine's own fallback so the two cannot drift.
     fn default() -> Self {
         EditionShape::new(None, None).into()
     }
@@ -837,10 +564,7 @@ impl From<EditionShape> for EditionShapeDto {
 pub struct BookTagDto {
     pub tag: String,
     pub source: String,
-    /// The origin's own string, before our normalization. Kept because the
-    /// normalization is ours and the shelf name is theirs — and collections are
-    /// deliberately still deferred, so this is the raw material that design will
-    /// eventually be made against.
+    /// The origin's own shelf string, before normalization.
     #[serde(default)]
     pub raw: Option<String>,
 }
@@ -892,8 +616,6 @@ impl From<MergeReport> for MergeReportDto {
     }
 }
 
-// ---- readings and highlights ----------------------------------------------
-
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -905,28 +627,15 @@ pub struct ReadingDto {
     pub book_id: i64,
     #[serde(default)]
     pub started_at: Option<i64>,
-    /// `null` means open, and at most one reading per book may be.
+    /// `null` means open; at most one reading per book may be open.
     #[serde(default)]
     pub finished_at: Option<i64>,
-    /// Typed rather than a bare string — see [`BookDto::reading_state`] for the
-    /// argument.
-    /// The column stays a `String`; the wire does not.
     pub status: ReadingStateDto,
-    /// `manual` | `koreader` | `migrated` | `goodreads` | `calibre`, and
-    /// deliberately still a `String`.
-    ///
-    /// `status` is typed and this stops short of it on purpose. `status` has an
-    /// engine type to mirror, a fixed three-word vocabulary, and frontends
-    /// branching on it. `source` has none of the three: it is the *name of a
-    /// writer*, it grows by one every time an importer is added, and nothing
-    /// branches on it — it is shown. An enum here would be a second list of
-    /// importers to keep in step with the first, which is the shape this repo
-    /// spends `MERGE_RULES` avoiding.
+    /// `manual` | `koreader` | `migrated` | `goodreads` | `calibre`; a `String` because importers
+    /// add values.
     pub source: String,
     #[serde(default)]
     pub current_page: Option<i64>,
-    /// The device's own status, typed — [`KoStatusDto`] already existed and was
-    /// not being used here.
     #[serde(default)]
     pub ko_status: Option<KoStatusDto>,
     #[serde(default)]
@@ -935,25 +644,13 @@ pub struct ReadingDto {
     pub ko_rating: Option<i64>,
     pub created_at: i64,
     pub last_modified: i64,
-    /// **This** reading's progress, not the book's.
-    ///
-    /// `BookDto::progress` is the *current* read's, which on a reread would
-    /// print today's numbers under an older read's heading —
-    /// `bookmole::Progress::of_book` says so in as many words. The pairing
-    /// with the book's length is done in the engine
-    /// (`Engine::readings_with_progress`), because `readings` has no page count
-    /// and deciding which length goes with which read is a derivation, not a
-    /// projection.
+    /// This reading's progress, not the book's.
     pub progress: ProgressDto,
 }
 
 impl ReadingDto {
-    /// A reading beside the progress the engine computed for it.
-    ///
-    /// There is deliberately **no `From<Reading>`**: a `Reading` alone cannot
-    /// answer `progress`, and an impl that filled it with
-    /// `Progress::of_reading(&r, None)` would quietly report "no percentage"
-    /// for every book whose length we know perfectly well.
+    /// A reading beside its computed progress. No `From<Reading>`: a reading alone cannot give
+    /// progress.
     pub fn new(r: Reading, progress: Progress) -> ReadingDto {
         ReadingDto {
             progress: progress.into(),
@@ -994,21 +691,15 @@ pub struct HighlightDto {
     pub chapter: Option<String>,
     #[serde(default)]
     pub page: Option<i64>,
-    /// KOReader's note — theirs, and rewritten toward the device on every
-    /// import.
+    /// KOReader's note; rewritten toward the device on every import.
     #[serde(default)]
     pub ko_note: Option<String>,
-    /// The reader's own annotation — ours, and never touched by an import.
+    /// The reader's own annotation; never touched by an import.
     #[serde(default)]
     pub annotation: Option<String>,
     #[serde(default)]
     pub ko_datetime: Option<String>,
-    /// Which reading this was captured during, when the dates could place it.
-    ///
-    /// `#[serde(default)]` like every other optional field here, and `null` is
-    /// an ordinary answer rather than a missing one: a highlight captured
-    /// between two readings belongs to neither, and the device cannot tell us
-    /// otherwise.
+    /// The reading this was captured during, when dates could place it; `null` is an ordinary answer.
     #[serde(default)]
     pub reading_id: Option<i64>,
     pub source: String,
@@ -1032,8 +723,6 @@ impl From<Highlight> for HighlightDto {
         }
     }
 }
-
-// ---- notes ----------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -1079,25 +768,18 @@ pub struct NoteDto {
     pub page: Option<i64>,
     #[serde(default)]
     pub location: Option<String>,
-    /// Relative to the vault root. The absolute path is `note_path`, which is
-    /// the engine's to derive — a client joining it itself would need the vault
-    /// root, and would then be holding a second copy of a fact that can move.
+    /// Relative to the vault root; `note_path` is the absolute path.
     pub file_path: String,
     pub title: String,
     /// `note` | `session` | `reflection` | `review`.
     pub kind: String,
     #[serde(default)]
     pub created_at: Option<i64>,
-    /// Unix seconds: when the body was last kept. Stamped by the engine on
-    /// every insert and every body save, so a frontend can say when the page
-    /// was last written without remembering it itself — a memory that would
-    /// not survive a reload.
+    /// Unix seconds; stamped by the engine on every insert and body save.
     #[serde(default)]
     pub last_modified: Option<i64>,
 }
 
-/// Why a note came back: it touches a book with an open reading, or nothing
-/// qualifying did and the whole notebook was drawn from.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1119,7 +801,6 @@ impl From<bookmole::ResurfaceReason> for ResurfaceReasonDto {
     }
 }
 
-/// One older note offered back for the day — see `Request::ResurfaceNote`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1140,8 +821,6 @@ impl From<bookmole::Resurfaced> for ResurfacedDto {
     }
 }
 
-/// One older passage offered back for the day — see
-/// `Request::ResurfacePassage`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1245,18 +924,7 @@ impl From<CreatedNote> for CreatedNoteDto {
     }
 }
 
-/// Which index a search is about, or `null` for both.
-///
-/// A **filter**, in `BookFilterDto`'s idiom rather than a second method:
-/// `null` is not asking, and naming one narrows what is in the list without
-/// touching how the list is ordered. It exists because "search my notes" is a
-/// real question — `rb notes --search` asks it — while the ordering never
-/// belongs to the caller.
-///
-/// It is emphatically **not** a way to fetch the two halves separately and
-/// interleave them above the seam. Two calls give a client two rankings and no
-/// rule for merging them, which is the thing [`Request::SearchMarks`] exists to
-/// make unnecessary.
+/// Which index a search covers, or `null` for both. A filter; ordering is never the caller's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1278,16 +946,7 @@ impl From<SearchSourceDto> for SearchSource {
     }
 }
 
-/// One hit in the one ranked list, carrying whichever row matched.
-///
-/// Internally tagged on `kind`, the shape [`StatusFilterDto`] already uses, so
-/// a client switches on one string rather than probing for which field is
-/// present. **Not two nullable fields**: exactly one of the two rows exists,
-/// and a shape that can represent neither or both is a shape somebody
-/// eventually reads wrong.
-///
-/// The order these arrive in is the engine's and is the whole point of the
-/// method — see [`Request::SearchMarks`]. Nothing above this layer re-sorts it.
+/// One hit in the ranked list, tagged on `kind`; exactly one of note or highlight is present.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1329,11 +988,8 @@ impl From<SearchHit> for SearchHitDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutgoingLinkDto {
-    /// The `[[wikilink]]` as written.
     pub target_title: String,
-    /// The note it resolves to, when one exists. `null` is a **forward
-    /// reference**, not an error: it resolves itself the moment that note is
-    /// written, and a client shows it as text rather than dropping it.
+    /// The note it resolves to; `null` is a forward reference, not an error.
     #[serde(default)]
     pub note: Option<NoteDto>,
 }
@@ -1347,7 +1003,6 @@ impl From<OutgoingLink> for OutgoingLinkDto {
     }
 }
 
-/// Which end of an edge a [`LinkContextDto`] is read from.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1356,9 +1011,7 @@ impl From<OutgoingLink> for OutgoingLinkDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkDirectionDto {
-    /// The other note links to this one.
     Incoming,
-    /// This note links to the other.
     Outgoing,
 }
 
@@ -1371,12 +1024,6 @@ impl From<LinkDirection> for LinkDirectionDto {
     }
 }
 
-/// A book as a link row draws it: enough for a face, and nothing more.
-///
-/// Not a [`BookDto`], which is a whole record a row has no use for and which
-/// would make every link answer carry every book's description. The two cover
-/// fields are `BookDto`'s, with the same meanings: `cover_shelf_path` is the
-/// small tier a 32 px jacket should load, `cover_path` the whole image.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1405,11 +1052,8 @@ impl From<Book> for BookFaceDto {
     }
 }
 
-/// One link of a note, either direction, with what a row needs to say what
-/// it is (`LinkContexts`).
-///
-/// **`paragraph` is the reader's own writing.** It may cross this seam, as a
-/// note body does, and must never be logged above `trace!` on either side.
+/// One link of a note, either direction. `paragraph` is the reader's own writing; never log
+/// above `trace!`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1418,31 +1062,26 @@ impl From<Book> for BookFaceDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkContextDto {
     pub direction: LinkDirectionDto,
-    /// The `[[wikilink]]` target as the linking body wrote it — for an
-    /// outgoing forward reference, the only name the other note has.
+    /// The `[[wikilink]]` target as written; for an outgoing forward reference, the only name the
+    /// other note has.
     pub target_title: String,
-    /// The other note. `null` only for an outgoing forward reference.
+    /// The other note; `null` only for an outgoing forward reference.
     #[serde(default)]
     pub note: Option<NoteDto>,
-    /// The other note's book, when it is against one.
     #[serde(default)]
     pub book: Option<BookFaceDto>,
-    /// Incoming only: the paragraph of the other note's body that holds the
-    /// link — the run of lines between blank lines around it, cut to about
-    /// 600 bytes on a char boundary. `null` for outgoing links, and for an
-    /// incoming one whose body is unreadable or no longer holds the link.
+    /// Incoming only: the paragraph holding the link, cut to about 600 bytes on a char boundary;
+    /// `null` otherwise.
     #[serde(default)]
     pub paragraph: Option<String>,
-    /// Byte offsets `[start, end)` of the whole `[[…]]` token inside
-    /// `paragraph`, on char boundaries. Present exactly when `paragraph` is.
-    /// **Bytes, not UTF-16 units**: a JS client converts before slicing.
+    /// Byte offsets `[start, end)` of the `[[...]]` token in `paragraph`; bytes, not UTF-16 units.
+    /// Present iff `paragraph` is.
     #[serde(default)]
     pub link_range: Option<(usize, usize)>,
     /// Some of the paragraph was cut, at either end.
     #[serde(default)]
     pub truncated: bool,
-    /// The cut took the paragraph's head, so the text starts mid-paragraph.
-    /// Implies `truncated`.
+    /// The cut took the paragraph's head. Implies `truncated`.
     #[serde(default)]
     pub truncated_start: bool,
 }
@@ -1471,14 +1110,6 @@ impl From<LinkContext> for LinkContextDto {
     }
 }
 
-/// One row of the currently-reading shelf.
-///
-/// The [`ReadingDto`] rides beside the [`BookDto`] rather than being folded
-/// into it, because the two are not interchangeable: a book's progress fields
-/// are projections of the *current* reading, which for a finished book is a
-/// closed one, while this row is specifically the open one and carries its own
-/// status, source and device mirror. A sidecar-seeded book has `ko_percent` and
-/// no `current_page` at all, so the book alone would render blank.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1492,11 +1123,6 @@ pub struct OpenReadingDto {
 
 impl From<(Book, Reading)> for OpenReadingDto {
     fn from((book, reading): (Book, Reading)) -> Self {
-        // The reading's own progress, through the engine's own function. The
-        // length is right here on the book, so this is the one place the pair
-        // needs no round trip — and calling `Progress::of_reading` is not the
-        // derivation `ReadingDto::progress` warns about, it *is* the one
-        // implementation of it.
         let progress = Progress::of_reading(&reading, book.page_count);
         OpenReadingDto {
             book: book.into(),
@@ -1505,7 +1131,6 @@ impl From<(Book, Reading)> for OpenReadingDto {
     }
 }
 
-/// How a library-wide readings list is ordered.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1514,10 +1139,9 @@ impl From<(Book, Reading)> for OpenReadingDto {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadingSortDto {
-    /// Most recently finished first; readings still open land last.
+    /// Most recently finished first; open readings last.
     #[default]
     Finished,
-    /// Most recently begun first.
     Started,
     LastModified,
 }
@@ -1532,17 +1156,7 @@ impl From<ReadingSortDto> for ReadingSort {
     }
 }
 
-/// Which readings a list is about, before it is ordered or paged.
-///
-/// Every field absent is *every reading*, so a client with no opinion sends
-/// nothing — [`BookFilterDto`]'s rule, and the mirror of
-/// [`bookmole::ReadingFilter`], where the predicates are documented because
-/// they are properties of the SQL and not of the wire.
-///
-/// There is no `NoReading` case here and there cannot be one: every row of this
-/// list *is* a reading, so the absence [`StatusFilterDto`] had to name is
-/// unrepresentable rather than merely unwanted. Which is why `status` is a bare
-/// [`ReadingStateDto`] and not a second filter enum.
+/// Which readings a list is about. Every field absent means every reading.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1550,28 +1164,15 @@ impl From<ReadingSortDto> for ReadingSort {
 )]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadingFilterDto {
-    /// One book's readings — what lets the card page for a single book ask the
-    /// **same** question the wall asks, rather than `ListReadings` plus one
-    /// `CardPassage` per row beside it.
     #[serde(default)]
     pub book_id: Option<i64>,
     #[serde(default)]
     pub status: Option<ReadingStateDto>,
-    /// `true` is a reading still open. Not redundant with `status`:
-    /// `abandon_reading` deliberately leaves the reading open, so *abandoned*
-    /// and *reading* are both open and a wall of finished reads cannot be
-    /// written as a status.
+    /// `true` is a reading still open. Abandoned readings stay open, so this is not redundant with
+    /// `status`.
     #[serde(default)]
     pub open: Option<bool>,
-    /// Readings that **finished** inside this span of days, UTC — the year
-    /// filter `gui-vision.md` asks the shelf for.
-    ///
-    /// One nested range rather than two flat optional days, because the pair is
-    /// inseparable: a half-set span is a question nobody asked, and
-    /// [`DayRangeDto`]'s two fields are both required. An inverted span is an
-    /// [`crate::error::ErrorCode::InvalidInput`] and never a confident empty
-    /// answer — the engine's own `DayRange` refuses it, exactly as it does for
-    /// `ActivitySummary`.
+    /// Readings that finished inside this span of days, UTC; an inverted span is `InvalidInput`.
     #[serde(default)]
     pub finished_in: Option<DayRangeDto>,
 }
@@ -1579,10 +1180,7 @@ pub struct ReadingFilterDto {
 impl TryFrom<ReadingFilterDto> for ReadingFilter {
     type Error = bookmole::EngineError;
 
-    /// Fallible where [`BookFilterDto`] is not, and only because of the range:
-    /// two day strings are validated by the engine, and this layer must not be
-    /// able to route around the refusal — the same rule the two activity
-    /// aggregates follow.
+    // Fallible because the engine validates the day range; this layer must not route around that.
     fn try_from(f: ReadingFilterDto) -> Result<Self, Self::Error> {
         Ok(ReadingFilter {
             book_id: f.book_id,
@@ -1596,12 +1194,7 @@ impl TryFrom<ReadingFilterDto> for ReadingFilter {
     }
 }
 
-/// A page of the library's readings: which ones, in what order, which slice.
-///
-/// The typed argument to [`crate::Api::list_reading_rows`], and
-/// [`BookQueryDto`]'s shape for [`BookQueryDto`]'s reason — `limit` and `offset`
-/// are both `i64` and adjacent, which is a swap no type checker catches. The
-/// request carries the same four values **flat**.
+/// A page of the library's readings: filter, order and slice. The request carries these flat.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1613,28 +1206,14 @@ pub struct ReadingQueryDto {
     pub sort: ReadingSortDto,
     #[serde(default)]
     pub filter: Option<ReadingFilterDto>,
-    /// **Negative means no limit** — SQLite's own reading of `LIMIT -1`.
-    ///
-    /// No `#[serde(default)]`, deliberately: `0` is a perfectly good limit and
-    /// an omitted one would silently be a page of nothing. A client asking for
-    /// everything says `-1`, which is the one spelling of that.
+    /// Negative means no limit. No serde default: an omitted `0` would silently be an empty page.
     pub limit: i64,
-    /// Rows to skip. An offset and not a cursor, for [`BookQueryDto::offset`]'s
-    /// reason.
     #[serde(default)]
     pub offset: i64,
 }
 
 impl Default for ReadingQueryDto {
-    /// The whole library, most recently finished first — **the same query
-    /// `ReadingQuery::default()` means**, and `the_two_defaults_are_one_query`
-    /// asserts it.
-    ///
-    /// Hand-written rather than derived for that reason alone: a derived
-    /// `Default` would put `limit: 0` here against the engine's `-1`, so the two
-    /// types with one name would mean opposite things by *the whole-library
-    /// read*. [`BookQueryDto`] has no `Default` at all, which is the other way
-    /// to avoid the same trap.
+    // Hand-written: a derived `Default` would give `limit: 0` against the engine's `-1`.
     fn default() -> Self {
         let q = ReadingQuery::default();
         ReadingQueryDto {
@@ -1664,24 +1243,7 @@ impl TryFrom<ReadingQueryDto> for ReadingQuery {
 }
 
 /// One row of the library-wide readings list.
-///
-/// **Not a card.** There is deliberately no `CardDto`, because a card is a
-/// *layout* — cover, dates, rating, passage, notes — and a layout is a
-/// frontend's composition of facts this crate already serves. This row carries no rating and no notes and is not shaped by
-/// what a card draws; it is shaped by what **one round trip** must contain for a
-/// page of readings to be drawable at all. That is `BookSummaries`' argument
-/// (one round trip per page, not per row) rather than a layout one, and the two are told apart by asking what
-/// would be added next: a card would grow the rating, and this will not.
-///
-/// So the passage is here and still not on [`ReadingDto`]. The objection to
-/// that field is that it would ride the reader's private highlight text
-/// along on every row of every `ListReadings`, *including the ones nobody is
-/// drawing a card for* — and every row of this list is one somebody is.
-///
-/// The book's four progress projections describe the **current** read while
-/// `reading` is this one; on a reread they genuinely differ, and a frontend
-/// reading the book's numbers under an older read's heading is the mistake to
-/// avoid. `reading.progress` is this read's.
+/// The book's progress fields describe its current read; `reading.progress` is this read's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1691,28 +1253,11 @@ impl TryFrom<ReadingQueryDto> for ReadingQuery {
 pub struct ReadingRowDto {
     pub book: BookDto,
     pub reading: ReadingDto,
-    /// Which read this is, 1-based, counted oldest-first over **every** reading
-    /// of the book — never over the page.
-    ///
-    /// **Not an `Option`, and that is the decision.**
-    /// `bookmole::ReadNumbering::number_of` folds *read once* into the same
-    /// `None` as *unattributed* and *not in this list*, which is right for the
-    /// TUI's gutter, wanting one answer to all three. Two of those three are
-    /// facts about a **highlight**, and on a list whose rows are readings they
-    /// are unreachable — so shipping the fold would have made `null` mean a
-    /// fourth thing, *whoever built this row could not tell*, which is the
-    /// ambiguity a row type must not carry. A client showing "your second read"
-    /// asks `of_reads > 1`, which is the same test the gutter makes.
+    /// Which read this is, 1-based, oldest first over every reading of the book, never over the
+    /// page. Never optional.
     pub read_number: i64,
-    /// How many readings this book has in total.
     pub of_reads: i64,
-    /// The passage a card shows for this reading (the one the reader chose,
-    /// see `Engine::card_passage`), or `null`.
-    ///
-    /// `null` for a reading whose highlights are all unattributed, which is an
-    /// ordinary and well-understood set of marks — `attribute_highlights`
-    /// leaves `reading_id` NULL when no window holds a timestamp. A card drawing
-    /// that absence *as* an absence is right.
+    /// The passage a card shows for this reading, or `null` when its highlights are all unattributed.
     #[serde(default)]
     pub passage: Option<HighlightDto>,
 }
@@ -1729,22 +1274,7 @@ impl From<ReadingRow> for ReadingRowDto {
     }
 }
 
-/// Which years a wall's readings ended in, and whether any is still open.
-///
-/// **The open flag is why this is a struct and not a `Vec<i32>`.** A wall under
-/// the default filter holds open readings on purpose — gating on `finished_at`
-/// would tell a reader the book they are in has no card — and those rows are
-/// in no year. A bare list of
-/// years therefore does not partition the wall: picking every year in turn
-/// would never show them again, with nothing on screen to say where they went.
-///
-/// **A bool and never a count.** The picker needs to know whether the chip
-/// exists; a number of books-in-progress sitting on a control is one product
-/// decision away from a badge counting what the reader has not done, and the
-/// chip's own
-/// figure is the same `CountReadings` every other chip asks, with
-/// `open: true`. For the same reason there are **no per-year counts** — a row
-/// of years each carrying a number is a scoreboard.
+/// Years a wall's readings ended in, and whether any is still open. Open readings are in no year.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1752,11 +1282,8 @@ impl From<ReadingRow> for ReadingRowDto {
 )]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadingYearsDto {
-    /// Newest first. A year is here iff at least one matching reading **closed**
-    /// in it — never because a note, a highlight or a device measurement is
-    /// dated in it, which is the whole difference from `ActivityByMonth`.
+    /// Newest first; a year is listed iff a matching reading closed in it.
     pub years: Vec<i32>,
-    /// Whether any matching reading has not ended.
     pub open: bool,
 }
 
@@ -1769,19 +1296,8 @@ impl From<ReadingYears> for ReadingYearsDto {
     }
 }
 
-// ---- note rows, threads, links and parts ----------------------------------
-//
-// Every shape here is a **response**, except `GraphScopeDto`, which rides in a
-// new request. Nothing existing was reshaped: ts-rs emits every field as
-// required TypeScript, so a field added to an existing request would break a
-// typed client invisibly.
-
-/// One row of a note list — everything a notes view draws for a note without
-/// reading its file: the book's face, a heading only when the reader wrote one,
-/// the latest part's first words, and the counts.
-///
-/// **`excerpt` is the reader's own writing** — plain text, no markup, cut on a
-/// char boundary at about 280 bytes with no ellipsis added. Never log it.
+/// One row of a note list. `excerpt` is the reader's own writing, about 280 bytes on a char
+/// boundary; never log it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1792,33 +1308,26 @@ pub struct NoteRowDto {
     pub note: NoteDto,
     #[serde(default)]
     pub book: Option<BookFaceDto>,
-    /// `null` unless the body opens with `# heading` or the title was typed;
-    /// always `null` for a reflection or a review (their titles are generated).
+    /// `null` unless the body opens with `# heading` or the title was typed; always `null` for
+    /// reflections and reviews.
     #[serde(default)]
     pub heading: Option<String>,
     pub excerpt: String,
     /// `1` for an ordinary note.
     pub parts: i64,
-    /// Unix seconds: the newest part's date. The list's order.
+    /// Unix seconds: the newest part's date; the list's order.
     pub latest_part_at: i64,
     /// The latest part's page, else the note's.
     #[serde(default)]
     pub latest_part_page: Option<i64>,
     /// Distinct targets the body names, written or not.
     pub links_out: i64,
-    /// Distinct notes linking here.
     pub links_in: i64,
-    /// The hub note id of its thread; `null` when it links nothing and nothing
-    /// links it.
+    /// The hub note id of its thread; `null` when it links nothing and nothing links it.
     #[serde(default)]
     pub thread: Option<i64>,
-    /// Which read of its book the note's reading is (1-based, oldest first,
-    /// over every sibling — `ReadingRowDto.read_number`'s count) — *the first
-    /// read's review*. `null` for a note that names no reading.
-    ///
-    /// **Added later, on a response DTO**, which reshapes no request.
-    /// `optional = nullable` in TypeScript, `sort_author`'s precedent, so a
-    /// row literal written before it still type-checks.
+    /// Which read of its book the note's reading is (1-based, oldest first); `null` for a note
+    /// that names no reading.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub read_number: Option<i64>,
@@ -1847,9 +1356,6 @@ impl From<bookmole::NoteRow> for NoteRowDto {
     }
 }
 
-/// A calendar month (UTC) some note's latest part falls in. The frontend
-/// phrases it — *Today*, *This week*, *October*, *2025*; which months exist is
-/// the engine's fact.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1858,12 +1364,11 @@ impl From<bookmole::NoteRow> for NoteRowDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotePeriodDto {
     pub year: i32,
-    /// 1–12.
+    /// 1-12.
     pub month: u8,
 }
 
-/// A thread — a connected component of resolved links, at least two notes —
-/// that some asked-about note is in. Its id is its hub's.
+/// A thread (connected component of resolved links, at least two notes). Its id is its hub's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1871,16 +1376,13 @@ pub struct NotePeriodDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadDto {
-    /// The member with the most distinct neighbours (ties to the newest, then
-    /// the lowest id).
+    /// The member with the most distinct neighbours (ties to the newest, then the lowest id).
     pub hub: NoteRowDto,
-    /// Notes in the thread.
     pub notes: i64,
-    /// Distinct, in order of first appearance among the members newest first.
+    /// Distinct, in order of first appearance among members newest first.
     pub books: Vec<BookFaceDto>,
     /// Members whose latest part is at or after `since`; `0` without one.
     pub joined: i64,
-    /// Every member's id, newest first.
     pub members: Vec<i64>,
 }
 
@@ -1896,8 +1398,7 @@ impl From<bookmole::ThreadSummary> for ThreadDto {
     }
 }
 
-/// One wikilink a note wrote. `to` is `null` for a link to a note not
-/// written yet.
+/// One wikilink a note wrote. `to` is `null` for a note not yet written.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1921,7 +1422,6 @@ impl From<bookmole::NoteLink> for NoteLinkDto {
     }
 }
 
-/// Which part of the link graph to draw. Internally tagged on `scope`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1930,16 +1430,11 @@ impl From<bookmole::NoteLink> for NoteLinkDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum GraphScopeDto {
-    /// Every note with at least one link, and every unwritten target.
     Everything,
-    /// Notes whose latest part is at or after `since` (unix seconds), their
-    /// neighbours, and the unwritten targets they name.
     Recent { since: i64 },
-    /// One book's linked notes and their neighbours.
     Book { book_id: i64 },
-    /// One note, its neighbours out to `steps` (1 or 2 — anything else is
-    /// `invalid_input`), its own unwritten targets, and up to five notes that
-    /// mention it without a link.
+    /// One note and its neighbours out to `steps` (1 or 2, else `invalid_input`), plus up to five
+    /// unlinked mentions.
     Around { note_id: i64, steps: u8 },
 }
 
@@ -1963,9 +1458,8 @@ impl From<GraphScopeDto> for bookmole::GraphScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphEdgeKindDto {
-    /// A `[[wikilink]]`, from the note that wrote it.
     Link,
-    /// `from` mentions `to`'s title without linking it. `around` only.
+    /// `from` mentions `to`'s title without linking it; `around` only.
     Mention,
 }
 
@@ -1978,7 +1472,6 @@ impl From<bookmole::GraphEdgeKind> for GraphEdgeKindDto {
     }
 }
 
-/// One node of the drawn graph. Layout is the frontend's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -1986,15 +1479,13 @@ impl From<bookmole::GraphEdgeKind> for GraphEdgeKindDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphNodeDto {
-    /// `n<id>` for a note, `t<lowercased title>` for an unwritten link. Opaque
-    /// to a client except as the thing edges name.
+    /// `n<id>` for a note, `t<lowercased title>` for an unwritten link; opaque except as edges name it.
     pub key: String,
     /// `null` for an unwritten link.
     #[serde(default)]
     pub row: Option<NoteRowDto>,
-    /// The note's title, or the link text as first written.
     pub title: String,
-    /// Distinct nodes it shares an edge with **in this graph**.
+    /// Distinct nodes it shares an edge with in this graph.
     pub degree: i64,
 }
 
@@ -2048,9 +1539,8 @@ impl From<bookmole::NoteGraphView> for NoteGraphDto {
     }
 }
 
-/// One dated part of a note continued in parts. Part 1 is dated by the
-/// note's `created_at` and paged by its `page`; `n` is the 1-based position
-/// `UpdateNotePart` addresses. **`body` is the reader's writing.**
+/// One dated part of a note. `n` is the 1-based position `UpdateNotePart` addresses. `body` is
+/// the reader's writing.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2077,8 +1567,6 @@ impl From<bookmole::NotePart> for NotePartDto {
     }
 }
 
-/// What an unsaved note would link to and be linked from. `incoming`
-/// carries each linking note's paragraph, as `LinkContexts` does.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2102,8 +1590,6 @@ impl From<bookmole::LinkPreview> for LinkPreviewDto {
 fn map<T, U: From<T>>(items: Vec<T>) -> Vec<U> {
     items.into_iter().map(U::from).collect()
 }
-
-// ---- ratings ---------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -2138,8 +1624,8 @@ impl From<RatingScale> for RatingScaleDto {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatingDto {
-    /// The scale travels **with** the value, never without it: the Goodreads
-    /// map is user-editable, so a bare number is not re-derivable into anything.
+    /// The scale travels with the value: the Goodreads map is user-editable, so a bare number is
+    /// not re-derivable.
     pub scale: RatingScaleDto,
     pub value: f64,
 }
@@ -2153,13 +1639,7 @@ impl From<Rating> for RatingDto {
     }
 }
 
-/// One entry of the Goodreads lookup table.
-///
-/// A named pair rather than a JSON array, because a two-element array is
-/// positional and this table is **explicit by design** — the whole reason it is
-/// a lookup and not a formula is that the ends must be readable at a glance.
-/// A scale point with no entry simply is not in this list, which is what a
-/// review on that value will report instead of a number.
+/// One entry of the Goodreads lookup table; a scale point with no entry is not listed.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2168,11 +1648,9 @@ impl From<Rating> for RatingDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatingMapEntryDto {
     pub value: f64,
-    /// 0–5 in quarters since migration `0026`, when Goodreads took quarters.
+    /// 0-5 in quarters.
     pub goodreads: f64,
 }
-
-// ---- files and flashcards --------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -2265,12 +1743,7 @@ pub struct FileIdentityDto {
     pub size: i64,
     #[serde(default)]
     pub title: Option<String>,
-    /// How long the file says it is — pdf only, and absent far more often than
-    /// present.
-    ///
-    /// **Absent is not zero**, and a client must not render it as one: a `0`
-    /// here would be a false denominator, which is the exact thing
-    /// `ProgressDto` was built to make unrepresentable.
+    /// Page count the file declares (pdf only). Absent is not zero.
     #[serde(default)]
     pub page_count: Option<i64>,
     #[serde(default)]
@@ -2282,9 +1755,8 @@ pub struct FileIdentityDto {
 }
 
 impl From<FileIdentity> for FileIdentityDto {
-    /// The domain's `matched: Option<(i64, FileMatch)>` becomes two nullable
-    /// fields. A JSON tuple is positional, so adding a third element later
-    /// would silently change what index 1 means; two named fields cannot.
+    // The domain's `(i64, FileMatch)` tuple becomes two named nullable fields so a later element
+    // cannot shift positions.
     fn from(i: FileIdentity) -> Self {
         FileIdentityDto {
             path: path_str(&i.path),
@@ -2343,24 +1815,9 @@ impl From<FileImportReport> for FileImportReportDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashcardDto {
     pub id: i64,
-    /// The book this card was captured from.
-    ///
-    /// **Deliberately without `#[serde(default)]`**, unlike its neighbour. The
-    /// additive rule this crate lives by is about *requests* — a payload
-    /// written before a field existed must still parse — and no request carries
-    /// a flashcard. What a default would buy here is an old daemon's reply
-    /// parsing into a card whose `book_id` is `0`, and `0` is not a book: a
-    /// client would follow it to a `NotFound` indistinguishable from a book
-    /// somebody deleted. `pdf.rs` states the rule this follows — a sentinel
-    /// nothing downstream can tell from a real value is worse than the parse
-    /// failure it replaces.
+    /// The book this card was captured from. No serde default: `0` is not a book.
     pub book_id: i64,
-    /// The passage the word came from, where there is one.
-    ///
-    /// The field that makes a card worth having: without it a card can only ever
-    /// be shown beside its book's *title*. `#[serde(default)]` because absence
-    /// and `null` mean the same true thing — this card is not anchored — which
-    /// is exactly what `book_id` cannot say.
+    /// The passage the word came from; `null` or absent means the card is not anchored.
     #[serde(default)]
     pub highlight_id: Option<i64>,
     pub word: String,
@@ -2384,9 +1841,8 @@ impl From<FlashcardRow> for FlashcardDto {
     }
 }
 
-/// One Anki export as text: the file's contents, how many
-/// cards went into it, and a name to save it under. The caller owns the file —
-/// the contract `GoodreadsExport` and `FlashcardExport` already have.
+/// One Anki export as text: contents, card count and a name to save under. The caller owns the
+/// file.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2409,9 +1865,7 @@ impl From<AnkiExport> for AnkiExportDto {
     }
 }
 
-/// An Anki export the engine wrote into `exports/` beside the vault, for a
-/// client with no way to write a file itself. `path` is `null` when no card
-/// went out and nothing was written.
+/// An Anki export written into `exports/` beside the vault; `path` is `null` when no card went out.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2432,16 +1886,7 @@ impl From<SavedAnkiExport> for SavedAnkiExportDto {
     }
 }
 
-/// Which passages one note cites, as handles.
-///
-/// **Ids, not [`HighlightDto`]s.** The surface asking this is a book's passage
-/// list wanting to mark the ones already quoted somewhere, and it is holding
-/// those passages already — it loaded the book's highlights and notes together
-/// to draw the page. Rows here would send the
-/// reader's private text back once *per citing note*, on a screen whose entire
-/// output is a tick. [`Request::CitationsFor`](crate::Request::CitationsFor)
-/// stays as it is and is not made redundant: it feeds the pane that shows the
-/// passages themselves, where the text is the point.
+/// Ids of the passages one note cites, not rows, so private text is not resent per citing note.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2450,9 +1895,7 @@ impl From<SavedAnkiExport> for SavedAnkiExportDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteCitationsDto {
     pub note_id: i64,
-    /// In the order a book reads — the same order
-    /// [`Response::Highlights`](crate::Response::Highlights) comes back in for
-    /// the single-note call, from the same `ORDER BY`. Empty is an answer.
+    /// In book reading order. Empty is an answer.
     pub highlight_ids: Vec<i64>,
 }
 
@@ -2464,8 +1907,6 @@ impl From<NoteCitations> for NoteCitationsDto {
         }
     }
 }
-
-// ---- search ----------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -2541,12 +1982,8 @@ pub struct RankedResultDto {
     pub book: BookDto,
     pub sources: Vec<ProviderIdDto>,
     pub score: f64,
-    /// The shelf's copy of this book, when the library already holds one
-    /// (`Engine::shelf_of`, matched on ISBN). A frontend reads it to decide
-    /// whether choosing the result **adds** a book or **opens** one; without
-    /// this field each frontend would derive that itself, at the cost of one
-    /// `ResolveBooks` per row. `#[serde(default)]` so a reply written by an
-    /// older API still deserializes.
+    /// The library's copy of this book, matched on ISBN; tells a frontend whether choosing it adds
+    /// or opens.
     #[serde(default)]
     pub shelf_id: Option<i64>,
 }
@@ -2570,8 +2007,6 @@ impl From<RankedResult> for RankedResultDto {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchOutcomeDto {
     pub results: Vec<RankedResultDto>,
-    /// A dead provider degrades the search, never kills it — so the warnings
-    /// ride back **with** the results rather than replacing them.
     pub warnings: Vec<DiagnosticDto>,
 }
 
@@ -2583,8 +2018,6 @@ impl From<SearchOutcome> for SearchOutcomeDto {
         }
     }
 }
-
-// ---- diagnostics -----------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -2639,13 +2072,6 @@ impl From<ErrorClass> for ErrorClassDto {
     }
 }
 
-/// The full mirror of `DiagnosticKind`, and it is full on purpose.
-///
-/// The cheap version of this type is `{ kind: String, detail: String }`, and it
-/// would have thrown away the whole reason `Diagnostic` stopped being a
-/// `String` in the first place: a caller has to be able to tell a timeout from
-/// a 500, and *which file* was unparsable, without scraping prose. Every
-/// variant here has a different next move on the far side.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2660,28 +2086,23 @@ pub enum DiagnosticKindDto {
     },
     ProviderTimedOut {
         provider: ProviderIdDto,
-        /// Seconds. A `Duration`'s serde shape is a dependency's choice.
         after_secs: u64,
     },
-    /// The provider asked us to come back later and was not asked.
     ProviderRateLimited {
         provider: ProviderIdDto,
         /// Seconds until it is asked again, rounded up.
         retry_after_secs: u64,
     },
-    /// The provider did not answer and what it answered to the same search
-    /// before was shown instead. `fetched_at` is unix seconds.
+    /// The provider did not answer and a cached answer was shown; `fetched_at` is unix seconds.
     ProviderAnsweredFromCache {
         provider: ProviderIdDto,
         fetched_at: i64,
     },
-    /// A kept record no longer read; it was dropped and the provider asked
-    /// again.
     KeptRecordUnreadable {
         provider: ProviderIdDto,
     },
-    /// The offline index of well-known works could not be used; the search
-    /// still ran. `class` is null when this build has no index.
+    /// The offline index of well-known works could not be used; `class` is null when this build
+    /// has none.
     OfflineIndexUnavailable {
         class: Option<ErrorClassDto>,
     },
@@ -2702,8 +2123,7 @@ pub enum DiagnosticKindDto {
     SidecarNotIdentified {
         path: String,
     },
-    /// The count is the field, not a list: the engine reports this once per
-    /// file, so a frontend renders one line however many highlights it names.
+    /// Reported once per file, however many highlights it names.
     SidecarAnchorsUnsupported {
         path: String,
         entries: usize,
@@ -2740,14 +2160,8 @@ pub enum DiagnosticKindDto {
     CalibreCoverUnreadable {
         path: String,
     },
-    // ---- koreader statistics -----------------------------------------------
-    //
-    // These cross the seam as five variants rather than folding into one
-    // "statistics unavailable", because *absence is the ordinary path* here and
-    // a frontend's next move differs for each: no database is a device whose
-    // user never enabled the plugin (say nothing, or offer to explain), an
-    // unknown schema is a bookmole that needs updating, and an unmatched
-    // book is an invitation to link it.
+    // Five variants rather than one "unavailable": absence is ordinary here and the next move
+    // differs for each.
     StatisticsDbAbsent {
         path: String,
     },
@@ -2765,46 +2179,39 @@ pub enum DiagnosticKindDto {
     StatisticsBookNotIdentified {
         title: String,
     },
-    /// A provider's cover URL would not download. The metadata it came with
-    /// landed; the URL itself is deliberately not carried across the wire.
+    /// A provider's cover URL would not download; the URL is not carried across the wire.
     CoverUnavailable {
         class: ErrorClassDto,
     },
-    /// A PDF whose annotations could not be read at all. Nothing was imported
-    /// or removed from it.
+    /// A PDF's annotations could not be read; nothing was imported or removed.
     PdfUnreadable {
         path: String,
         class: ErrorClassDto,
     },
-    /// The PDF is encrypted; its annotations are behind a password we lack.
     PdfEncrypted {
         path: String,
     },
-    /// Highlights whose annotation is gone from the PDF but which carry
-    /// something of the reader's own, so they were kept.
+    /// Highlights whose annotation is gone from the PDF but carry the reader's own text, so they
+    /// were kept.
     PdfAnnotationsKept {
         path: String,
         count: u32,
     },
-    /// The PDF was read only in part, so nothing was removed from it.
+    /// The PDF was read only in part, so nothing was removed.
     PdfScanIncomplete {
         path: String,
     },
-    /// No Apple Books database in the folder searched. Not an error.
+    /// No Apple Books database in the folder searched; not an error.
     AppleBooksAbsent {
         path: String,
     },
-    /// macOS refused access to Apple Books' data (the "access data from other
-    /// apps" prompt was declined). Nothing was read.
     AppleBooksPermissionDenied {
         path: String,
     },
-    /// An Apple Books database that could not be copied or read.
     AppleBooksDbUnreadable {
         path: String,
         class: ErrorClassDto,
     },
-    /// A table the import needs is missing or lacks its key column.
     AppleBooksSchemaUnknown {
         path: String,
         table: String,
@@ -2815,36 +2222,28 @@ pub enum DiagnosticKindDto {
         table: String,
         columns: Vec<String>,
     },
-    /// Highlights deleted in Apple Books that carry the reader's own notes,
-    /// so they were kept.
     AppleBooksHighlightsKept {
         asset_id: String,
         count: u32,
     },
-    // ---- Kindle ----
-    /// `My Clippings.txt` could not be read at all. Nothing was imported.
     KindleClippingsUnreadable {
         path: String,
         class: ErrorClassDto,
     },
-    /// Entries of a Kindle file in a language or layout this build does not
-    /// read, or broken. One per file; not imported.
+    /// Entries in a language or layout this build does not read, or broken; one per file, not imported.
     KindleEntriesUnparsed {
         path: String,
         count: u32,
     },
-    /// A clippings title with no matching book; its entries wait to be
-    /// attached to one.
+    /// A clippings title with no matching book; its entries wait to be attached.
     KindleTitleUnmatched {
         title: String,
         entries: u32,
     },
-    /// A Kindle app notebook export that could not be read, or is not one.
     KindleNotebookUnreadable {
         path: String,
         class: ErrorClassDto,
     },
-    /// The notebook's book matches no library book and none was named.
     KindleNotebookUnmatched {
         path: String,
         title: Option<String>,
@@ -3007,7 +2406,6 @@ impl From<DiagnosticKind> for DiagnosticKindDto {
                     count: u32::try_from(count).unwrap_or(u32::MAX),
                 }
             }
-            // ---- Kindle ----
             K::KindleClippingsUnreadable { path, class } => {
                 DiagnosticKindDto::KindleClippingsUnreadable {
                     path: path_str(&path),
@@ -3049,10 +2447,7 @@ pub struct DiagnosticDto {
     pub kind: DiagnosticKindDto,
     pub severity: SeverityDto,
     pub detail: String,
-    /// `Diagnostic`'s own `Display`, which is byte-for-byte what the CLI
-    /// prints. Carried rather than left to each client to re-derive: the
-    /// formatting rule lives in the engine, and three clients re-implementing it
-    /// is three chances to disagree with the CLI about the same warning.
+    /// `Diagnostic`'s `Display`, byte-for-byte what the CLI prints, so clients do not re-derive it.
     pub display: String,
 }
 
@@ -3067,63 +2462,20 @@ impl From<Diagnostic> for DiagnosticDto {
     }
 }
 
-// ---- koreader and the device ----------------------------------------------
-
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
     ts(export, export_to = "bindings.ts")
 )]
-/// A library book that might be the thing being imported, offered as a choice.
-///
-/// **A row to show, not a record to write**, and that is what decides its
-/// fields. The only thing a client does with one is send `book_id` back to
-/// `link_sidecar`/`link_calibre_book`/`link_goodreads_row`, so nothing here
-/// round-trips; what it has to do is answer *which of these is it* in the one
-/// screen a refusal leads to.
-///
-/// `authors_display` and `publish_year` were added later. Without them a chooser
-/// could not answer the question it was asking — two Dunes with one title and
-/// two authors read identically — and the only way to recover the author was a
-/// `get_book` per row, which is an N+1 against a list that is per *row* of a
-/// calibre or Goodreads import. Additive, so `API_VERSION` did not move.
-///
-/// **`cover_path` is deliberately absent.** No chooser draws a jacket: the TUI's
-/// picker is a text list and the CLI prints lines. And when one does, the field
-/// it needs is not this one — `cover_shelf_path` is the thing a grid loads, beside `cover_aspect` and
-/// `cover_accent`, because a frontend reading `cover_path` directly shows
-/// nothing for every cover small enough to have no thumb. So the honest addition
-/// is a *cluster*, decided by the screen that draws it, and it stays additive
-/// and cheap; a path shipped now is a string per row on a list that can be one
-/// per book in the library.
-///
-/// **The whole `BookDto` was considered and refused.** `band` is holding the
-/// entire `Book`, and picking fields off it is what created this bug — but a
-/// candidate list is a question about *identity*, and a `BookDto` answers a
-/// different one: it carries `description` (kilobytes), `subjects`,
-/// `first_sentence`, and `progress`/`reading_status`, which would invite a
-/// chooser to draw a progress bar on a book it is asking you to identify.
-/// Measured rather than asserted: a `BookDto` for a book with a real
-/// description serializes to roughly twenty times a candidate, and a calibre
-/// import reports candidates *per row*. Getting the picking wrong again costs
-/// one more additive field; `BookDto` costs every import report, for ever.
+/// A library book offered as a choice when an import cannot match; a client sends `book_id`
+/// back to link it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchCandidateDto {
     pub book_id: i64,
     pub title: String,
-    /// The authors, each in reading order — `Frank Herbert`, never
-    /// `Herbert, Frank`.
-    ///
-    /// **Derived and read-only**, the same fact `BookDto::authors_display`
-    /// carries and under the same name. There is no raw `authors` beside it:
-    /// the order within a name is a parse and is the engine's
-    /// (`bookmole::names`), and a client of this crate does not link the
-    /// engine — a raw list would be that parse re-implemented above the seam.
     #[serde(default)]
     pub authors_display: Vec<String>,
-    /// The year, where the record has one. What is left to choose by when the
-    /// band's ordinary case — a variant title of a book already on the shelf —
-    /// puts the same author on both rows.
+    /// The year, where the record has one; separates same-author variants.
     #[serde(default)]
     pub publish_year: Option<i64>,
     pub score: f64,
@@ -3166,9 +2518,7 @@ impl From<MatchMethod> for MatchMethodDto {
     }
 }
 
-/// The device's own status. `Other` keeps the raw string rather than collapsing
-/// to a known one — a status KOReader grew and we do not model is exactly the
-/// thing worth reporting, and guessing at it would be silent.
+/// The device's own status; `Other` keeps the raw string.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3204,10 +2554,9 @@ pub struct BookImportStatsDto {
     pub book_id: i64,
     pub book_title: String,
     pub inserted: usize,
-    /// Rows whose **device-owned** fields the sidecar disagreed with. Never
-    /// includes `annotation`, which is ours.
+    /// Rows whose device-owned fields the sidecar disagreed with; never includes `annotation`,
+    /// which is ours.
     pub updated: usize,
-    /// Present and identical.
     pub skipped: usize,
     pub flashcards: usize,
     pub matched_by: MatchMethodDto,
@@ -3305,8 +2654,6 @@ impl From<PullReport> for PullReportDto {
     }
 }
 
-/// The four per-book states a device scan reports — new, unchanged, updated,
-/// unreadable — and no fifth.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3400,10 +2747,7 @@ pub struct DeviceScanDto {
     pub root: String,
     pub books: Vec<DeviceBookDto>,
     pub warnings: Vec<DiagnosticDto>,
-    /// Sidecars this scan actually evaluated, and sidecars answered from the
-    /// `sidecar_seen` cache. Reported rather than logged because the
-    /// pre-filter's whole claim is that the first is zero on a second scan of an
-    /// unmodified tree, and a claim only a stopwatch can check is not one.
+    /// Sidecars this scan evaluated, and sidecars answered from the `sidecar_seen` cache.
     pub parsed: usize,
     pub cached: usize,
 }
@@ -3419,8 +2763,6 @@ impl From<DeviceScan> for DeviceScanDto {
         }
     }
 }
-
-// ---- the plugin ------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -3457,49 +2799,24 @@ impl From<PluginCondition> for PluginConditionDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginStatusDto {
     pub mount: String,
-    /// Exactly where an install would write. A client shows this *before* it
-    /// asks, which is what makes putting something on a reader an explicit act
-    /// rather than a convenience.
+    /// Exactly where an install would write; shown before asking.
     pub plugin_dir: String,
     pub installed: bool,
     pub installed_version: Option<i64>,
     pub our_version: i64,
     pub paired: bool,
-    /// **Our** id for this reader, and `None` when none of its pairings is
-    /// ours.
-    ///
-    /// It used to hold whatever id the file named, which was the same thing
-    /// while a reader could be paired with only one computer and became a
-    /// stranger's id under a heading meaning *ours* the moment it could not.
+    /// Our id for this reader; `None` when none of its pairings is ours.
     pub device_id: Option<String>,
-    /// Every computer this reader is paired with, ours included, in file order.
-    ///
-    /// Not `device_id`'s replacement — that answers *which of these is us* and
-    /// this answers *who else is there*, which is the question the
-    /// single-computer `pairing.lua` could not represent at all. It carries **no
-    /// token**: the credential exists so a reader can prove itself to us later,
-    /// and a wire format holding it would put it in every client's memory and
-    /// every devtools panel, which is `PairedDeviceDto`'s own omission applied
-    /// one level in.
+    /// Every computer this reader is paired with, in file order. Carries no token.
     pub pairings: Vec<PairingDto>,
     pub modified: Vec<String>,
     pub unrecognised: Vec<String>,
-    /// What an install here would do — **the field a screen branches on**.
-    ///
-    /// The four booleans and two numbers above are the evidence and this is the
-    /// verdict. It is here rather than recomputed above the seam because derived
-    /// facts belong to the engine: `installed_version < our_version` is a
-    /// domain rule with a name,
-    /// the CLI had already spelled it once, and a second spelling in TypeScript
-    /// is how two frontends come to disagree about whether a reader needs an
-    /// upgrade with neither looking wrong.
     pub condition: PluginConditionDto,
 }
 
 impl From<PluginStatus> for PluginStatusDto {
     fn from(s: PluginStatus) -> Self {
-        // The verdict is read before the struct is taken apart: `condition()`
-        // borrows fields the moves below consume.
+        // Read before the struct is taken apart: `condition()` borrows fields the moves below consume.
         let condition = s.condition().into();
         PluginStatusDto {
             condition,
@@ -3517,13 +2834,6 @@ impl From<PluginStatus> for PluginStatusDto {
     }
 }
 
-// ---- the wireless listener -------------------------------------------------
-
-/// Whether a paired reader could reach this computer over the LAN.
-///
-/// Three states and not a bool, because *open until 14:32* and *open until I
-/// say stop* are different promises and a frontend draws them differently — a
-/// countdown against a toggle.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3532,13 +2842,9 @@ impl From<PluginStatus> for PluginStatusDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ListenerModeDto {
-    /// Nothing is bound. The default, and what makes the design fail closed:
-    /// there is no service to find and nothing to fingerprint.
     Off,
-    /// Bound until `until` (unix seconds) **or until a push completes**,
-    /// whichever is first.
+    /// Bound until `until` (unix seconds) or until a push completes, whichever is first.
     Window { until: i64 },
-    /// Bound for as long as this host runs.
     Always,
 }
 
@@ -3552,7 +2858,6 @@ impl From<ListenerMode> for ListenerModeDto {
     }
 }
 
-/// What the listener is doing, for a screen to draw.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3561,37 +2866,18 @@ impl From<ListenerMode> for ListenerModeDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenerStatusDto {
     pub mode: ListenerModeDto,
-    /// The port a reader would connect to. `None` when nothing is bound.
-    ///
-    /// Not fixed, and announced in every discovery reply — so a busy port is a
-    /// runtime fact rather than a support conversation. Only the **UDP**
-    /// rendezvous port is a constant.
     pub tcp_port: Option<u16>,
-    /// Completed pushes since this host started.
-    ///
-    /// **A count of things done, never of things waiting.** bookmole never
-    /// shows a badge counting what you have not got round to, and the
-    /// distinction is the whole of why this field is allowed to exist: it is
-    /// the same shape as *synced 3 minutes ago*, not as *4 unread*.
+    /// Completed pushes since this host started; a count of things done, never of things waiting.
     pub pushes: u64,
     pub last_push_at: Option<i64>,
-    /// This computer's address on the network a reader would reach it over.
-    ///
-    /// For a person to read and type into a reader: the plugin keeps a typed
-    /// address for the network where it cannot find this computer by itself,
-    /// and the number has to be shown somewhere. Present whether or not the
-    /// door is open — it is a fact about the network, not about the listener —
-    /// and `None` with the wifi off. **A hint, exactly like
-    /// `PairedDeviceDto::last_lan_addr`**: nothing may store it or join on it.
+    /// This computer's LAN address, for a person to type into a reader. A hint: nothing may store
+    /// it or join on it.
     pub lan_address: Option<String>,
 }
 
 impl ListenerStatusDto {
-    /// The only constructor, and deliberately not a `From<ListenerStatus>`:
-    /// the listener does not know this computer's address and has no business
-    /// asking, so a conversion that filled the field with `None` would report
-    /// *no address* on a machine that plainly has one. `ReadingDto::new`'s
-    /// reason, one DTO over.
+    // Not a `From<ListenerStatus>`: the listener does not know the address, so a conversion would
+    // report none.
     pub fn new(s: ListenerStatus, lan_address: Option<String>) -> Self {
         ListenerStatusDto {
             mode: s.mode.into(),
@@ -3603,7 +2889,6 @@ impl ListenerStatusDto {
     }
 }
 
-/// One computer a reader is paired with, **without the token**.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3611,12 +2896,9 @@ impl ListenerStatusDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairingDto {
-    /// Who this reader is *to that computer*. Each computer mints its own, so
-    /// it is also the handle a computer recognises its own entry by.
+    /// Who this reader is to that computer; each computer mints its own.
     pub device_id: String,
-    /// What to call the computer — its hostname at install time. `None` for an
-    /// entry written by an older plugin that did not record one, where a client falls back to the id's
-    /// first bytes rather than inventing a name.
+    /// The computer's hostname at install time; `None` for older plugins.
     pub name: Option<String>,
     pub paired_at: Option<i64>,
 }
@@ -3641,8 +2923,7 @@ pub struct InstallReportDto {
     pub plugin_dir: String,
     pub device_id: String,
     pub version: i64,
-    /// Relative paths, so a client can print the footprint against
-    /// `plugin_dir` without joining strings it did not build.
+    /// Relative to `plugin_dir`.
     pub written: Vec<String>,
     pub upgraded_from: Option<i64>,
 }
@@ -3681,13 +2962,7 @@ impl From<UninstallReport> for UninstallReportDto {
     }
 }
 
-/// A paired reader **without its token**.
-///
-/// The omission is the point and not an oversight: the token is a shared
-/// secret that exists so the reader can prove itself to us later, and a wire
-/// format that carried it would put it in every client's memory, every log a
-/// client writes, and every devtools panel. Nothing outside the engine has any
-/// use for it. `PairedDevice`'s own `Debug` redacts it for the same reason.
+/// A paired reader without its token, which is a secret that must not reach clients or logs.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3699,37 +2974,17 @@ pub struct PairedDeviceDto {
     pub label: Option<String>,
     pub plugin_version: i64,
     pub installed_at: i64,
-    /// Where it was last plugged in. A sentence about the past — mount points
-    /// move, and nothing may key on this.
+    /// Where it was last plugged in; a breadcrumb, nothing may key on it.
     pub last_mount_path: Option<String>,
-    /// When this reader was last in our hands: `plugin_status` stamps it, so
-    /// it is not a synonym for `installed_at`.
+    /// When this reader was last in our hands; stamped by `plugin_status`.
     pub last_seen_at: Option<i64>,
-    /// When *everything* this reader had was last brought across.
-    ///
-    /// A different fact from `last_seen_at` and the reason migration `0020`
-    /// exists: plugging a reader in to charge it moves the first and not the
-    /// second. Only [`crate::Request::SyncMount`] stamps it — a one-book pull
-    /// leaves the question it answers unchanged. `None` is **not** *never synced* — the column arrived with no
-    /// back-fill, because nothing recorded which device a past sync read from,
-    /// so it means *not since we started recording* and copy must say so.
+    /// When everything this reader had was last brought across; only `SyncMount` stamps it. `None`
+    /// means not since tracking began.
     pub last_synced_at: Option<i64>,
-    /// When this reader last reached us **over the network**, with nobody
-    /// holding it (migration `0021`'s column).
-    ///
-    /// The fourth timestamp on this row and a synonym for none of the other
-    /// three: `installed_at` is the relationship, `last_seen_at` is a cable,
-    /// `last_synced_at` is the data. A reader that pushed from the next room
-    /// this morning and has not been on a cable since April is described by
-    /// `last_seen_at` *and* this, and a card that folded them would tell
-    /// somebody their Kobo had been plugged in when it had not. `None` is
-    /// `0020`'s phrasing again — *not since we started recording* — never
-    /// *never*.
+    /// When this reader last reached us over the network; distinct from `last_seen_at` and
+    /// `last_synced_at`.
     pub last_wireless_at: Option<i64>,
-    /// Where it reached us from, as the reader's own address. A breadcrumb
-    /// exactly like `last_mount_path`, and **nothing may join on it**: a DHCP
-    /// lease moves and the reader is the same reader at a different number.
-    /// It is a sentence about the past, not a way to find the device now.
+    /// The reader's address when it last reached us; a breadcrumb, nothing may join on it.
     pub last_lan_addr: Option<String>,
 }
 
@@ -3749,13 +3004,8 @@ impl From<PairedDevice> for PairedDeviceDto {
     }
 }
 
-/// What one whole-device sync did.
-///
-/// **`found` and `synced` are both here on purpose.** *Nothing to bring across*
-/// and *there is nothing on this device* are different answers, and a report
-/// carrying only `reports` renders them as the same empty list — which is the
-/// difference between a reader that is up to date and one whose sidecars we
-/// could not see.
+/// What one whole-device sync did. `found` and `synced` differ: nothing to bring across versus
+/// nothing on the device.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3764,18 +3014,11 @@ impl From<PairedDevice> for PairedDeviceDto {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MountSyncDto {
     pub mount: String,
-    /// The paired reader this mount turned out to be, when it is one.
-    ///
-    /// `None` is ordinary twice over: a KOReader volume we have never installed
-    /// onto, and one carrying a `pairing.lua` minted by another copy of
-    /// bookmole. The books come across either way — importing sidecars has
-    /// never needed a pairing — and only the `last_synced_at` stamp is skipped,
-    /// so a client must not read this as a failure.
+    /// The paired reader this mount is, when it is one; `None` is not a failure and books still import.
     pub device_id: Option<String>,
     pub found: usize,
     pub synced: usize,
     pub reports: Vec<PullReportDto>,
-    /// The **scan's** warnings. Each entry in `reports` carries its import's.
     pub warnings: Vec<DiagnosticDto>,
 }
 
@@ -3791,8 +3034,6 @@ impl From<MountSync> for MountSyncDto {
         }
     }
 }
-
-// ---- goodreads -------------------------------------------------------------
 
 #[cfg_attr(
     feature = "ts",
@@ -3830,7 +3071,6 @@ pub enum TextOutcomeDto {
     Absent,
     Written,
     Unchanged,
-    /// Already here and different. **Ours was kept** and a diagnostic says so.
     KeptOurs,
 }
 
@@ -3933,11 +3173,6 @@ impl From<GoodreadsReport> for GoodreadsReportDto {
     }
 }
 
-// ---- calibre ---------------------------------------------------------------
-
-/// What calibre this machine has. **Two options, not one flag** — a half
-/// install degrades to the half that works, and a client shows the feature it
-/// has rather than refusing both.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -3945,7 +3180,7 @@ impl From<GoodreadsReport> for GoodreadsReportDto {
 )]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibreStatusDto {
-    /// Absolute path of `ebook-convert`, when it was found.
+    /// Absolute path of `ebook-convert`, when found.
     #[serde(default)]
     pub ebook_convert: Option<String>,
     #[serde(default)]
@@ -4055,8 +3290,6 @@ impl From<CalibreMatch> for CalibreMatchDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibreBookReportDto {
-    /// The calibre row this line is about — the only thing tying a report line
-    /// back to the shelf row a client is showing.
     pub calibre_id: i64,
     #[serde(default)]
     pub book_id: Option<i64>,
@@ -4135,13 +3368,6 @@ impl From<CalibreReport> for CalibreReportDto {
     }
 }
 
-// ---- the chapter list ------------------------------------------------------
-
-/// One line of a book's table of contents.
-///
-/// Flat with a `depth`, exactly as the engine has it — a tree here would make
-/// "the entries, in order" the awkward shape on the wire too, and every consumer
-/// walks them in reading order. The nesting is a column, not a loss.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4150,14 +3376,10 @@ impl From<CalibreReport> for CalibreReportDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntryDto {
     pub label: String,
-    /// 0 for a top-level entry, 1 for a section inside one.
     pub depth: usize,
-    /// The book's own name for the place (`OEBPS/ch2.xhtml#part-two`), not a
-    /// path on this machine — a client on another machine can still match it
-    /// against the file it is rendering.
+    /// The book's own name for the place (`OEBPS/ch2.xhtml#part-two`), not a local path.
     pub target: String,
-    /// Where `target` sits in the spine, where it names a spine item at all.
-    /// Absent is ordinary and is **not** a page number.
+    /// Where `target` sits in the spine, when it names a spine item. Not a page number.
     #[serde(default)]
     pub spine_index: Option<usize>,
 }
@@ -4173,17 +3395,8 @@ impl From<TocEntry> for TocEntryDto {
     }
 }
 
-/// A book's chapter list, and the file it was read from.
-///
-/// **Derived on every call and stored nowhere** — see `epub::table_of_contents`
-/// for the argument. What that means on the wire is that `sha256` is not
-/// decoration: it is how a client knows *which* file answered, since a book may
-/// own several and a better one may be attached tomorrow.
-///
-/// The method returns `null` for "no file here we can read" and this struct with
-/// an empty `entries` for "this epub carries no TOC". Two different answers; a
-/// client that collapses them tells the user the same thing about a missing file
-/// and an ordinary EPUB3 book.
+/// A book's chapter list and the file it was read from; derived per call, with `sha256`
+/// identifying which file.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4204,14 +3417,7 @@ impl From<TableOfContents> for TableOfContentsDto {
     }
 }
 
-// ---- the activity log ------------------------------------------------------
-
-/// How much a row is willing to claim.
-///
-/// Mirrored as an enum rather than crossing as the `"measured"`/`"inferred"`
-/// text the column holds: the engine reads an unrecognised token *back* as
-/// `inferred` on purpose, and a client doing its own string comparison would
-/// get the opposite default — claiming a measurement nobody made.
+/// How much a row claims; an unrecognised stored token reads back as `inferred`, never `measured`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4233,14 +3439,7 @@ impl From<Confidence> for ConfidenceDto {
     }
 }
 
-/// One day of one book, as one source saw it.
-///
-/// **`minutes` and `pages` absent means "not known", never zero**, and that is
-/// the whole reason this table exists rather than a KOReader-shaped one. A
-/// library that arrived as a Goodreads CSV has no minutes at all; a screen that
-/// renders `null` as `0` has told its reader something false about their own
-/// reading. A measured twenty-second session, by contrast, really does record
-/// `0`.
+/// One day of one book as one source saw it. Absent `minutes`/`pages` means not known, never zero.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4249,8 +3448,8 @@ impl From<Confidence> for ConfidenceDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadingEventDto {
     pub book_id: i64,
-    /// Which read this day belongs to, where the evidence agrees on one.
-    /// Absent when no reading's window holds it, or when two do.
+    /// Which read this day belongs to, when the evidence agrees on one; absent if none or two
+    /// windows hold it.
     #[serde(default)]
     pub reading_id: Option<i64>,
     /// `YYYY-MM-DD`, UTC.
@@ -4259,9 +3458,7 @@ pub struct ReadingEventDto {
     pub minutes: Option<i64>,
     #[serde(default)]
     pub pages: Option<i64>,
-    /// Free text (`koreader`, `vault`, a reading's own source). Not an enum:
-    /// the vocabulary lives in a comment rather than a `CHECK` so it can grow,
-    /// and a closed enum here would make it a wire-breaking change to add one.
+    /// Free text (`koreader`, `vault`, a reading's own source); not an enum so the vocabulary can grow.
     pub source: String,
     pub confidence: ConfidenceDto,
     pub created_at: i64,
@@ -4282,7 +3479,6 @@ impl From<ReadingEvent> for ReadingEventDto {
     }
 }
 
-/// What one filler pass did. `updated` counts rows that **actually changed**.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4303,12 +3499,6 @@ impl From<FillStats> for FillStatsDto {
     }
 }
 
-/// One pass of every filler that needs no device.
-///
-/// Broken out per filler rather than totalled, because a refill reporting `0`
-/// overall and `0` for the vault are different facts — the second says the
-/// notes filler ran and found nothing, which is what a second identical run is
-/// supposed to say.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4331,11 +3521,6 @@ impl From<RefillReport> for RefillReportDto {
     }
 }
 
-/// The period a summary is about, echoed back.
-///
-/// Echoed rather than assumed: the caller sent two strings and the engine
-/// validated them, so a reply carrying the range it actually used is what lets a
-/// client label a chart without re-deriving what it asked for.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4356,14 +3541,7 @@ impl From<&DayRange> for DayRangeDto {
     }
 }
 
-/// What is known about a period.
-///
-/// The counts are `i64` because the engine fully originates the evidence behind
-/// them — a zero there is knowable. `minutes` and `pages` are not: read them as
-/// "we have no data", and see [`ReadingEventDto`] for why that distinction is
-/// carried this far.
-///
-/// There is deliberately nothing here counting what the user has *not* done.
+/// What is known about a period. `minutes` and `pages` absent means no data, not zero.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4396,9 +3574,7 @@ impl From<ActivitySummary> for ActivitySummaryDto {
     }
 }
 
-/// One day of a period. **Only days carrying an event appear** — the gaps are
-/// the client's to draw, and filling them with zero rows here would be the same
-/// lie `minutes: null` exists to avoid, spread across a calendar.
+/// One day of a period. Only days carrying an event appear; gaps are the client's to draw.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4407,7 +3583,6 @@ impl From<ActivitySummary> for ActivitySummaryDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DayActivityDto {
     pub day: String,
-    /// Distinct books with an event that day.
     pub books: i64,
     #[serde(default)]
     pub minutes: Option<i64>,
@@ -4426,16 +3601,8 @@ impl From<DayActivity> for DayActivityDto {
     }
 }
 
-/// One month of a period. **Only months carrying an event appear**,
-/// the same rule and the same reason as [`DayActivityDto`].
-///
-/// This is not a client's bucketing of [`DayActivityDto`] and could not be.
-/// `minutes: null` collapses to `0` the first time a client reduces over it,
-/// which is precisely the lie the nullability exists to prevent — spread over a
-/// calendar, where a month the device never measured becomes a month you read
-/// for zero minutes. And `books` is **distinct over the whole month**, so it
-/// cannot be recovered from the days at all: a reader who opened the same two
-/// books on twelve days read two books that month, not twenty-four.
+/// One month of a period. Only months carrying an event appear; not a client bucketing of
+/// days, since null minutes would collapse to 0.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4445,9 +3612,7 @@ impl From<DayActivity> for DayActivityDto {
 pub struct MonthActivityDto {
     /// `YYYY-MM`.
     pub month: String,
-    /// Distinct books with an event anywhere in the month.
     pub books: i64,
-    /// Days of this month that carry an event.
     pub activity_days: i64,
     #[serde(default)]
     pub minutes: Option<i64>,
@@ -4467,18 +3632,7 @@ impl From<MonthActivity> for MonthActivityDto {
     }
 }
 
-// ---- moments ---------------------------------------------------------------
-
-/// What happened, and whatever the phrasing needs beyond the ids.
-///
-/// Adjacently tagged on `kind`, the shape `DeviceStateDto` already uses, so a
-/// client switches on one field and a payload that grows a member does not
-/// change how the others read.
-///
-/// **The wording is a frontend's and the fact is the engine's**, which is item
-/// 17's line applied here: `run_ended` carries a span and a number of days, and
-/// the sentence built out of them — including whether "3" is spelled *three* —
-/// belongs to whoever is drawing.
+/// What happened, adjacently tagged on `kind`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4487,22 +3641,15 @@ impl From<MonthActivity> for MonthActivityDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MomentKindDto {
-    /// A read ended. `MomentDto::reading_id` is that read.
     ReadingClosed,
-    /// The first mark of the reader's own on a book that carried none.
     FirstAnnotation,
-    /// A reflection reached a book it had not reached before.
-    /// `MomentDto::book_id` is the reflection's own book; `reached_book_id` is
-    /// the far side.
     ReflectionReached { note_id: i64, reached_book_id: i64 },
-    /// A run of consecutive days with activity, **which has already ended**.
-    /// There is no variant for a run in progress, and that is deliberate — a
-    /// run visible while it runs is a streak.
+    /// A run of consecutive days with activity that has already ended; there is no variant for a
+    /// run in progress.
     RunEnded {
         from: String,
         to: String,
-        /// How many days it held. Past tense, like a count of your own
-        /// highlights; never a target and never compared with anything.
+        /// How many days it held; past tense, never a target.
         days: i64,
     },
 }
@@ -4524,22 +3671,8 @@ impl From<MomentKind> for MomentKindDto {
     }
 }
 
-/// One thing worth noticing, derived on every ask and stored nowhere.
-///
-/// **`reading_id` is here beside `book_id` and is not decoration.** A reread is
-/// a second read of one book, so anything minted per reading — a reading's
-/// card, say — cannot be selected by the book alone. It is absent where the evidence does
-/// not settle on one read, which is the same call `ReadingEventDto::reading_id`
-/// makes and for the same reason.
-///
-/// **`id` is opaque.** It is built by the engine out of the rows the moment is
-/// made of; hand it back to `acknowledge_moment` and never parse it. Its format
-/// is not part of this vocabulary and may gain a kind without a version bump.
-///
-/// **There is no count anywhere on this surface** — no total, no unread, no
-/// remaining. The length of the list is the frontend's business and nothing
-/// else's. bookmole never shows a badge counting what you have not done,
-/// and a `pending: 3` on a reply is exactly that with a different name.
+/// One thing worth noticing, derived on every ask and stored nowhere. `reading_id` is absent
+/// when no single read fits.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4550,16 +3683,14 @@ pub struct MomentDto {
     /// Opaque. Give it back to acknowledge; do not read it.
     pub id: String,
     pub kind: MomentKindDto,
-    /// Absent only for `run_ended`, which is about the library rather than a
-    /// book.
+    /// Absent only for `run_ended`, which is about the library.
     #[serde(default)]
     pub book_id: Option<i64>,
-    /// Which read this belongs to, where the evidence settles on one.
     #[serde(default)]
     pub reading_id: Option<i64>,
-    /// `YYYY-MM-DD`, UTC — the same day convention as the activity log.
+    /// `YYYY-MM-DD`, UTC.
     pub day: String,
-    /// Unix seconds. The list arrives newest first by this.
+    /// Unix seconds; the list arrives newest first by this.
     pub occurred_at: i64,
 }
 
@@ -4576,17 +3707,8 @@ impl From<Moment> for MomentDto {
     }
 }
 
-/// What an import of the device's `statistics.sqlite3` did.
-///
-/// Every field is a number a user could check against their device, which is
-/// the point: `books_in_db` against `books_matched` is the whole of "why did
-/// this import so little", and answering it without a round trip is why the
-/// counts cross rather than just the `FillStats`.
-///
-/// A device whose user never enabled the statistics plugin comes back here with
-/// a `warnings` entry and every count zero — **not an error**. Absence is
-/// ordinary; `schema_version` absent is how a client tells "no database" from
-/// "a database with nothing in it".
+/// What an import of the device's `statistics.sqlite3` did; a device without the plugin gives
+/// zero counts and a warning, not an error.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4616,12 +3738,7 @@ impl From<StatsImportReport> for StatsImportReportDto {
     }
 }
 
-// ---- enrichment and provenance ---------------------------------------------
-
-/// Who supplied a field. Mirrored in full, for `DiagnosticKind`'s reason: a
-/// client branches on `user` — the rank that outranks every provider — and
-/// flattening this to a string would make that branch a string comparison
-/// against a vocabulary nothing on the wire pins.
+/// Who supplied a field; `user` outranks every provider.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4634,9 +3751,7 @@ pub enum SourceDto {
     GoogleBooks,
     Calibre,
     Epub,
-    /// A PDF we own said so. Beside `Epub` because the two answer
-    /// different questions: an epub supplies a title and an ISBN and never a
-    /// length, a pdf supplies a length and nothing else.
+    /// A PDF we own; supplies a length and nothing else, unlike `Epub`.
     Pdf,
     Koreader,
     Goodreads,
@@ -4658,11 +3773,8 @@ impl From<Source> for SourceDto {
     }
 }
 
-/// Where one field came from, and when.
-///
-/// **An absent entry means nobody has claimed the field** — every book predating
-/// migration `0012` reports an empty list however well-populated it is. So a
-/// client must render "unattributed", never "unknown provider".
+/// Where one field came from, and when. An absent entry means unclaimed: render
+/// "unattributed", not "unknown provider".
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4671,10 +3783,7 @@ impl From<Source> for SourceDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldSourceDto {
     pub field: String,
-    /// The stored token. Text rather than [`SourceDto`] because this is read
-    /// straight off the column, whose vocabulary deliberately lives in a comment
-    /// rather than a `CHECK` — a closed enum here would fail to parse a row a
-    /// newer engine wrote.
+    /// The stored token, as text so a value a newer engine wrote still parses.
     pub source: String,
     pub fetched_at: i64,
 }
@@ -4689,7 +3798,6 @@ impl From<FieldSource> for FieldSourceDto {
     }
 }
 
-/// How a provider record was tied to the book.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4698,9 +3806,8 @@ impl From<FieldSource> for FieldSourceDto {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrichMatchDto {
-    /// By ISBN, which is an identity — this is about *this edition*.
+    /// By ISBN, an identity: this edition.
     Isbn,
-    /// By title and author, at this score.
     Title { score: f64 },
 }
 
@@ -4713,7 +3820,6 @@ impl From<EnrichMatch> for EnrichMatchDto {
     }
 }
 
-/// A record that looked like this book but not enough to write unasked.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4736,13 +3842,7 @@ impl From<EnrichCandidate> for EnrichCandidateDto {
     }
 }
 
-/// What happened, at the granularity a frontend branches on.
-///
-/// The five are not interchangeable and collapsing any two of them is the bug
-/// this enum was carved to prevent: `nothing_found` is a fact about the book,
-/// `no_answer` is a fact about the network wearing the same shape, `refused`
-/// means results came back and none was certainly this book, and `unaskable`
-/// means there was nothing to ask with.
+/// What happened, at the granularity a frontend branches on; the variants are not interchangeable.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4774,7 +3874,6 @@ impl From<EnrichOutcome> for EnrichOutcomeDto {
     }
 }
 
-/// One field that changed, and who is now answerable for it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4783,8 +3882,7 @@ impl From<EnrichOutcome> for EnrichOutcomeDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldChangeDto {
     pub field: String,
-    /// Absent where the write could not name an origin, which is not the same
-    /// as an origin nobody recognises.
+    /// Absent where the write could not name an origin.
     #[serde(default)]
     pub source: Option<SourceDto>,
     #[serde(default)]
@@ -4803,12 +3901,7 @@ impl From<FieldChange> for FieldChangeDto {
     }
 }
 
-/// A field a provider offered and was not allowed to write.
-///
-/// **The value the provider offered is carried, not just the field name.** A
-/// held-back field reported by name alone is indistinguishable from a field the
-/// provider had nothing for, which is the "silently not updated" state the whole
-/// report exists to remove.
+/// A field a provider offered and was not allowed to write; carries the offered value.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4820,8 +3913,7 @@ pub struct HeldFieldDto {
     pub offered: String,
     #[serde(default)]
     pub offered_by: Option<SourceDto>,
-    /// What was kept instead. Absent where the user owns the field's *pair*
-    /// rather than the field, so there is nothing of theirs in this column.
+    /// What was kept instead; absent where the user owns the field's pair rather than the field.
     #[serde(default)]
     pub kept: Option<String>,
 }
@@ -4837,7 +3929,6 @@ impl From<HeldField> for HeldFieldDto {
     }
 }
 
-/// What one run of `enrich_book_from_providers` did.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4849,7 +3940,6 @@ pub struct EnrichReportDto {
     pub outcome: EnrichOutcomeDto,
     pub filled: Vec<FieldChangeDto>,
     pub held: Vec<HeldFieldDto>,
-    /// Where the cover landed, if one was fetched.
     #[serde(default)]
     pub cover: Option<String>,
     pub warnings: Vec<DiagnosticDto>,
@@ -4868,10 +3958,7 @@ impl From<EnrichReport> for EnrichReportDto {
     }
 }
 
-// ---- where things live -----------------------------------------------------
-
-/// The paths a settings screen shows. Not handles — a client that is not on
-/// this machine can read them and can do nothing with them, which is correct.
+/// The paths a settings screen shows; informational for a client on another machine.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4884,18 +3971,11 @@ pub struct PathsDto {
     pub vault_dir: String,
     pub files_dir: String,
     pub log_dir: String,
-    /// Where files written for other software land (the Anki export).
     pub exports_dir: String,
 }
 
-/// Where the library's database is, and whether that folder is inside a
-/// cloud-synced location (`bookmole::cloud_folder`).
-///
-/// A fact for a frontend to word, once per launch — the library is open either
-/// way, and nothing refuses anything. `database_dir` is the folder holding the
-/// database and its `-wal`/`-shm` siblings: that folder, and never the vault,
-/// is what a sync client damages, so it is what was judged. `None` for an
-/// in-memory library.
+/// Where the library's database is and whether that folder is inside a cloud-synced location;
+/// `None` for in-memory.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4908,7 +3988,6 @@ pub struct LibraryLocationDto {
     pub cloud_folder: Option<CloudFolderDto>,
 }
 
-/// The synced location a library's folder is inside.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4921,8 +4000,8 @@ pub struct CloudFolderDto {
     pub root: String,
 }
 
-/// Which kind of synced location. `cloud_storage` is macOS's
-/// `~/Library/CloudStorage` holding a client this build does not name.
+/// Which kind of synced location; `cloud_storage` is a client under `~/Library/CloudStorage`
+/// this build does not name.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4973,16 +4052,8 @@ impl From<LibraryLocation> for LibraryLocationDto {
     }
 }
 
-// ---- expanding the paths a user picked into book files ---------------------
-
-/// What [`crate::Request::ExpandBookPaths`] made of a list of paths.
-///
-/// Facts for a frontend to word: the files to stage (the inputs in the order
-/// given, each folder replaced by the book files found in it in path order,
-/// and every other input passed through as it was), the calibre libraries
-/// that were named and not walked, what the walk passed over and why, and
-/// where a limit cut it short. The bounds are
-/// the engine's (`bookmole::folders`) and none of them is a parameter.
+/// What `ExpandBookPaths` made of a list of paths: files to stage, calibre libraries not
+/// walked, skips and any cut-off.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -4991,17 +4062,16 @@ impl From<LibraryLocation> for LibraryLocationDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpandedPathsDto {
     pub files: Vec<String>,
-    /// Folders holding calibre's `metadata.db`. calibre owns those files; a
-    /// frontend points at the calibre importer instead of staging them.
+    /// Folders holding calibre's `metadata.db`; calibre owns those files, so a frontend points at
+    /// the calibre importer.
     pub calibre_libraries: Vec<String>,
     pub skipped: SkippedEntriesDto,
-    /// `Some(n)` when the walk found more book files than it may return and
-    /// stopped at `n`. `null` when nothing was left behind.
+    /// `Some(n)` when the walk stopped at `n` files; `null` when nothing was left behind.
     pub cut_off_at: Option<usize>,
 }
 
-/// Entries inside the walked folders that are not among the files, counted by
-/// reason. Counts, never paths: four hundred cover images are one sentence.
+/// Entries in the walked folders that are not among the files, counted by reason; counts,
+/// never paths.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5009,15 +4079,12 @@ pub struct ExpandedPathsDto {
 )]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkippedEntriesDto {
-    /// Names starting with `.`.
     pub hidden: usize,
-    /// Files of a kind that is not a book file.
     pub not_books: usize,
     /// Links to folders, never followed.
     pub linked_folders: usize,
     /// Folders below the walk's depth, not read.
     pub too_deep: usize,
-    /// Folders or entries that could not be read.
     pub unreadable: usize,
 }
 
@@ -5044,13 +4111,6 @@ impl From<ExpandedPaths> for ExpandedPathsDto {
     }
 }
 
-// ---- settings, reading history, the library table, more notes ------------
-//
-// Every shape here is a **response** except the four history enums and
-// `NoteCursorDto`, which ride in new requests. Nothing existing was reshaped
-// except `NoteRowDto`, which gained two optional response fields.
-
-/// One stored setting: a frontend's key and its JSON text, as written.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5059,7 +4119,7 @@ impl From<ExpandedPaths> for ExpandedPathsDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingDto {
     pub key: String,
-    /// JSON text. Parse it; the engine never does.
+    /// JSON text; the engine never parses it.
     pub value: String,
 }
 
@@ -5072,14 +4132,6 @@ impl From<bookmole::Setting> for SettingDto {
     }
 }
 
-/// A book as a shelf row or a timeline card draws it: the face, the authors in
-/// display order, the filing surname, the length and the cover cluster.
-///
-/// **Not `BookDto`**, which is ~19× the size with a description and is a
-/// record that round-trips; this is read-only and is what a table of every
-/// book in the library can afford per row. **Not `BookFaceDto`**, whose four
-/// fields are a contract clients build literals of: a field added there would
-/// break a typed client that never asked for it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5090,11 +4142,10 @@ pub struct ShelfBookDto {
     pub id: i64,
     #[serde(default)]
     pub title: Option<String>,
-    /// Each author as a person says the name. The join is the frontend's.
+    /// Each author as a person says the name; the join is the frontend's.
     #[serde(default)]
     pub authors_display: Vec<String>,
-    /// The first author's surname — `BookDto.sort_author`'s value, for a run
-    /// heading. To **sort**, use the row's `author_order`.
+    /// The first author's surname, for a run heading. To sort, use `author_order`.
     #[serde(default)]
     pub sort_author: Option<String>,
     #[serde(default)]
@@ -5126,8 +4177,6 @@ impl From<Book> for ShelfBookDto {
     }
 }
 
-/// One read, summarised — a timeline card, a record, a Library row's latest
-/// read. Its book rides beside it on the shapes that need one.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5135,36 +4184,30 @@ impl From<Book> for ShelfBookDto {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadSummaryDto {
-    /// The row, with **this** read's progress (`p. 205 of 280`).
     pub reading: ReadingDto,
     /// 1-based, oldest first, over every sibling.
     pub read_number: i64,
     pub of_reads: i64,
-    /// When it was put down (migration `0025`); `null` for a read that is not
-    /// put down, **and for one put down before the column existed** — word
-    /// that as *not recorded*, never as a date.
+    /// When it was put down; `null` for a read not put down and for one put down before the column
+    /// existed (not recorded).
     #[serde(default)]
     pub put_down_at: Option<i64>,
     /// Finished at, or put down at; `null` while open.
     #[serde(default)]
     pub ended_at: Option<i64>,
-    /// Where the card sits on the timeline (unix seconds): `ended_at`, else now
-    /// for an open read, else — put down with no recorded instant — its
-    /// `last_modified`, an upper bound used only to place it.
+    /// Timeline position (unix seconds): `ended_at`, else now for an open read, else
+    /// `last_modified` as an upper bound.
     pub at: i64,
-    /// Whole UTC days from start to end (finished or put down) — *Days =
-    /// finished − started*. `null` without both ends.
+    /// Whole UTC days from start to end; `null` without both ends.
     #[serde(default)]
     pub days: Option<i64>,
-    /// The review's rating, raw and with its scale.
     #[serde(default)]
     pub rating: Option<RatingDto>,
-    /// Passages kept during this read.
     pub passages: i64,
-    /// Notes written during this read: a reflection or review names it, an
-    /// ordinary note is placed by the read whose window holds its writing.
+    /// Notes written during this read: a reflection or review names it, an ordinary note is placed
+    /// by its writing window.
     pub notes: i64,
-    /// `YYYY-MM` (UTC) from start to `at`, oldest first — the spine's bar.
+    /// `YYYY-MM` (UTC) from start to `at`, oldest first.
     pub months: Vec<String>,
 }
 
@@ -5186,7 +4229,6 @@ impl From<bookmole::HistoryRead> for ReadSummaryDto {
     }
 }
 
-/// A read with its book — one card of the History timeline.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5207,7 +4249,6 @@ impl From<bookmole::HistoryRead> for HistoryReadDto {
     }
 }
 
-/// A claimant of the activity log and its proper name.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5228,7 +4269,6 @@ impl From<bookmole::SourceName> for SourceNameDto {
     }
 }
 
-/// A run of consecutive reading days **that has ended**. Days are `YYYY-MM-DD`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5241,9 +4281,7 @@ pub struct DayRunDto {
     pub last: String,
 }
 
-/// The headline figures for a span. **There is no current run on this
-/// shape**: `longest_run` has ended, and a run still under way is never
-/// reported, so nothing counts up while it happens.
+/// Headline figures for a span. No current run: only ended runs are reported, so nothing counts up.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5252,10 +4290,9 @@ pub struct DayRunDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryFiguresDto {
     pub books_finished: i64,
-    /// Reads under way at the span's end.
     pub reading_now: i64,
     pub put_down: i64,
-    /// `null` when nothing measured pages in the span — not zero.
+    /// `null` when nothing measured pages in the span; not zero.
     #[serde(default)]
     pub pages: Option<i64>,
     /// Days of the span so far; the per-day denominator.
@@ -5265,7 +4302,6 @@ pub struct HistoryFiguresDto {
     /// `null` when nothing measured minutes.
     #[serde(default)]
     pub minutes: Option<i64>,
-    /// Who measured them, most minutes first — *from KOReader and …*.
     pub minutes_from: Vec<SourceNameDto>,
     pub passages: i64,
     #[serde(default)]
@@ -5302,7 +4338,6 @@ impl From<bookmole::HistoryFigures> for HistoryFiguresDto {
     }
 }
 
-/// One record, naming its read.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5311,15 +4346,12 @@ impl From<bookmole::HistoryFigures> for HistoryFiguresDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryRecordDto {
     pub read: HistoryReadDto,
-    /// The book's page count.
     #[serde(default)]
     pub pages: Option<i64>,
-    /// Pages over days, a same-day read counting one day.
+    /// Pages over days; a same-day read counts one day.
     #[serde(default)]
     pub pages_per_day: Option<f64>,
-    /// Passages plus notes during the read.
     pub marks: i64,
-    /// Other reads in the span with the same value, most recent first.
     pub tied_with: Vec<HistoryReadDto>,
 }
 
@@ -5335,8 +4367,7 @@ impl From<bookmole::HistoryRecord> for HistoryRecordDto {
     }
 }
 
-/// *This year's records*, over the reads finished in the span. Every tie goes
-/// to the most recent finish.
+/// Records over the reads finished in the span; every tie goes to the most recent finish.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5350,7 +4381,7 @@ pub struct HistoryRecordsDto {
     pub longest: Option<HistoryRecordDto>,
     #[serde(default)]
     pub most_marked: Option<HistoryRecordDto>,
-    /// Ratings meet as a fraction of their own scale.
+    /// Ratings compare as a fraction of their own scale.
     #[serde(default)]
     pub best_rated: Option<HistoryRecordDto>,
 }
@@ -5366,7 +4397,6 @@ impl From<bookmole::HistoryRecords> for HistoryRecordsDto {
     }
 }
 
-/// What a chart counts.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5395,7 +4425,7 @@ impl From<HistoryMetricDto> for bookmole::HistoryMetric {
     }
 }
 
-/// The bucket a chart groups by. **Weeks start on Monday.**
+/// The bucket a chart groups by. Weeks start on Monday.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5420,8 +4450,7 @@ impl From<HistoryGroupDto> for bookmole::HistoryGroup {
     }
 }
 
-/// How a bucket is split. `device` splits by the log's claimant
-/// (`koreader`, `local`, …) — it records no finer device identity.
+/// How a bucket is split; `device` splits by the log's claimant, not a finer device identity.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5447,7 +4476,6 @@ impl From<HistorySplitDto> for bookmole::HistorySplit {
     }
 }
 
-/// What a chart is compared with.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5460,7 +4488,6 @@ pub enum HistoryCompareDto {
     Nothing,
     /// The same bucket a year earlier (52 weeks for a week).
     LastYear,
-    /// The series' own per-bucket average.
     Average,
 }
 
@@ -5475,7 +4502,7 @@ impl From<HistoryCompareDto> for bookmole::HistoryCompare {
     }
 }
 
-/// One part of a split bucket. `key` is a book id (or `none`) or a claimant.
+/// One part of a split bucket; `key` is a book id (or `none`) or a claimant.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5496,15 +4523,15 @@ pub struct SeriesPartDto {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SeriesBucketDto {
-    /// The calendar bucket's own first day (a Monday, a 1st) — *Week of 5 Oct*.
+    /// The calendar bucket's own first day (a Monday, a 1st).
     pub period: String,
-    /// The first and last day counted: the bucket clipped to the span and to
-    /// today. The buckets' `[start, end]` partition the span's days.
+    /// First and last day counted: the bucket clipped to the span and to today; buckets partition
+    /// the span.
     pub start: String,
     pub end: String,
     pub value: i64,
-    /// Pages/minutes: `false` means nothing measured this bucket — draw an
-    /// absence, not a zero. Always `true` for the counted metrics.
+    /// Pages/minutes: `false` means nothing measured; draw an absence, not a zero. Always `true`
+    /// for counted metrics.
     pub known: bool,
     /// Largest first; empty when unsplit; sums to `value`.
     pub parts: Vec<SeriesPartDto>,
@@ -5512,7 +4539,6 @@ pub struct SeriesBucketDto {
     pub compare: Option<f64>,
 }
 
-/// A chart's buckets and the figures beside it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5523,17 +4549,14 @@ pub struct HistorySeriesDto {
     pub buckets: Vec<SeriesBucketDto>,
     pub total: i64,
     pub known: bool,
-    /// Per bucket — *97 a week on average*.
     #[serde(default)]
     pub average: Option<f64>,
-    /// Index into `buckets` of the largest (the earliest of equals); `null`
-    /// when every bucket is zero.
+    /// Index into `buckets` of the largest (earliest of equals); `null` when every bucket is zero.
     #[serde(default)]
     pub busiest: Option<i64>,
-    /// `last_year` only: the comparison summed — last year **to date**.
+    /// `last_year` only: the comparison summed, last year to date.
     #[serde(default)]
     pub compare_total: Option<i64>,
-    /// `(total − compare_total) / compare_total` — *+34% on 2025 to date*.
     #[serde(default)]
     pub compare_change: Option<f64>,
 }
@@ -5572,7 +4595,6 @@ impl From<bookmole::HistorySeries> for HistorySeriesDto {
     }
 }
 
-/// One book's share of what was kept in a span.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5595,7 +4617,6 @@ impl From<bookmole::KeptRow> for KeptRowDto {
     }
 }
 
-/// A CSV the engine wrote into the exports folder — the path is the answer.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5617,7 +4638,6 @@ impl From<bookmole::SavedCsv> for SavedCsvDto {
     }
 }
 
-/// One row of the Library table.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5626,23 +4646,18 @@ impl From<bookmole::SavedCsv> for SavedCsvDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LibraryRowDto {
     pub book: ShelfBookDto,
-    /// 0-based position in the engine's Title order (leading article
-    /// dropped, `NOCASE`). **Sort by this**, not by re-collating the title.
+    /// 0-based position in the engine's Title order (leading article dropped, `NOCASE`); sort by this.
     pub title_order: i64,
-    /// 0-based position in the engine's Author order (surname, then the whole
-    /// name; authorless last).
+    /// 0-based position in the engine's Author order (surname, then whole name; authorless last).
     pub author_order: i64,
-    /// The current read — open if any, else the most recent. `null` for a
-    /// book never started.
+    /// The current read (open if any, else the most recent); `null` for a book never started.
     #[serde(default)]
     pub latest: Option<ReadSummaryDto>,
-    /// Every passage of the book.
     pub passages: i64,
-    /// Every note on the book.
     pub notes: i64,
 }
 
-/// The chips. They partition `all`.
+/// The status chips; they partition `all`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5659,7 +4674,6 @@ pub struct LibraryCountsDto {
     pub no_reading: i64,
 }
 
-/// The whole shelf as one table, in Title order.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5669,7 +4683,6 @@ pub struct LibraryCountsDto {
 pub struct LibraryTableDto {
     pub rows: Vec<LibraryRowDto>,
     pub counts: LibraryCountsDto,
-    /// Pages across every book with a page count.
     pub total_pages: i64,
 }
 
@@ -5702,8 +4715,7 @@ impl From<bookmole::LibraryTable> for LibraryTableDto {
     }
 }
 
-/// A keyset cursor into a note list: the last row seen, by the list's own
-/// order (`latest_part_at DESC, id DESC`).
+/// A keyset cursor into a note list: the last row seen, by `latest_part_at DESC, id DESC`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5711,13 +4723,10 @@ impl From<bookmole::LibraryTable> for LibraryTableDto {
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteCursorDto {
-    /// The row's `latest_part_at`.
     pub at: i64,
-    /// The row's note id.
     pub id: i64,
 }
 
-/// A book with linked notes, and how many of its notes are in the graph.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5729,8 +4738,7 @@ pub struct NoteBookDto {
     pub notes: i64,
 }
 
-/// One mark of a read — *Also from this read*. Internally tagged on `kind`,
-/// `SearchHitDto`'s shape. `at` is unix seconds.
+/// One mark of a read, internally tagged on `kind`. `at` is unix seconds.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5743,7 +4751,7 @@ pub enum ReadMarkDto {
         at: i64,
         row: Box<NoteRowDto>,
     },
-    /// **`highlight.text` is the reader's private passage.**
+    /// `highlight.text` is the reader's private passage.
     Passage {
         at: i64,
         highlight: HighlightDto,
@@ -5765,13 +4773,8 @@ impl From<bookmole::ReadMark> for ReadMarkDto {
     }
 }
 
-// ---- lists (migration 0028) -----------------------------------------------
-
-/// A two-way mapping between an engine enum and its snake_case wire twin.
-///
-/// The ts-rs export attribute is written at each use, not here: `gen-ts.sh`
-/// counts its literal text to know how many types the bindings must hold, so
-/// this comment must not spell it either.
+/// Maps an engine enum to its snake_case wire twin. The ts-rs export attribute is written at
+/// each use: the type-count check greps its literal text, so do not spell it here.
 macro_rules! wire_enum {
     ($(#[$m:meta])* $dto:ident <=> $eng:path { $($(#[$vm:meta])* $var:ident),+ $(,)? }) => {
         $(#[$m])*
@@ -5793,27 +4796,24 @@ macro_rules! wire_enum {
 }
 
 wire_enum! {
-    /// How the lists home orders its lists.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     #[derive(Default)]
     ListSortDto <=> bookmole::ListSort { Name, #[default] RecentlyChanged }
 }
 
 wire_enum! {
-    /// Which of a list's entries to show.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     #[derive(Default)]
     EntryShowDto <=> bookmole::EntryShow { #[default] All, InLibrary, NotInLibrary }
 }
 
 wire_enum! {
-    /// A **view** over a list's entries; none of these rewrites `position`.
+    /// A view over a list's entries; none rewrites `position`.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     #[derive(Default)]
     EntrySortDto <=> bookmole::EntrySort { #[default] Yours, Published, Title }
 }
 
-/// One list with the facts a list page draws.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5828,11 +4828,8 @@ pub struct ListDto {
     /// `"user"`, or `"goodreads"` for a kept shelf.
     pub source: String,
     pub book_count: i64,
-    /// Entries whose book is not in the library.
     pub not_in_library: i64,
-    /// Entries whose book is in the library (*Show: In your library (n)*),
-    /// counted from the same entries by the same rule, never left to a
-    /// frontend's subtraction.
+    /// Entries whose book is in the library, counted by the same rule as `not_in_library`.
     pub in_library_count: i64,
     /// Enough books have a year for a Timeline to be worth drawing.
     pub timeline_ready: bool,
@@ -5861,7 +4858,6 @@ impl ListDto {
     }
 }
 
-/// A list as the lists home draws it: counts and the first few books.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5876,11 +4872,9 @@ pub struct ListSummaryDto {
     pub source: String,
     pub book_count: i64,
     pub not_in_library: i64,
-    /// Entries whose book is in the library; the engine counts it in the query
-    /// that counts `not_in_library`.
+    /// Entries whose book is in the library, counted in the query that counts `not_in_library`.
     pub in_library_count: i64,
     pub updated_at: i64,
-    /// The first `preview` books by position.
     pub preview: Vec<ShelfBookDto>,
 }
 
@@ -5900,7 +4894,6 @@ impl From<bookmole::ListSummary> for ListSummaryDto {
     }
 }
 
-/// One book on one list.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5913,8 +4906,7 @@ pub struct ListEntryDto {
     pub position: i64,
     #[serde(default)]
     pub note: Option<String>,
-    /// The year the Timeline would place the book at; the engine's preference
-    /// (first publication, else the edition's).
+    /// The year the Timeline places the book at: first publication, else the edition's.
     #[serde(default)]
     pub year: Option<i64>,
     /// `year` is an edition's year because the first publication is unknown.
@@ -5940,7 +4932,6 @@ impl From<bookmole::ListEntry> for ListEntryDto {
     }
 }
 
-/// Which lists a book is on.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5950,7 +4941,7 @@ impl From<bookmole::ListEntry> for ListEntryDto {
 pub struct ListMembershipDto {
     pub list_id: i64,
     pub name: String,
-    /// 1-based ("No. 1 of 6").
+    /// 1-based.
     pub position: i64,
     pub list_size: i64,
     #[serde(default)]
@@ -5969,7 +4960,6 @@ impl From<bookmole::ListMembership> for ListMembershipDto {
     }
 }
 
-/// A list's books laid along a line.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -5977,9 +4967,8 @@ impl From<bookmole::ListMembership> for ListMembershipDto {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListTimelineDto {
-    /// Books with a year, in the list's own order.
     pub dated: Vec<ListEntryDto>,
-    /// Books without one, in the list's own order; they go last.
+    /// Books without a year, in the list's own order; they go last.
     pub undated: Vec<ListEntryDto>,
     pub ready: bool,
 }
@@ -5994,7 +4983,6 @@ impl From<bookmole::ListTimeline> for ListTimelineDto {
     }
 }
 
-/// A shelf from another system, offered as a list.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6002,7 +4990,6 @@ impl From<bookmole::ListTimeline> for ListTimelineDto {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShelfSuggestionDto {
-    /// `"goodreads"`.
     pub source: String,
     pub tag: String,
     /// The shelf as the reader wrote it, else the tag.
@@ -6023,22 +5010,17 @@ impl From<bookmole::ShelfSuggestion> for ShelfSuggestionDto {
     }
 }
 
-// ---- copies (migration 0027) ----------------------------------------------
-
 wire_enum! {
-    /// What kind of thing a copy is. A copy with no recorded form carries none.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     CopyFormDto <=> bookmole::CopyForm { File, Print, App }
 }
 
 wire_enum! {
-    /// On what terms you have it.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     TenureDto <=> bookmole::Tenure { Own, Borrowed, Rented, Subscription, Unrecorded }
 }
 
 wire_enum! {
-    /// What a place points to.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     PlaceKindDto <=> bookmole::PlaceKind { Calibre, Reader, Path, Store, AppleBooks }
 }
@@ -6051,7 +5033,6 @@ wire_enum! {
     }
 }
 
-/// One place a copy sits. A fact about the place, never a verdict on the copy.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6072,8 +5053,7 @@ pub struct CopyPlaceDto {
     pub last_mtime: Option<i64>,
     #[serde(default)]
     pub missing_since: Option<i64>,
-    /// For a `reader` place: the paired device's name, looked up from the
-    /// device id in `detail`. Absent when the device is not known.
+    /// A `reader` place's paired device name; absent when the device is not known.
     #[serde(default)]
     pub device_name: Option<String>,
 }
@@ -6132,17 +5112,14 @@ pub struct CopyDto {
     pub created_at: i64,
     pub updated_at: i64,
     pub places: Vec<CopyPlaceDto>,
-    /// The file's lowercased format (`epub`, `pdf`, ...) when the engine
-    /// knows it; absent for a reader-only or app copy.
+    /// The file's lowercased format (`epub`, `pdf`, ...); absent for a reader-only or app copy.
     #[serde(default)]
     pub format: Option<String>,
-    /// *Keep a copy here* would work on this copy (a file on this computer, not
-    /// yet stored). Show the action only where this is true.
+    /// Whether *Keep a copy here* works on this copy; show the action only where true.
     pub can_keep_here: bool,
 }
 
 impl CopyDto {
-    /// A copy with the facts the engine derived for it.
     pub fn from_parts(c: bookmole::Copy, facts: bookmole::CopyFacts) -> Self {
         let mut places: Vec<CopyPlaceDto> = c.places.iter().cloned().map(Into::into).collect();
         for (place, dto) in c.places.iter().zip(places.iter_mut()) {
@@ -6178,7 +5155,6 @@ impl CopyDto {
 }
 
 wire_enum! {
-    /// Which app wrote a highlight.
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     HighlightOriginDto <=> bookmole::HighlightOrigin {
         Koreader, Preview, AppleBooks, Kindle, KindleApp, User
@@ -6193,8 +5169,6 @@ wire_enum! {
     }
 }
 
-/// Where one highlight came from, as facts. The wording (*Apple Books - this
-/// Mac*) is the frontend's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6207,7 +5181,6 @@ pub struct HighlightOriginFactDto {
     /// The copy it was made in; absent is history with no copy.
     #[serde(default)]
     pub copy_id: Option<i64>,
-    /// The paired reader that copy sits on, when known.
     #[serde(default)]
     pub device_name: Option<String>,
     /// The copy has a `path`, `store`, `calibre` or `apple_books` place.
@@ -6232,7 +5205,6 @@ impl From<bookmole::HighlightOriginFact> for HighlightOriginFactDto {
     }
 }
 
-/// Where a book stands, derived by the engine.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6242,8 +5214,7 @@ impl From<bookmole::HighlightOriginFact> for HighlightOriginFactDto {
 pub struct BookStandingDto {
     pub in_library: bool,
     pub touched: bool,
-    /// A finished reading and no copy at all: the book page asks *how did you
-    /// read it?*.
+    /// A finished reading and no copy at all: the book page asks how it was read.
     pub read_without_copy: bool,
 }
 
@@ -6257,7 +5228,6 @@ impl From<bookmole::BookStanding> for BookStandingDto {
     }
 }
 
-/// One in-library book's copy facts for the Library table's filters.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6292,8 +5262,7 @@ pub struct LibraryCopyCountsDto {
     pub copy_not_recorded: i64,
 }
 
-/// What the Library table needs to filter by copy: a row per in-library book
-/// that has copies (no row means no copies, every flag false), and the counts.
+/// A row per in-library book that has copies (no row means no copies), and the counts.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6331,11 +5300,6 @@ impl From<bookmole::LibraryCopies> for LibraryCopiesDto {
     }
 }
 
-// ---- reading-app imports --------------------------------------------------
-
-/// What one import of highlights from a reading app did: counts, and the
-/// degradations. The engine's `HighlightImportSummary`, shared by all four
-/// importers.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6346,10 +5310,8 @@ pub struct HighlightImportDto {
     pub inserted: usize,
     pub updated: usize,
     pub unchanged: usize,
-    /// Rows removed because the source dropped them (Preview, and Apple Books'
-    /// own deletion mark). Always 0 for the Kindle, whose files never forget.
+    /// Rows removed because the source dropped them; always 0 for the Kindle.
     pub removed: usize,
-    /// Entries seen in the source that could not be made into a highlight.
     pub unparsed: usize,
     pub diagnostics: Vec<DiagnosticDto>,
 }
@@ -6372,14 +5334,12 @@ fn map_vec<T, U: From<T>>(items: Vec<T>) -> Vec<U> {
 }
 
 wire_enum! {
-    /// What a Preview rescan of one PDF did: `unchanged` (its mtime is the
-    /// one recorded, so it was not read), `reimported`, or `missing` (the
-    /// file is not there; the place is marked, the copy untouched).
+    /// What a Preview rescan of one PDF did: `unchanged` (mtime matches, not read), `reimported`, or
+    /// `missing` (file gone; the place is marked, the copy untouched).
     #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "bindings.ts"))]
     RescanOutcomeDto <=> bookmole::preview::RescanOutcome { Unchanged, Reimported, Missing }
 }
 
-/// One PDF of a book, as `ImportPreviewAnnotations` found it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6405,7 +5365,6 @@ impl From<bookmole::PreviewPlaceRescan> for PreviewPlaceDto {
     }
 }
 
-/// `ImportPreviewAnnotations`: every PDF place of the book, and the sum.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6428,8 +5387,7 @@ impl From<bookmole::PreviewBookImport> for PreviewImportDto {
     }
 }
 
-/// Which rung matched an Apple Books asset to a book. Internally tagged on
-/// `rung`; only `file` carries more (which rung of the files ladder).
+/// Which rung matched an Apple Books asset to a book; tagged on `rung`, only `file` carries more.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6440,9 +5398,7 @@ impl From<bookmole::PreviewBookImport> for PreviewImportDto {
 pub enum AppleBooksMatchDto {
     /// Imported before: its `apple_books` place.
     Place,
-    /// Its file, through the files ladder.
     File { file_match: FileMatchDto },
-    /// Its Book Store id.
     StoreId,
     /// Title and author, auto-match band.
     Title,
@@ -6462,7 +5418,6 @@ impl From<bookmole::AssetMatch> for AppleBooksMatchDto {
     }
 }
 
-/// What became of one Apple Books asset. Internally tagged on `state`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6477,7 +5432,6 @@ pub enum AppleBooksOutcomeDto {
     },
     /// Nothing matched or came close, and it had highlights: a book was made.
     Created { book_id: i64 },
-    /// A dry run's `created`.
     WouldCreate,
     /// Nothing matched outright and nothing was written. The candidates are
     /// the decision (`LinkAppleBooksAsset`); empty when the asset has no
@@ -6502,7 +5456,6 @@ impl From<bookmole::AssetOutcome> for AppleBooksOutcomeDto {
     }
 }
 
-/// One Apple Books asset (a book in the app) that had something to import.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6515,15 +5468,11 @@ pub struct AppleBooksBookDto {
     #[serde(default)]
     pub title: Option<String>,
     pub authors: Vec<String>,
-    /// Bought in the Book Store.
     pub store_bought: bool,
     pub outcome: AppleBooksOutcomeDto,
-    /// The copy its highlights are stamped with.
     #[serde(default)]
     pub copy_id: Option<i64>,
-    /// Live highlights (and note-only rows) Apple Books holds for it.
     pub highlights_in_source: usize,
-    /// Annotations Apple Books marks deleted.
     pub deleted_in_source: usize,
     /// All zero but `unparsed` on a dry run.
     pub summary: HighlightImportDto,
@@ -6555,23 +5504,18 @@ impl From<bookmole::AppleBooksBook> for AppleBooksBookDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppleBooksReportDto {
     pub dry_run: bool,
-    /// The annotation database read, if one was found.
     #[serde(default)]
     pub annotation_db: Option<String>,
-    /// The library database read, if one was found.
     #[serde(default)]
     pub library_db: Option<String>,
     pub books: Vec<AppleBooksBookDto>,
     /// Every book's counts summed (plus annotations no asset could take); its
     /// `diagnostics` is empty.
     pub totals: HighlightImportDto,
-    /// Rows in Apple Books' library table.
     pub assets_in_library: usize,
     /// Assets with nothing to import that matched no book: counted, not listed.
     pub assets_skipped: usize,
-    /// Bookmarks and other annotations that are not highlights.
     pub not_highlights: usize,
-    /// Highlights whose asset nothing knows.
     pub orphaned: usize,
     /// About the databases themselves (`apple_books_absent`,
     /// `apple_books_permission_denied`, ...).
@@ -6595,7 +5539,6 @@ impl From<bookmole::AppleBooksReport> for AppleBooksReportDto {
     }
 }
 
-/// One clippings title that matched a book (or was attached to one).
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6603,7 +5546,6 @@ impl From<bookmole::AppleBooksReport> for AppleBooksReportDto {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KindleClippingsBookDto {
-    /// The title line as the Kindle wrote it.
     pub title_line: String,
     pub book_id: i64,
     #[serde(default)]
@@ -6626,9 +5568,8 @@ impl From<bookmole::kindle_clippings::KindleClippingsBook> for KindleClippingsBo
     }
 }
 
-/// A clippings title no book matched in **this** import. Nothing of it was
-/// written and no book was made; `AttachKindleTitle` with this `title_line`
-/// is the next move. A fact about the import just run, never a standing count.
+/// A clippings title no book matched in this import; nothing was written.
+/// `AttachKindleTitle` with this `title_line` resolves it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6636,7 +5577,6 @@ impl From<bookmole::kindle_clippings::KindleClippingsBook> for KindleClippingsBo
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnmatchedKindleTitleDto {
-    /// The key `AttachKindleTitle` takes.
     pub title_line: String,
     pub title: String,
     pub authors: Vec<String>,
@@ -6658,7 +5598,6 @@ impl From<bookmole::kindle_clippings::UnmatchedKindleTitle> for UnmatchedKindleT
     }
 }
 
-/// What an import of one `My Clippings.txt` did (or, dry, would do).
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6666,8 +5605,7 @@ impl From<bookmole::kindle_clippings::UnmatchedKindleTitle> for UnmatchedKindleT
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KindleClippingsReportDto {
-    /// The file read: what `AttachKindleTitle` takes back for an unmatched
-    /// title (a mounted import may read several).
+    /// The file read; `AttachKindleTitle` takes it back for an unmatched title.
     pub path: String,
     pub dry_run: bool,
     pub books: Vec<KindleClippingsBookDto>,
@@ -6679,8 +5617,6 @@ pub struct KindleClippingsReportDto {
 }
 
 impl KindleClippingsReportDto {
-    /// The engine's report says nothing of which file it read; the caller
-    /// that named (or found) the file does.
     pub fn new(path: &Path, r: bookmole::kindle_clippings::KindleClippingsReport) -> Self {
         KindleClippingsReportDto {
             path: path_str(path),
@@ -6693,7 +5629,6 @@ impl KindleClippingsReportDto {
     }
 }
 
-/// What an import of one Kindle app notebook export did (or, dry, would do).
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6702,7 +5637,6 @@ impl KindleClippingsReportDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KindleNotebookReportDto {
     pub dry_run: bool,
-    /// The file's own title and authors, so a frontend can ask which book.
     #[serde(default)]
     pub title: Option<String>,
     pub authors: Vec<String>,
@@ -6736,10 +5670,6 @@ impl From<bookmole::kindle_notebook::KindleNotebookReport> for KindleNotebookRep
     }
 }
 
-// ---- a copy's files -------------------------------------------------------
-
-/// One file of a copy: where it is, how big, whether it is there now. Facts
-/// only; the wording (*Not where it was*) is the frontend's.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6748,19 +5678,14 @@ impl From<bookmole::kindle_notebook::KindleNotebookReport> for KindleNotebookRep
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyFileDto {
     pub copy_id: i64,
-    /// `path`, `store` or `calibre`.
     pub kind: PlaceKindDto,
-    /// The place's reference (a path, a sha256, a calibre uuid).
     pub reference: String,
-    /// Lowercased (`epub`, `pdf`); absent when nothing says.
     #[serde(default)]
     pub format: Option<String>,
-    /// Absolute. Absent for a calibre place whose files were never recorded
-    /// (scanned before this existed): say it is in calibre, not where.
+    /// Absolute. Absent for a calibre place whose files were never recorded.
     #[serde(default)]
     pub path: Option<String>,
-    /// For a calibre place: the library root, where `""` is calibre's own
-    /// default library. Absent for other kinds.
+    /// For a calibre place: the library root; `""` is calibre's default library.
     #[serde(default)]
     pub calibre_library: Option<String>,
     /// A file is at `path` now. Absent when there is no path to look at.
@@ -6769,7 +5694,6 @@ pub struct CopyFileDto {
     /// Bytes; absent when the file is not there.
     #[serde(default)]
     pub size: Option<i64>,
-    /// The place's own facts, as recorded.
     #[serde(default)]
     pub missing_since: Option<i64>,
     #[serde(default)]
@@ -6793,8 +5717,8 @@ impl From<bookmole::CopyFile> for CopyFileDto {
     }
 }
 
-/// Where one copy's highlights of one origin came from, and when that source
-/// was last read in. **No count** on purpose.
+/// Where one copy's highlights of one origin came from, and when that source was last read.
+/// Deliberately no count.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -6806,7 +5730,6 @@ pub struct CopyHighlightSourceDto {
     #[serde(default)]
     pub copy_id: Option<i64>,
     pub origin: HighlightOriginDto,
-    /// The paired reader the copy sits on, when known.
     #[serde(default)]
     pub device_name: Option<String>,
     /// KOReader: the reader place last seen; Preview: the PDF's place last
@@ -6845,21 +5768,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<BookDto>(&json).unwrap(), dto);
     }
 
-    /// The `#[serde(default)]` promise: a payload written before a field
-    /// existed still parses. Every optional field carries it, so the minimum a
-    /// client must send is nothing at all.
     #[test]
     fn an_empty_object_is_a_valid_book() {
         let dto: BookDto = serde_json::from_str("{}").unwrap();
         assert_eq!(dto, BookDto::default());
     }
 
-    /// `Book -> BookDto -> Book` must not quietly drop a field, which is the
-    /// one bug a hand-written `From` invites. **Timestamps are now the only
-    /// deliberate exception**, and are asserted as such —
-    /// `subjects`/`series`/`series_index` were the other three until this
-    /// surfacing item, and their assertions were what made the gap an API gap
-    /// with a name rather than a silent drop.
     #[test]
     fn the_trip_through_the_dto_keeps_every_field_but_the_stamps() {
         let book = Book {
@@ -6930,19 +5844,11 @@ mod tests {
         // Storage stamps these; a client must not be able to backdate a row.
         assert_eq!(back.created_at, None);
         assert_eq!(back.last_modified, None);
-        // **And `ko_percent` does not come back**, which is deliberate rather
-        // than a drop: it is a read-only projection of a device-owned column
-        // whose writer is `update_progress`. The four fields beside it survive
-        // only because `upsert_book` ignores them, which is where that rule
-        // lives; carrying a value nothing can write would be the worse of the
-        // two.
+        // `ko_percent` is a read-only projection of a device-owned column; it deliberately does not
+        // round-trip.
         assert_eq!(back.ko_percent, None);
-        // **And neither do the four cover columns**, for a stronger version of
-        // `ko_percent`'s reason: `Storage::set_cover` is their only writer *by
-        // design*, since a width arriving without the file it measures is a row
-        // describing an image it is not pointing at. The wire carries the three
-        // readings of them (`cover_aspect`, `cover_accent`,
-        // `cover_shelf_path`) and no way to write them back.
+        // The cover columns do not round-trip: only `Storage::set_cover` writes them, so a width
+        // never arrives without the file it measures.
         assert_eq!(dto.cover_aspect, Some(600.0 / 900.0));
         assert_eq!(
             dto.cover_accent,
@@ -6959,17 +5865,12 @@ mod tests {
         assert_eq!(back.cover_thumb_path, None);
     }
 
-    /// The derived fields are **readings, not columns**: they arrive on the way
-    /// out and are dropped on the way in, because there is nothing to write
-    /// them to. A `series_label` of "Dune #2" beside a `series_index` of 3 is
-    /// not a request.
     #[test]
     fn the_derived_fields_cross_outward_only() {
         let book = Book {
             authors: vec!["Borges, Jorge Luis".into()],
             series: Some("Dune".into()),
-            // A REAL that must not print as `#2.0` — the drift `series_label`
-            // exists to prevent.
+            // A REAL that must not print as `#2.0`.
             series_index: Some(2.0),
             current_page: Some(50),
             page_count: Some(200),
@@ -6978,7 +5879,6 @@ mod tests {
         let dto = BookDto::from(book);
         assert_eq!(dto.series_label.as_deref(), Some("Dune #2"));
         assert_eq!(dto.authors_display, vec!["Jorge Luis Borges".to_string()]);
-        // The record itself is untouched: `authors` is what the origin spelled.
         assert_eq!(dto.authors, vec!["Borges, Jorge Luis".to_string()]);
         assert_eq!(
             dto.progress,
@@ -6997,8 +5897,6 @@ mod tests {
         assert_eq!(back.authors, vec!["Borges, Jorge Luis".to_string()]);
     }
 
-    /// A book crosses knowing the name it files under, and that name is the
-    /// first letter's worth of `names::sort_key` — never the packed column.
     #[test]
     fn a_book_crosses_with_the_name_it_files_under() {
         let filed = |authors: &[&str]| {
@@ -7011,13 +5909,10 @@ mod tests {
         assert_eq!(filed(&["Ursula K. Le Guin"]).as_deref(), Some("Le Guin"));
         assert_eq!(filed(&["Borges, Jorge Luis"]).as_deref(), Some("Borges"));
         assert_eq!(filed(&["Colette"]).as_deref(), Some("Colette"));
-        // The first *non-blank* author, which is `sort_key`'s choice too.
         assert_eq!(filed(&["  ", "Richard Powers"]).as_deref(), Some("Powers"));
-        // No author is absence, not "": `BookSort::Author` files it last.
         assert_eq!(filed(&[]), None);
         assert_eq!(filed(&[" "]), None);
 
-        // The surname agrees with the key the engine orders by.
         let authors = vec!["Emily St. John Mandel".to_string()];
         let (_, key_last, _) = bookmole::names::sort_key(&authors);
         let dto = BookDto::from(Book {
@@ -7029,8 +5924,6 @@ mod tests {
             Some(key_last)
         );
 
-        // Outward only, and additive: a payload written before it existed
-        // still parses, and nothing on the way back carries it.
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["sort_author"], "Mandel");
         let old: BookDto = serde_json::from_str(r#"{"title":"t"}"#).unwrap();
@@ -7038,14 +5931,6 @@ mod tests {
         assert!(!serde_json::to_string(&dto).unwrap().contains('\u{1}'));
     }
 
-    /// A candidate crosses the seam knowing who wrote it.
-    ///
-    /// The wire is where this matters most: a GUI links this crate and **not**
-    /// the engine, so without the field the only way to put an author in
-    /// a chooser row was a `get_book` per candidate — one request per row, on a
-    /// list a calibre import produces per row of its own. The names arrive
-    /// already parsed for the same reason: `bookmole::names` is not
-    /// reachable from TypeScript.
     #[test]
     fn a_candidate_crosses_the_seam_knowing_who_wrote_it() {
         let dto = MatchCandidateDto::from(MatchCandidate {
@@ -7061,17 +5946,12 @@ mod tests {
         assert_eq!(back.authors_display, ["Frank Herbert"]);
         assert_eq!(back.publish_year, Some(1965));
 
-        // Both fields are `#[serde(default)]`, so a payload written before they
-        // existed still parses — which is what let them land without moving
-        // `API_VERSION`.
         let old: MatchCandidateDto =
             serde_json::from_str(r#"{"book_id":7,"title":"Dune","score":0.71}"#).unwrap();
         assert!(old.authors_display.is_empty());
         assert_eq!(old.publish_year, None);
     }
 
-    /// The false denominator, at the seam. A real book in `make dev-db` has
-    /// `page_count = 0`; a CLI dividing by it once printed `[12/0]`.
     #[test]
     fn a_zero_page_count_never_reaches_a_client_as_a_denominator() {
         let dto = BookDto::from(Book {
@@ -7091,8 +5971,6 @@ mod tests {
         );
     }
 
-    /// An importer can write a status this build does not know, and it must
-    /// cross whole rather than collapsing to a placeholder or failing to parse.
     #[test]
     fn an_unknown_reading_state_survives_the_wire() {
         let dto = BookDto::from(Book {
@@ -7108,17 +5986,14 @@ mod tests {
         let json = serde_json::to_string(&dto).unwrap();
         let round: BookDto = serde_json::from_str(&json).unwrap();
         assert_eq!(round.reading_state, dto.reading_state);
-        // And back to the column's own word, unchanged.
         assert_eq!(
             Book::from(round).reading_status.as_deref(),
             Some("tsundoku")
         );
     }
 
-    /// No reading at all is **absence**, not a state. There is no `NeverOpened`
-    /// variant and this is what asserts it stays that way — a named state is
-    /// one a UI filters on, counts, and eventually puts a badge beside — a
-    /// count of what the reader has not done, which bookmole never shows.
+    /// No reading is absence, not a state: there is no `NeverOpened` variant, since a named state
+    /// gets filtered, counted and badged.
     #[test]
     fn no_reading_is_absence_rather_than_a_variant() {
         let dto = BookDto::from(Book::default());
@@ -7126,9 +6001,6 @@ mod tests {
         assert_eq!(dto.progress, ProgressDto::Untouched);
     }
 
-    /// The whole argument for mirroring `DiagnosticKind` in full rather than
-    /// flattening it to a string: the far side can still tell *which* file, and
-    /// still tell a timeout from a 500.
     #[test]
     fn a_diagnostic_keeps_its_structure_across_json() {
         let d = Diagnostic::sidecar_unparsable(
@@ -7146,7 +6018,6 @@ mod tests {
                 path: "/books/x.sdr/metadata.epub.lua".into()
             }
         );
-        // And the CLI's exact wording survives, so no client re-derives it.
         assert_eq!(back.display, display);
     }
 
@@ -7196,8 +6067,6 @@ mod tests {
         assert_eq!(json["new_highlights"], 3);
     }
 
-    /// An unmodelled KOReader status must arrive as itself. Collapsing it would
-    /// be exactly the silence `UnknownDeviceStatus` exists to break.
     #[test]
     fn an_unknown_device_status_keeps_its_raw_string() {
         let dto = KoStatusDto::from(KoStatus::Other("tsundoku".into()));
@@ -7206,10 +6075,6 @@ mod tests {
         assert_eq!(json["raw"], "tsundoku");
     }
 
-    /// The last leg of a card's round trip. `FlashcardRow` gained the two
-    /// handles; this is what makes them reach a client, and the reason to
-    /// assert it is that a hand-written `From` is exactly where a new field is
-    /// forgotten — with no symptom but a card that cannot find its passage.
     #[test]
     fn a_card_carries_both_handles_across_the_seam() {
         let dto: FlashcardDto = FlashcardRow {
@@ -7231,10 +6096,8 @@ mod tests {
         assert!(json.contains(r#""highlight_id":9"#));
     }
 
-    /// `highlight_id` may be absent — an unanchored card is ordinary — and
-    /// `book_id` may **not**. A default there would parse an old reply into a
-    /// card belonging to book `0`, which is not a book and which no client
-    /// could tell from one somebody deleted.
+    /// `highlight_id` may be absent; `book_id` may not, or an old reply would parse into a card
+    /// for book 0.
     #[test]
     fn an_unanchored_card_parses_and_a_bookless_one_does_not() {
         let anchorless: FlashcardDto = serde_json::from_str(
@@ -7253,12 +6116,8 @@ mod tests {
         );
     }
 
-    /// Migration `0021` stamped two breadcrumbs on `paired_devices` that the
-    /// CLI read; a wire that did not carry them would let a client say
-    /// *nothing brought across* about a reader that had pushed that morning.
-    /// Both cross, under the keys generated TypeScript is keyed by — the
-    /// serialized form is asserted because a renamed field would type-check on
-    /// both sides and arrive as `null` in the client.
+    /// The serialized keys are asserted: a renamed field would type-check on both sides and
+    /// arrive as `null`.
     #[test]
     fn a_wireless_contact_crosses_the_seam_with_its_address() {
         let reached = PairedDevice {
@@ -7287,9 +6146,7 @@ mod tests {
             "the token must not ride along with the new fields"
         );
 
-        // Absent is `null`, not a missing key: a client distinguishes *no row
-        // for this* from *not since we started recording* only if the key is
-        // always there.
+        // Absent is `null`, not a missing key, so a client can tell no row from not yet recorded.
         let quiet = PairedDeviceDto {
             last_wireless_at: None,
             last_lan_addr: None,

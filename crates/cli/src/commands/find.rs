@@ -1,23 +1,10 @@
-//! `find` — the door onto the engine's one search surface.
-//!
-//! `Engine::search_marks` answers notes and highlights in one ranked list, and
-//! without a command here that list would have been reachable only from the
-//! daemon and from a GUI client — the same failure `measure_stored_covers`
-//! and `list --sort author` each had once: the engine can do it and nothing can ask.
-//!
-//! `rb notes --search` still exists and still searches notes alone. It is not a
-//! second door: it calls this same method with `SearchSource::Note`, so the two
-//! cannot hold different opinions about what matching or ordering means.
-//!
-//! All the printing lives here; the engine does no terminal I/O.
+//! `notes --search` calls the same method, so matching and ordering agree.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use bookmole::{Engine, SearchHit, SearchSource};
 
-/// How many hits a terminal gets. The engine takes any limit; this is a
-/// screenful, and the flag is there for the reader who wants more.
 pub const DEFAULT_LIMIT: i64 = 25;
 
 pub async fn find(
@@ -26,22 +13,14 @@ pub async fn find(
     source: Option<SearchSource>,
     limit: i64,
 ) -> Result<()> {
-    // A note edited in Obsidian since the last run is a note the index has not
-    // caught up with, and searching for it would report it missing.
     super::catch_up(engine).await;
 
-    // `search_marks`'s `book_id` is deliberately not a flag here. `rb find` is the
-    // library-wide door and `rb show` already prints one book's marks; a
-    // per-book search is a screen's question, and the parameter exists for the
-    // screen that has to ask it without truncating its own answer.
     let hits = engine.search_marks(query, source, None, limit).await?;
     if hits.is_empty() {
         println!("{}", nothing(query, source));
         return Ok(());
     }
 
-    // One lookup per distinct book rather than one per hit: a page of
-    // highlights out of one book is the ordinary case.
     let mut titles: HashMap<i64, String> = HashMap::new();
     for id in hits.iter().filter_map(|h| h.book_id()) {
         if let std::collections::hash_map::Entry::Vacant(slot) = titles.entry(id)
@@ -59,14 +38,8 @@ pub async fn find(
     Ok(())
 }
 
-/// What is printed when nothing matched — a pure function so the wording can be
-/// asserted.
-///
-/// Two product rules are load-bearing. **Absence is not zero**:
-/// a search that found nothing says so, and never `0 results`, which states the
-/// library as a quantity of failure. And an **empty query is not a search that
-/// failed** — it is not asking — so it gets its own line naming the move rather
-/// than reporting that the library contains no blankness.
+/// Pure so the wording is testable; never prints `0 results`, and an empty query is not a failed
+/// search.
 fn nothing(query: &str, source: Option<SearchSource>) -> String {
     if query.trim().is_empty() {
         return "nothing to search for — try `bookmole find grief`".to_string();
@@ -79,18 +52,11 @@ fn nothing(query: &str, source: Option<SearchSource>) -> String {
     format!("no {what} match '{query}'")
 }
 
-/// The line above a snippet: what kind of thing this is, its id, and where it
-/// came from.
-///
-/// A pure function for the same reason `covers::summary` is one — this is
-/// user-visible text and the alternative is asserting on stdout.
 fn headline(hit: &SearchHit, book: Option<&str>) -> String {
     match hit {
         SearchHit::Note { note, .. } => {
             let where_from = match book {
                 Some(title) => format!("{title} — {}", note.file_path),
-                // An unanchored thought is an ordinary note, not a note with a
-                // missing book.
                 None => note.file_path.clone(),
             };
             format!("note      #{:<5} {}  ({where_from})", note.id, note.title)
@@ -164,7 +130,6 @@ mod tests {
         }
     }
 
-    /// A search that found nothing is a fact about the query, not a count.
     #[test]
     fn nothing_found_is_never_reported_as_zero() {
         let s = nothing("thermodynamics", None);
@@ -180,8 +145,6 @@ mod tests {
         );
     }
 
-    /// An empty search box is not a search that failed — it is a search nobody
-    /// asked for, and it names the move rather than reporting a result.
     #[test]
     fn an_empty_query_is_not_a_failed_search() {
         let s = nothing("   ", None);
@@ -189,16 +152,12 @@ mod tests {
         assert!(!s.contains("match"), "{s}");
     }
 
-    /// Both kinds are labelled, because a list mixing them is unreadable if the
-    /// reader has to infer which is which from the shape of the text.
     #[test]
     fn every_hit_says_what_kind_of_thing_it_is() {
         assert!(headline(&note(12, Some(1)), Some("Middlemarch")).starts_with("note "));
         assert!(headline(&highlight(48, Some(42)), Some("Middlemarch")).starts_with("highlight "));
     }
 
-    /// A note with no book is an ordinary note. It must not render as a book
-    /// that went missing.
     #[test]
     fn an_unanchored_note_names_no_book() {
         let line = headline(&note(12, None), None);
@@ -207,8 +166,6 @@ mod tests {
         assert!(!line.contains("None"), "{line}");
     }
 
-    /// A highlight with no page still renders — `page` is nullable and a PDF
-    /// sidecar is where that shows up.
     #[test]
     fn a_highlight_without_a_page_still_names_its_book() {
         let line = headline(&highlight(48, None), Some("Middlemarch"));

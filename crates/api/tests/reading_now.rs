@@ -1,7 +1,3 @@
-//! Two requests for the reading in progress: `FinishReading` and
-//! `SetPageCount`. Both new, neither reshaping one that
-//! exists, and `API_VERSION` stays where it was.
-
 use std::sync::Arc;
 
 use bookmole::{Engine, EngineConfig};
@@ -42,7 +38,6 @@ fn book(r: Response) -> BookDto {
     }
 }
 
-/// `finished_on` may be left out on the wire and means *now*.
 #[test]
 fn a_finish_without_a_day_parses() {
     let r: Request =

@@ -1,5 +1,4 @@
-//! The shared write path for every non-KOReader highlight importer
-//! (`storage/imported_highlights.rs`). Offline, `sqlite::memory:`.
+//! The shared write path for non-KOReader highlight importers.
 
 mod common;
 use bookmole::highlight_origin::IdentityScope;
@@ -16,7 +15,6 @@ fn imp(origin: HighlightOrigin, id: Option<&str>, identity: &str, text: &str) ->
     h
 }
 
-/// A Preview-shaped highlight: its key is only unique inside one file.
 fn scoped(id: Option<&str>, identity: &str, text: &str, copy: Option<i64>) -> ImportedHighlight {
     let mut h = imp(HighlightOrigin::Preview, id, identity, text);
     h.identity_scope = IdentityScope::Copy;
@@ -93,7 +91,6 @@ async fn the_source_owns_its_fields_and_we_own_the_annotation() {
     assert_eq!(r.text, "other words");
     assert_eq!(r.annotation.as_deref(), Some("what I think"));
 
-    // A note deleted in the source is deleted here (null-safe compare).
     h.origin_note = None;
     assert_eq!(
         s.upsert_imported_highlight(book, &h).await.unwrap(),
@@ -135,7 +132,6 @@ async fn two_origins_with_the_same_key_never_collide() {
         s.upsert_imported_highlight(book, &b).await.unwrap().id(),
     );
     assert_ne!(ia, ib, "the same passage from two apps is two highlights");
-    // An id and an identity of the same text are different keys too.
     let c = imp(HighlightOrigin::Preview, None, "same", "t");
     assert_ne!(imported_identity_hash(&a), imported_identity_hash(&c));
 }
@@ -147,7 +143,6 @@ async fn an_imported_hash_never_equals_koreaders() {
     let book = seed_book(&e, "A").await;
     let ko = highlight("same words", "2026-01-01 00:00:00");
     s.insert_highlight(book, &ko).await.unwrap().unwrap();
-    // Even an importer that tried to reproduce KOReader's pre-image cannot.
     let h = imp(
         HighlightOrigin::Preview,
         None,
@@ -198,7 +193,6 @@ async fn the_copy_is_stamped_only_while_null() {
     assert_eq!(s.get_highlight(id).await.unwrap().unwrap().copy_id, None);
 
     h.copy_id = Some(c1);
-    // Stamping is not an update the importer counts.
     assert_eq!(
         s.upsert_imported_highlight(book, &h).await.unwrap(),
         ImportedOutcome::Unchanged(id)
@@ -304,14 +298,11 @@ async fn a_merged_book_keeps_its_imported_identity() {
     let id = s.upsert_imported_highlight(src, &h).await.unwrap().id();
     s.merge_books(src, dst).await.unwrap();
     assert_eq!(s.get_highlight(id).await.unwrap().unwrap().book_id, dst);
-    // Re-importing against the surviving book finds the moved row.
     assert_eq!(
         s.upsert_imported_highlight(dst, &h).await.unwrap(),
         ImportedOutcome::Unchanged(id)
     );
 }
-
-// ---- identity scope ---------------------------------------------------------
 
 #[test]
 fn new_says_nothing_but_what_it_is_given() {
@@ -330,7 +321,6 @@ async fn a_copy_scoped_key_is_one_highlight_per_copy() {
     let book = seed_book(&e, "A").await;
     let (c1, c2) = (new_copy(s, book).await, new_copy(s, book).await);
 
-    // The same /NM in two files, and separately the same place with no /NM.
     for (id, identity) in [(Some("nm-1"), "x"), (None, "1|h|144,697,209,712")] {
         let a = s
             .upsert_imported_highlight(book, &scoped(id, identity, "in a", Some(c1)))
@@ -344,7 +334,6 @@ async fn a_copy_scoped_key_is_one_highlight_per_copy() {
         assert!(matches!(b, ImportedOutcome::Inserted(_)), "{id:?}");
         assert_ne!(a.id(), b.id());
 
-        // Each copy refreshes only its own row.
         let mut edited = scoped(id, identity, "in a", Some(c1));
         edited.origin_note = Some("edited in a".into());
         assert_eq!(
@@ -397,7 +386,6 @@ async fn removal_in_one_copy_never_reaches_another() {
         .unwrap()
         .id();
 
-    // The global remove does not guess which copy was meant.
     assert!(!s.remove_imported_highlight(book, p, "nm").await.unwrap());
     assert_eq!(s.imported_highlights(book, p).await.unwrap().len(), 2);
 
@@ -414,7 +402,6 @@ async fn removal_in_one_copy_never_reaches_another() {
             .unwrap(),
         "already gone"
     );
-    // Kept rows are kept by the scoped remove as well.
     s.set_annotation(a, Some("mine")).await.unwrap();
     assert!(
         !s.remove_imported_highlight_in_copy(book, p, c1, "nm")
@@ -431,8 +418,6 @@ async fn global_keys_match_whatever_the_copy() {
     let book = seed_book(&e, "A").await;
     let (c1, c2) = (new_copy(s, book).await, new_copy(s, book).await);
 
-    // Apple Books' uuid and a Kindle clipping's identity: no copy, then one
-    // copy, then another. One row each, stamped with the first copy named.
     for mut h in [
         imp(HighlightOrigin::AppleBooks, Some("UUID-1"), "x", "t"),
         imp(HighlightOrigin::Kindle, None, "Title|loc 10-12|t", "t"),
@@ -454,7 +439,6 @@ async fn global_keys_match_whatever_the_copy() {
             1
         );
     }
-    // And the global remove still removes a global id.
     assert!(
         s.remove_imported_highlight(book, HighlightOrigin::AppleBooks, "UUID-1")
             .await
@@ -479,7 +463,6 @@ async fn a_row_with_no_copy_is_claimed_by_the_first_copy_to_import_it() {
             None
         );
 
-        // The first copy finds the unclaimed row and stamps it, uncounted.
         assert_eq!(
             s.upsert_imported_highlight(book, &scoped(id, "1|h|1,2,3,4", "t", Some(c1)))
                 .await
@@ -490,13 +473,11 @@ async fn a_row_with_no_copy_is_claimed_by_the_first_copy_to_import_it() {
             s.get_highlight(a.id()).await.unwrap().unwrap().copy_id,
             Some(c1)
         );
-        // A second copy's is its own row now that the first is claimed.
         let b = s
             .upsert_imported_highlight(book, &scoped(id, "1|h|1,2,3,4", "t", Some(c2)))
             .await
             .unwrap();
         assert!(matches!(b, ImportedOutcome::Inserted(_)));
-        // With no copy there is nothing to scope by: the oldest row is it.
         assert_eq!(
             s.upsert_imported_highlight(book, &scoped(id, "1|h|1,2,3,4", "t", None))
                 .await
@@ -512,8 +493,6 @@ async fn merged_copies_re_import_without_duplicating() {
     let s = e.storage();
     let book = seed_book(&e, "A").await;
     let (c1, c2) = (new_copy(s, book).await, new_copy(s, book).await);
-    // Each file has two keys of its own and shares two with the other (one
-    // /NM, one place), with different words.
     let file = |copy: i64, own: &str, words: &str| {
         vec![
             scoped(Some(own), "own", words, Some(copy)),
@@ -541,9 +520,6 @@ async fn merged_copies_re_import_without_duplicating() {
             .all(|r| r.copy_id == Some(c1))
     );
 
-    // Re-importing either file, now under the surviving copy, finds every row
-    // it wrote: nothing is inserted, nothing changes, and each key both files
-    // share goes to the row already equal to it.
     for (words, own, from) in [("B", "b-only", 4), ("A", "a-only", 0)] {
         for (i, h) in file(c1, own, words).into_iter().enumerate() {
             assert_eq!(
@@ -555,8 +531,7 @@ async fn merged_copies_re_import_without_duplicating() {
     }
     assert_eq!(s.imported_highlights(book, p).await.unwrap().len(), 8);
 
-    // Known limit: once a shared key differs from both rows, the copy cannot
-    // tell its files apart and the oldest row (file A's) is refreshed.
+    // Known limit: once a shared key differs from both rows, the oldest row (file A's) is refreshed.
     let mut changed = scoped(None, "1|h|shared-place", "B", Some(c1));
     changed.origin_note = Some("new in B".into());
     assert_eq!(
@@ -582,7 +557,6 @@ async fn a_new_copy_never_inherits_another_copys_rows() {
         .await
         .unwrap()
         .id();
-    // c2 is folded away; a copy made after may be handed its id again.
     s.merge_copies(c1, c2).await.unwrap();
     let c3 = new_copy(s, book).await;
     let c = s
@@ -599,7 +573,6 @@ async fn one_key_fits_sixteen_copies_and_no_more() {
     let (_t, e) = engine().await;
     let s = e.storage();
     let book = seed_book(&e, "A").await;
-    // `MAX_SCOPE_SLOTS` in storage/imported_highlights.rs.
     for n in 0..16 {
         let c = new_copy(s, book).await;
         assert!(

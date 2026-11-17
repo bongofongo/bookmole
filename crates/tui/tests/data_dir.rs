@@ -24,7 +24,6 @@ fn default_library_under(home: &Path) -> PathBuf {
     }
 }
 
-/// The first line `--dump-frame` prints is the title of the book it drew.
 fn dumped_title(root: &Path, cwd: &Path, book_id: i64) -> String {
     let out = sandbox::command(root)
         .args(["--dump-frame", "8x4", "--book", &book_id.to_string()])
@@ -55,7 +54,6 @@ async fn two_working_directories_see_one_library_at_the_default_location() {
         std::fs::create_dir_all(d).unwrap();
     }
 
-    // Seed the default location directly, as a library that already exists.
     let library = default_library_under(&home);
     let id = {
         let engine = Engine::open(EngineConfig::rooted_at(&library))

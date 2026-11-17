@@ -1,23 +1,5 @@
-//! Every committed EPUB, read through the engine's adapter and `epubkit`,
-//! against a committed snapshot of the answers.
-//!
-//! The books are the 49 Gutenberg epubs under `corpus/epub/` and every
-//! generated `*.epub` under `tests/fixtures/`. Per book the snapshot records
-//! what an import and the chapter list read — `epub_info` (isbn, title,
-//! authors, language), the table of contents as (label, depth, target,
-//! spine_index), and the cover's sha256 and length — or that the book did not
-//! open.
-//!
-//! **The snapshot was first written while the GPL `epub =2.1.4` crate was
-//! still in the workspace**, with `epub_differential.rs` green: that test
-//! compared every one of these books' metadata map, manifest, spine, cover
-//! bytes and chapter list old-against-new and found them equal. So the golden
-//! is the old crate's answers, and this test is what replaced the
-//! differential when the old crate left. A change here is a
-//! change to what an import of one of these books would store.
-//!
-//! Regenerate with `UPDATE_GOLDEN=1` (or `make golden`) — and read the diff:
-//! a difference is a behaviour change, not noise.
+//! Every committed EPUB read through the adapter and `epubkit`, compared to a golden snapshot.
+//! Regenerate with `UPDATE_GOLDEN=1` or `make golden`, and read the diff: a change is behaviour.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -54,7 +36,6 @@ fn epubs_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The book's key in the golden: its path from the repository root, with `/`.
 fn key(path: &Path) -> String {
     let repo = manifest_dir()
         .join("../..")
@@ -101,8 +82,6 @@ fn answers(path: &Path) -> Value {
     json!({ "opens": true, "info": info, "toc": toc, "cover": cover })
 }
 
-/// The golden's text: one book per block, one chapter per line, so a diff
-/// reads as the chapters that changed rather than as JSON punctuation.
 fn render(books: &BTreeMap<String, Value>) -> String {
     let c = |v: &Value| serde_json::to_string(v).expect("serialize");
     let mut out = String::from("{\n");
@@ -194,8 +173,6 @@ fn every_committed_epub_reads_as_the_golden_says() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
-/// The snapshot must be able to fail: it has to hold books that answer
-/// something, or it would agree with a reader that answered nothing.
 #[test]
 fn the_golden_holds_real_answers() {
     let raw = std::fs::read_to_string(manifest_dir().join(GOLDEN)).expect("golden is committed");

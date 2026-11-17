@@ -1,17 +1,5 @@
-//! The home screen: what you are currently reading.
-//!
-//! One row per **open** reading, in the order the engine's
-//! `Engine::currently_reading` hands them over (most-recently-touched first).
-//! It is the screen the app opens to, and it is deliberately a shelf rather
-//! than a to-do list: every row is a place you can go — the book, its
-//! reflection, its review — and there is **no count of anything** on it. A
-//! number that greets you is task-completion framing — a tally of what you have
-//! not done — which this app rules out everywhere, and it is the easy thing to
-//! write on a screen like this.
-//!
-//! The empty state is a place too. Nothing open must still say where to go
-//! next, so the box names the two moves that end with a book on this shelf and
-//! keeps their keys in the border.
+//! The home screen: one row per open reading, most-recently-touched first, as a shelf.
+//! Shows no count of anything: a tally of what you have not done is task-completion framing.
 
 use bookmole::{Book, Progress, Reading};
 use ratatui::Frame;
@@ -22,14 +10,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph};
 use crate::app::App;
 use crate::theme;
 
-/// What the empty shelf says. Both halves are moves, not apologies: the point
-/// of the axiom's "nothing is a dead end" is that a screen with nothing on it
-/// still tells you where the somethings come from.
 const EMPTY: &str = "nothing open right now — / to find a book, m for the menu";
 
-/// The box title. No count: the library screen can say how many books it holds
-/// because that is inventory, but "3 books" on the screen that greets you reads
-/// as a tally of what you have not finished.
 const TITLE: &str = " reading ";
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
@@ -42,10 +24,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let keys = key_bar(app.reading.is_empty());
 
-    // Shrink-wrapped and centred, like the library and the device shelf. The
-    // key bar rides in the bottom border, so it is part of what the box has to
-    // be wide enough for — the screen is only "never a dead end" if the way
-    // onward is actually on screen.
     let widest = rows
         .iter()
         .map(|l| l.width() as u16)
@@ -54,9 +32,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         .max(TITLE.chars().count() as u16)
         .max(keys.width() as u16);
     let area = super::list_box(area, widest, rows.len() as u16);
-    // `Clear` first: this screen inherits the ambient layer (it is not the book
-    // view), and a `Block` styles the cells it does not draw without blanking
-    // them, so the field would otherwise drift between the rows.
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -77,14 +52,10 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
-    // No `highlight_style`: the reverse is scoped to the title span in `row`,
-    // matching every other list here, so the author and the progress keep their
-    // hues instead of the row becoming a solid bar.
     let list = List::new(items).block(block).highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut app.reading_state);
 }
 
-/// One shelf row: `Title  Authors  42%`.
 fn row(b: &Book, r: &Reading, selected: bool) -> Line<'static> {
     let title_style = if selected {
         theme::title().patch(theme::selected())
@@ -96,11 +67,6 @@ fn row(b: &Book, r: &Reading, selected: bool) -> Line<'static> {
         format!("  {}", b.display_authors()),
         theme::dim(),
     ));
-    // **This** reading's progress, not the book's current one — the row is about
-    // the open read it is listing. The device-percentage fallback that used to
-    // live here as `fn progress` is `Progress`' now, in the engine, so the library
-    // list gets it too instead of showing nothing for the commonest row in a
-    // KOReader-sourced library.
     let tag = super::library::tag(Progress::of_reading(r, b.page_count));
     if !tag.is_empty() {
         spans.push(Span::styled(format!("  {tag}"), theme::accent()));
@@ -108,13 +74,6 @@ fn row(b: &Book, r: &Reading, selected: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The keys, in the bottom border. `e` / `w` are the reflection and the review;
-/// see `event::map_key` for why the pair is not `r` / `v`.
-///
-/// An empty shelf drops the three keys that act on a row. They would still be
-/// *safe* — they say what to do instead of doing nothing quietly — but a key
-/// bar advertising three keys with nothing to act on is the screen agreeing to
-/// be a dead end in four words rather than none.
 fn key_bar(empty: bool) -> Line<'static> {
     let mut spans = Vec::new();
     if !empty {
@@ -128,8 +87,6 @@ fn key_bar(empty: bool) -> Line<'static> {
         ]);
     }
     spans.extend([
-        // "find", not "search": this key looks in the library, and the provider
-        // search is what it offers when the library has nothing.
         Span::styled(if empty { " /" } else { "/" }, theme::key()),
         Span::styled(" find  ", theme::dim()),
         Span::styled("m", theme::key()),
@@ -143,10 +100,6 @@ mod tests {
     use super::*;
     use ratatui::style::Modifier;
 
-    /// The page lives on the **reading** here, not on the book: this row is
-    /// about one open read, and `Book`'s own `current_page` is a projection of
-    /// whichever read is current. On real data they agree; a fixture that let
-    /// them disagree would be testing the fixture.
     fn reading(page: Option<i64>, ko_percent: Option<f64>) -> Reading {
         Reading {
             id: 1,
@@ -173,10 +126,6 @@ mod tests {
         }
     }
 
-    /// The rule itself now lives in `Progress` and is tested there. What these
-    /// two pin is that **this screen still asks the question it used to** —
-    /// the rule replaced a local `fn progress`, and the way to break that
-    /// quietly is to stop consulting the device at all.
     #[test]
     fn a_page_beats_the_devices_percentage() {
         assert_eq!(
@@ -188,8 +137,6 @@ mod tests {
         );
     }
 
-    /// The commonest row on this screen: a book pulled off a device, which has
-    /// a percentage and no page at all.
     #[test]
     fn the_devices_percentage_fills_in_for_a_missing_page() {
         assert_eq!(
@@ -210,17 +157,13 @@ mod tests {
             .iter()
             .map(|s| s.style.add_modifier.contains(Modifier::REVERSED))
             .collect();
-        // title, authors, progress
         assert_eq!(reversed, vec![true, false, false]);
     }
 
-    /// The screen carries no tally of anything — the axiom's "no
-    /// task-completion framing", asserted rather than remembered.
     #[test]
     fn nothing_on_the_screen_counts_anything() {
         assert!(!TITLE.chars().any(|c| c.is_ascii_digit()));
         assert!(!EMPTY.chars().any(|c| c.is_ascii_digit()));
-        // And the empty state names moves rather than reporting a lack.
         assert!(EMPTY.contains('/') && EMPTY.contains('m'));
     }
 }

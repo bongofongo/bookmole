@@ -1,85 +1,6 @@
-//! Moments (migration `0017`) — the four things worth noticing, and
-//! the memory that makes each of them happen once.
-//!
-//! A moment is **recognised, never announced**. Nothing here is a threshold a
-//! frontend could put in front of somebody ("three more days and…"), nothing
-//! counts down, and nothing counts up. The app has no task-completion framing
-//! anywhere — no badge counting what you have not done, no streak, no target —
-//! and a target is what a threshold becomes the moment it is visible before it
-//! is met. Every moment in this module is a fact in the past
-//! tense about something the reader already did, assembled out of rows that
-//! were written for other reasons.
-//!
-//! So **nothing about a moment is stored**. [`Storage::pending_moments`]
-//! derives the whole candidate set on every ask. What *is* stored is what the
-//! app has already shown — the `moments` table is a set of ids and nothing
-//! else — because "it fired" is the one fact about a moment that is not a fact
-//! about the reader.
-//!
-//! ## The four kinds
-//!
-//! | kind | the evidence | identity |
-//! |---|---|---|
-//! | [`MomentKind::ReadingClosed`] | `readings.finished_at` | the reading |
-//! | [`MomentKind::FirstAnnotation`] | the earliest highlight stamp or note on a book | the book |
-//! | [`MomentKind::ReflectionReached`] | a reflection's wikilink into another book's note | the pair |
-//! | [`MomentKind::RunEnded`] | consecutive days in `reading_events` | the span |
-//!
-//! ## The two guards, and why both err toward silence
-//!
-//! **An import mints nothing.** The awkward case: a fresh install importing a
-//! 400-book Goodreads CSV must not mint 400 moments,
-//! because an import is history arriving rather than something you just did. So
-//! a moment fires only for evidence dated **at or after the book entered the
-//! library** — `books.created_at`, which has existed since `0001` and needed no
-//! column of its own. A CSV's `Date Read` of 2019 against a book created this
-//! afternoon is history; the same book finished tomorrow is not.
-//!
-//! **An upgrade is not a ceremony.** The per-book guard cannot answer for a
-//! library that has been here for months: those books arrived honestly and
-//! their reading happened afterwards, so on the first launch after `0017` every
-//! one of them would fire at once — the same failure the CSV case names, from
-//! the other direction. `moment_epoch.began_at` is the answer, set by the
-//! migration to the instant the schema learned what a moment was.
-//!
-//! Both guards are approximations and both were chosen to fail the same way.
-//! `books.created_at` is an **upper** bound on when a book really arrived
-//! (`merge_books` folds a duplicate onto the older row), so it can suppress a
-//! real moment and can never invent one. A reflection's reach is dated by the
-//! **later of its two notes**, a *lower* bound — `note_links` carries no
-//! timestamp of its own (`set_note_links` replaces a note's whole edge set on
-//! every save, so a column there would record the last edit) — and
-//! a lower bound that clears the guard proves the true time clears it too. Read
-//! together: **a missed ceremony is a cost, and a replayed library is a bug.**
-//!
-//! ## The run, which is the one that had to be argued
-//!
-//! [`MomentKind::RunEnded`] is a hair's breadth from a streak, and a streak is
-//! the counting-up shape that most looks like a feature while being exactly the
-//! pressure the app refuses to apply.
-//! Three things keep it on the right side of that line and all three are
-//! load-bearing:
-//!
-//! * **It is only ever recognised after it is over.** A run whose last day is
-//!   yesterday is not a moment, because today might continue it; the cutoff is
-//!   [`run_cutoff`]. Nothing can therefore be shown while a run is running,
-//!   which is precisely what makes it impossible to put pressure on.
-//! * **Two days is the definition of "consecutive", not a bar somebody chose.**
-//!   [`RUN_MIN_DAYS`] is 2 because one day is not a run. A three or a seven
-//!   would be a threshold, and this module would then be in the business of
-//!   deciding what counts as enough.
-//! * **`days` is past tense.** It says how many days you read, the way a count
-//!   of your own highlights is a fact about you. It is not a target, a
-//!   remaining, a best, or a comparison with anything.
-//!
-//! ## What crosses, and what is opaque
-//!
-//! [`Moment`] carries `reading_id` beside `book_id` because a reread is a
-//! second read of one book and a moment naming only the book cannot say which.
-//! [`Moment::id`] is a string built here and **parsed nowhere else** — not by a
-//! frontend, not by SQL in the migration. [`Storage::acknowledge_moment`] takes
-//! one back and checks only that its kind is one this build knows, which is
-//! enough to turn a client bug into an error instead of a row.
+//! Moments: facts about reading already done, derived on every ask; only which have fired is kept.
+//! Evidence must post-date the book's `created_at` and the moment epoch, so imports mint nothing.
+//! `Moment::id` is built and parsed only here; to callers it is opaque.
 
 use std::collections::HashSet;
 
@@ -88,45 +9,28 @@ use sqlx::Row;
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 
-/// The shortest span that is a *run*, and it is a definition rather than a
-/// threshold: one day is a day, two consecutive days are consecutive. Any
-/// larger number would be this module deciding what counts as enough reading,
-/// which is the thing it exists not to do.
+/// A definition, not a threshold: one day is not a run, and a larger number would set a bar.
 pub const RUN_MIN_DAYS: usize = 2;
 
-/// What happened. The payload is whatever the phrasing needs and the identity
-/// does not: `book_id` and `reading_id` live on [`Moment`] itself, because
-/// every kind that has them has them for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MomentKind {
-    /// A read ended. `Moment::reading_id` is the read; `Moment::book_id` its
-    /// book.
     ReadingClosed,
-    /// The first mark of the reader's own on a book that carried none — a
-    /// highlight, a note, a reflection. Whichever came first, by the evidence's
-    /// own clock and never by ours: a highlight is dated by the device's
-    /// `ko_datetime`, so an import cannot make one look like today.
+    /// Dated by the evidence's own clock (a highlight's `ko_datetime`), so an import cannot look
+    /// like today.
     FirstAnnotation,
-    /// A reflection reached a book it had not reached before, through the
-    /// wikilink graph. `Moment::book_id` is the reflection's own book;
-    /// `reached_book_id` is the far side.
+    /// `Moment::book_id` is the reflection's own book; `reached_book_id` is the far side.
     ReflectionReached { note_id: i64, reached_book_id: i64 },
-    /// A run of consecutive days with activity, which has since ended. Never
-    /// while it is running — see the module doc.
     RunEnded {
         /// `YYYY-MM-DD`, UTC, inclusive.
         from: String,
         /// `YYYY-MM-DD`, UTC, inclusive. Also [`Moment::day`].
         to: String,
-        /// How many days it held. Past tense, and never compared with anything.
         days: i64,
     },
 }
 
 impl MomentKind {
-    /// The stable token that opens an id. Adding a kind adds a token; changing
-    /// one would orphan every acknowledgement already recorded against it, so
-    /// these are as permanent as a migration.
+    /// Stable token that opens an id; changing one orphans recorded acknowledgements.
     pub fn tag(&self) -> &'static str {
         match self {
             MomentKind::ReadingClosed => "reading_closed",
@@ -136,7 +40,6 @@ impl MomentKind {
         }
     }
 
-    /// Every tag this build knows, for [`Storage::acknowledge_moment`]'s check.
     const TAGS: [&'static str; 4] = [
         "reading_closed",
         "first_annotation",
@@ -145,30 +48,18 @@ impl MomentKind {
     ];
 }
 
-/// One thing worth noticing, derived and not stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moment {
-    /// Stable, opaque, and the only thing
-    /// [`Storage::acknowledge_moment`] needs. Built from the ids of the rows
-    /// the moment is made of, so it survives a restart, a re-derivation and a
-    /// rebuilt activity log — and so that two frontends looking at one library
-    /// acknowledge the same string.
+    /// Opaque; built from row ids so two frontends acknowledge the same string.
     pub id: String,
     pub kind: MomentKind,
     /// `None` only for [`MomentKind::RunEnded`], which is about the library
     /// rather than a book.
     pub book_id: Option<i64>,
-    /// Which read this belongs to, where the evidence settles on one. A reread
-    /// is a second read of one book, so a card minted per reading cannot be
-    /// selected by `book_id` alone. `None` where two reads share the evidence
-    /// or none claims it — the call [`Storage::reading_for_day`] and
-    /// `attribute_highlights` both already make.
+    /// `None` where two reads share the evidence or none claims it.
     pub reading_id: Option<i64>,
-    /// `YYYY-MM-DD`, UTC. The same day convention as `reading_events`, for the
-    /// same reason: a second one here would put a moment and the event it was
-    /// derived from on different days for everyone not on UTC.
+    /// `YYYY-MM-DD`, UTC, as in `reading_events`, so a moment and its event share a day.
     pub day: String,
-    /// Unix seconds. What the list is ordered by, newest first.
     pub occurred_at: i64,
 }
 
@@ -205,11 +96,6 @@ impl Moment {
     }
 }
 
-/// `YYYY-MM-DD`, UTC, from unix seconds.
-///
-/// The same conversion `reading_events` does, reached through that module so
-/// there is one of it. A moment derived from an event must not be able to land
-/// on a different day from the event.
 fn day_of_unix(ts: i64) -> Result<String> {
     super::reading_events::day_of_unix(ts)
 }
@@ -224,25 +110,13 @@ fn format_day(d: time::Date) -> String {
     d.format(fmt).unwrap_or_default()
 }
 
-/// Midnight UTC of a day, as unix seconds. A run has no instant of its own —
-/// it is a span of days — so it is dated by the start of the day it ended on,
-/// which is the earliest instant that day could be said to have happened.
+/// A run is dated by the start of the day it ended on.
 fn midnight_of(day: time::Date) -> i64 {
     day.midnight().assume_utc().unix_timestamp()
 }
 
-/// The last day a run may end on and still be over.
-///
-/// A run whose last day is **yesterday** is not finished: today has not
-/// happened yet, and a run recognised while it might still be running is a
-/// streak. So the cutoff is the day before yesterday, and the test is
-/// `last_day <= cutoff`.
-///
-/// UTC, from `now`, because `reading_events.day` is UTC. *Relative time* stays
-/// in the frontends — "three days ago" needs an answer to what today is
-/// locally — and this is not that: it is the same UTC day arithmetic the
-/// activity log already does, with the clock passed in rather than read here so
-/// that a test can say when it is.
+/// The last day a run may end on and still be over: the day before yesterday, since a run ending
+/// yesterday may continue today. UTC; `now` is passed in.
 pub(crate) fn run_cutoff(now: i64) -> Result<time::Date> {
     let today = time::OffsetDateTime::from_unix_timestamp(now)
         .map_err(|e| EngineError::InvalidInput(format!("timestamp {now} is out of range: {e}")))?
@@ -250,16 +124,7 @@ pub(crate) fn run_cutoff(now: i64) -> Result<time::Date> {
     Ok(today - time::Duration::days(2))
 }
 
-/// Split a sorted, deduplicated list of days into maximal consecutive runs.
-///
-/// Pure, and the properties are in `mod props`: the runs **partition** the
-/// input in order, every run is consecutive, and no run can be extended —
-/// which together are the whole meaning of "maximal run", stated as three
-/// things a generator can try to break rather than as one word.
-///
-/// A day the parser cannot read is dropped rather than guessed at. Nothing in
-/// this codebase invents a day, and a run built around an unreadable one would
-/// silently join two spans that are not adjacent.
+/// Input must be sorted and deduplicated; an unreadable day is dropped, not guessed at.
 pub fn runs_of_days(days: &[String]) -> Vec<(String, String, usize)> {
     let mut parsed: Vec<time::Date> = days.iter().filter_map(|d| parse_day(d)).collect();
     parsed.sort_unstable();
@@ -274,9 +139,7 @@ pub fn runs_of_days(days: &[String]) -> Vec<(String, String, usize)> {
             i += 1;
             end = parsed[i];
         }
-        // `next_day` is `None` only at `Date::MAX`, where `unwrap_or(end)`
-        // makes the comparison false and the run ends — the correct answer
-        // rather than a panic on a date no library will hold.
+        // `next_day` is `None` only at `Date::MAX`; `unwrap_or(end)` ends the run instead of panicking.
         let len = (end - start).whole_days() as usize + 1;
         runs.push((format_day(start), format_day(end), len));
         i += 1;
@@ -285,12 +148,6 @@ pub fn runs_of_days(days: &[String]) -> Vec<(String, String, usize)> {
 }
 
 impl Storage {
-    /// When moments began — `moment_epoch.began_at`, written by migration
-    /// `0017`.
-    ///
-    /// Everything dated before it is history rather than news. See the module
-    /// doc: without it, the first launch after that migration replays a whole
-    /// reading life.
     pub async fn moment_epoch(&self) -> Result<i64> {
         Ok(
             sqlx::query_scalar::<_, i64>("SELECT began_at FROM moment_epoch WHERE id = 1")
@@ -299,14 +156,6 @@ impl Storage {
         )
     }
 
-    /// Move the epoch. The one caller that is not a test is a future frontend
-    /// offering "start noticing from here"; the tests are what make the guard
-    /// assertable, since an in-memory database's epoch is always *now* and
-    /// every fixture's history is in the past.
-    ///
-    /// It is on `Storage` and deliberately not on `Engine`: nothing in the
-    /// product asks for it yet, and the facade carries what a frontend needs
-    /// rather than everything that exists.
     pub async fn set_moment_epoch(&self, began_at: i64) -> Result<()> {
         sqlx::query("UPDATE moment_epoch SET began_at = ? WHERE id = 1")
             .bind(began_at)
@@ -315,19 +164,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Everything worth noticing that has not been shown yet, newest first.
-    ///
-    /// Derived on every call — there is no moments table to go stale, and
-    /// nothing accumulates. `now` is the clock the run cutoff is measured
-    /// against and is passed in rather than read here, so a test can say when
-    /// it is; `Engine::pending_moments` supplies `now_unix()`.
-    ///
-    /// `limit` truncates **after** ordering, so a caller asking for three gets
-    /// the three most recent rather than three arbitrary ones. How many to
-    /// surface at once is a frontend's decision and this is the only lever it
-    /// gets: there is deliberately no count endpoint and no length field
-    /// anywhere on the wire, because a number of things waiting is a badge, and
-    /// a badge is the task-completion framing this module exists to avoid.
+    /// `limit` truncates after ordering. There is deliberately no count: a number waiting is a badge.
     pub async fn pending_moments(&self, now: i64, limit: Option<i64>) -> Result<Vec<Moment>> {
         let epoch = self.moment_epoch().await?;
         let mut out = Vec::new();
@@ -343,9 +180,7 @@ impl Storage {
             .collect();
         out.retain(|m| !surfaced.contains(&m.id));
 
-        // Newest first, and by id under a tie so that two calls with the same
-        // data return the same order — a ceremony that reshuffled itself
-        // between two polls would show one moment twice and another never.
+        // Tie-break by id so two calls return the same order.
         out.sort_by(|a, b| {
             b.occurred_at
                 .cmp(&a.occurred_at)
@@ -357,19 +192,8 @@ impl Storage {
         Ok(out)
     }
 
-    /// Record that a moment was shown, so the ceremony does not replay.
-    ///
-    /// **Idempotent**: `ON CONFLICT DO NOTHING`, so acknowledging twice — or
-    /// from two frontends — cannot write a second row or move the first
-    /// `surfaced_at`. The time kept is the *first* surfacing, which is the one
-    /// that is true.
-    ///
-    /// The id is checked for a kind this build knows and nothing more. It is
-    /// deliberately **not** re-derived: `RunEnded` depends on the clock, so a
-    /// moment that was pending when it was shown can legitimately fail to be
-    /// pending a moment later, and refusing the acknowledgement then would
-    /// replay it for ever. A well-formed id for a moment that never existed
-    /// costs one inert row.
+    /// Idempotent, keeping the first `surfaced_at`. The id is checked only for a known kind, not
+    /// re-derived: a run can stop being pending after it was shown, and refusing would replay it.
     pub async fn acknowledge_moment(&self, id: &str) -> Result<()> {
         let tag = id.split(':').next().unwrap_or_default();
         if !MomentKind::TAGS.contains(&tag) || id.len() <= tag.len() + 1 {
@@ -388,12 +212,8 @@ impl Storage {
         Ok(())
     }
 
-    /// A read that ended.
-    ///
-    /// `finished_at IS NOT NULL` is what closed means here. An *abandoned*
-    /// reading is marked without being closed (an abandoned book is one you
-    /// might pick up), so the status is not the test and a moment does not
-    /// judge how the read ended.
+    /// "Closed" means `finished_at IS NOT NULL`; status is not the test, since abandoned reads stay
+    /// open.
     async fn readings_closed(&self, epoch: i64) -> Result<Vec<Moment>> {
         let rows = sqlx::query(
             "SELECT r.id AS reading_id, r.book_id, r.finished_at AS at
@@ -418,20 +238,8 @@ impl Storage {
             .collect()
     }
 
-    /// The first mark of the reader's own on a book that had none.
-    ///
-    /// Two evidence streams and they are dated differently on purpose. A note
-    /// is ours, so `notes.created_at` is when it happened. A highlight is the
-    /// **device's**, so it is dated by `ko_datetime` and never by our
-    /// `highlights.created_at` — the latter is when the sidecar was read, and
-    /// using it would make every KOReader import mint a first-annotation moment
-    /// for every book in it, which is the CSV failure with a different importer.
-    /// A highlight whose stamp SQLite cannot read as a time contributes
-    /// nothing, the same rule `reading_events`' fillers follow.
-    ///
-    /// `min` over the union is what makes it *first*: adding a highlight today
-    /// to a book you annotated last year is not a first annotation, and the
-    /// guard sees last year.
+    /// A highlight is dated by `ko_datetime`, never `highlights.created_at`, or every import would mint
+    /// a moment per book. `min` over notes and highlights makes it the first.
     async fn first_annotations(&self, epoch: i64) -> Result<Vec<Moment>> {
         let rows = sqlx::query(
             "WITH marks AS (
@@ -473,27 +281,8 @@ impl Storage {
             .collect()
     }
 
-    /// A reflection reaching a book it had not reached before.
-    ///
-    /// The edge is `note_links`, so only a **resolved** link counts: a wikilink
-    /// that is still text names a note that does not exist, and a note that
-    /// does not exist belongs to no book. Back-resolution fills `to_note` in as
-    /// soon as the target is written, which is what makes "resolved" a state
-    /// this can wait for rather than a race it can lose.
-    ///
-    /// **`note_links` carries no timestamp** (see the module doc), so the reach is dated `max(reflection.created_at,
-    /// target.created_at)`: an edge cannot predate either end of itself. That
-    /// is a lower bound, and a lower bound is the safe direction against a
-    /// guard that suppresses (module doc). The cost, stated: a reflection
-    /// written before a book arrived and linked to it afterwards is dated by
-    /// the *note* the link found, so the moment fires exactly when that note is
-    /// what makes it possible — which is the honest reading of the evidence
-    /// available.
-    ///
-    /// A reflection linking to another note of its **own** book is not reaching
-    /// anywhere, so it is excluded. A reflection with no book of its own — one
-    /// whose book was deleted, since `notes.book_id` is `ON DELETE SET NULL` —
-    /// still reaches.
+    /// Only resolved links count. Dated `max` of the two notes' `created_at`, as `note_links` has no
+    /// timestamp. Links within the reflection's own book are excluded.
     async fn reflections_reached(&self, epoch: i64) -> Result<Vec<Moment>> {
         let rows = sqlx::query(
             "SELECT * FROM (
@@ -529,21 +318,8 @@ impl Storage {
             .collect()
     }
 
-    /// Runs of consecutive activity days that are over.
-    ///
-    /// The days come from `reading_events`, which is the one place every source
-    /// agrees on a grain — every source writes one row per book, day and
-    /// source rather than its own shape — and it is why this
-    /// moment works for a library that arrived as a CSV and has no minutes in
-    /// it at all. The per-book guard is applied to the **evidence** rather than
-    /// to the run: a day only counts if it is at or after the day its book
-    /// entered the library, so a 400-book import contributes no days and
-    /// therefore no runs, without this function knowing anything about imports.
-    ///
-    /// The gap-and-islands is done in Rust ([`runs_of_days`]) rather than in
-    /// SQL, because it is date arithmetic and SQLite's is string arithmetic
-    /// with a `date()` around it; a pure function is also what lets the
-    /// partition be asserted as a property rather than by example.
+    /// Days come from `reading_events` with the per-book guard applied to the evidence, so imports add
+    /// no days. Run grouping is in Rust (`runs_of_days`), not SQL.
     async fn runs_ended(&self, epoch: i64, now: i64) -> Result<Vec<Moment>> {
         let days: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT e.day
@@ -589,10 +365,7 @@ mod tests {
     const DAY: i64 = 86_400;
     /// 2026-01-05 00:00:00 UTC.
     const JAN5: i64 = 1_767_571_200;
-    /// Long enough after the fixtures that every run in them has ended.
     const NOW: i64 = JAN5 + 100 * DAY;
-    /// Before every fixture, so the epoch is not what a test is asserting
-    /// unless it says so.
     const LONG_AGO: i64 = JAN5 - 400 * DAY;
 
     async fn seeded() -> (Storage, i64) {
@@ -602,9 +375,6 @@ mod tests {
         (s, id)
     }
 
-    /// A book that entered the library at a given instant. `books.created_at`
-    /// is written by the insert, so the fixtures move it afterwards — which is
-    /// exactly the shape the per-book guard is about.
     async fn book_at(s: &Storage, title: &str, created_at: i64) -> i64 {
         let id = s
             .upsert_book(
@@ -676,13 +446,9 @@ mod tests {
         ms.iter().map(|m| m.id.clone()).collect()
     }
 
-    /// The moments of one kind, by its own tag — so a test names the kind once
-    /// rather than spelling a `matches!` over a payload it does not care about.
     fn of_kind(ms: &[Moment], tag: &str) -> Vec<Moment> {
         ms.iter().filter(|m| m.kind.tag() == tag).cloned().collect()
     }
-
-    // ---- the runs, as a pure function -------------------------------------
 
     #[test]
     fn consecutive_days_collapse_into_one_run_and_a_gap_splits_them() {
@@ -726,8 +492,6 @@ mod tests {
             vec![("2026-01-01".into(), "2026-01-02".into(), 2)]
         );
     }
-
-    // ---- the four kinds ---------------------------------------------------
 
     #[tokio::test]
     async fn a_reading_that_closed_after_its_book_arrived_is_a_moment() {
@@ -914,8 +678,7 @@ mod tests {
         }
         s.refill_reading_events().await.unwrap();
 
-        // "Now" is the day after the run's last day, so today could still
-        // extend it. Recognising it here is what a streak does.
+        // "Now" is the day after the run's last day, which today could still extend: not yet a moment.
         let ongoing = s.pending_moments(JAN5 + 2 * DAY, None).await.unwrap();
         assert!(
             ongoing
@@ -923,7 +686,6 @@ mod tests {
                 .all(|m| !matches!(m.kind, MomentKind::RunEnded { .. }))
         );
 
-        // A clear day later it is over, and only then.
         let over = s.pending_moments(JAN5 + 3 * DAY, None).await.unwrap();
         assert_eq!(
             over.iter()
@@ -933,15 +695,11 @@ mod tests {
         );
     }
 
-    // ---- the guards -------------------------------------------------------
-
     #[tokio::test]
     async fn a_four_hundred_book_import_mints_nothing() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         s.set_moment_epoch(LONG_AGO).await.unwrap();
 
-        // The shape of a Goodreads import into a fresh library: the books
-        // arrive now, and every date they carry is years old.
         let arrived = JAN5 + 50 * DAY;
         for n in 0..20 {
             let b = book_at(&s, &format!("Imported {n}"), arrived).await;
@@ -992,7 +750,6 @@ mod tests {
         note_on(&s, b, "n", "note", JAN5).await;
         assert!(!pending(&s).await.is_empty());
 
-        // What migration 0017 does on a library that has been here for months.
         s.set_moment_epoch(JAN5 + 50 * DAY).await.unwrap();
         assert_eq!(
             pending(&s).await,
@@ -1014,8 +771,6 @@ mod tests {
             "the migration's own epoch is what makes the upgrade quiet"
         );
     }
-
-    // ---- fires once -------------------------------------------------------
 
     #[tokio::test]
     async fn an_acknowledged_moment_never_comes_back() {
@@ -1112,17 +867,13 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        /// Days inside one month, so a generator produces adjacency often
-        /// enough for the runs to be interesting.
+        /// Days inside one month, so adjacency is common.
         fn day_set() -> impl Strategy<Value = Vec<String>> {
             prop::collection::vec(1u32..=28, 0..20)
                 .prop_map(|ds| ds.into_iter().map(|d| format!("2026-01-{d:02}")).collect())
         }
 
         proptest! {
-            /// The three halves of "maximal consecutive run", each stated as
-            /// something a generator can break. Asserting the word instead
-            /// would assert nothing.
             #[test]
             fn runs_partition_the_days_in_order(days in day_set()) {
                 let runs = runs_of_days(&days);
@@ -1132,7 +883,6 @@ mod tests {
                 want.sort_unstable();
                 want.dedup();
 
-                // 1. Every run is consecutive, and its length is its span.
                 let mut got = Vec::new();
                 for (from, to, len) in &runs {
                     let (a, b) = (parse_day(from).unwrap(), parse_day(to).unwrap());
@@ -1146,11 +896,8 @@ mod tests {
                     }
                 }
 
-                // 2. Together they are exactly the input, in order.
                 prop_assert_eq!(&got, &want);
 
-                // 3. And no run can be extended: the day after one run's end
-                //    is never the day the next run starts.
                 for w in runs.windows(2) {
                     let end = parse_day(&w[0].1).unwrap();
                     let next = parse_day(&w[1].0).unwrap();
@@ -1158,9 +905,6 @@ mod tests {
                 }
             }
 
-            /// Order and duplicates in the input change nothing. The days
-            /// arrive from a `SELECT DISTINCT … ORDER BY` today, and a moment
-            /// that depended on that staying true would break silently.
             #[test]
             fn runs_do_not_depend_on_the_order_they_arrive_in(days in day_set()) {
                 let sorted = runs_of_days(&days);
@@ -1172,10 +916,6 @@ mod tests {
         }
     }
 
-    /// The invariant moments are built around, as a property rather than as one
-    /// example: whatever order moments are surfaced and acknowledged in, and
-    /// however many times, **no moment is ever offered twice after it has been
-    /// acknowledged**, and acknowledging everything empties the list.
     #[tokio::test]
     async fn a_moment_fires_at_most_once_however_the_calls_interleave() {
         let (s, b) = seeded().await;
@@ -1192,8 +932,6 @@ mod tests {
         s.refill_reading_events().await.unwrap();
 
         let mut seen: Vec<String> = Vec::new();
-        // One at a time, re-deriving between each — the way a frontend that
-        // polls, shows one, and acknowledges it actually behaves.
         loop {
             let batch = s.pending_moments(NOW, Some(1)).await.unwrap();
             let Some(m) = batch.into_iter().next() else {
@@ -1202,13 +940,11 @@ mod tests {
             assert!(!seen.contains(&m.id), "{} was offered twice", m.id);
             seen.push(m.id.clone());
             s.acknowledge_moment(&m.id).await.unwrap();
-            // A second acknowledgement mid-stream must change nothing.
             s.acknowledge_moment(&m.id).await.unwrap();
         }
         assert!(seen.len() >= 4, "the fixture is meant to be interesting");
         assert_eq!(pending(&s).await, vec![]);
 
-        // And nothing new appears once the data stops moving.
         assert_eq!(
             s.pending_moments(NOW + 10 * DAY, None).await.unwrap(),
             vec![]

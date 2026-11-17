@@ -1,46 +1,5 @@
-//! The bounded XML layer: decode a document's bytes to text, then build a
-//! small element tree from it with quick-xml.
-//!
-//! The tree deliberately reproduces what the `epub` 2.x crate's tree (over
-//! xml-rs) recorded, because callers that derive today's answers from it must
-//! get the same ones:
-//!
-//! - an element's [`Node::text`] is its **last** run of direct character data
-//!   that is not all whitespace — runs are split by child elements, CDATA
-//!   sections and processing instructions, but not by comments;
-//! - CDATA is kept apart from text;
-//! - names and attribute keys are compared by **local name**, namespaces
-//!   ignored; `xmlns` declarations are not attributes;
-//! - nothing outside the first root element is kept, and anything malformed
-//!   after it closes is not an error;
-//! - neither line endings nor attribute whitespace are normalised.
-//!
-//! [`Node::content`] additionally keeps every piece of character data in
-//! order, which the typed metadata and the text extraction read.
-//!
-//! **Two modes.** [`parse`] is XML: the package document, the container and
-//! the NCX must be well-formed, and a document that is not is an error.
-//! [`parse_html`] is for XHTML that came out of somebody's tool — navigation
-//! documents and chapters. It lower-cases names, reads unquoted attributes,
-//! treats HTML's void elements (`<br>`, `<img>`) as empty however they are
-//! written, closes elements an end tag skips over, ignores an end tag that
-//! matches nothing, tolerates a stray `&`, and when the parser finally gives
-//! up keeps everything read so far. Each of those repairs is reported once
-//! per document as a [`MarkupProblem`].
-//!
-//! **Entities.** XML's five predefined entities, numeric character
-//! references and HTML 4's 253 named entities ([`crate::entities`]) are
-//! resolved — `&nbsp;` to U+00A0. Any other named entity — including one
-//! declared in an internal DTD subset — is **not expanded**: it is kept as
-//! the literal text `&name;` and reported, so an entity bomb costs its own
-//! length and no more. The DTD itself is skipped unread.
-//!
-//! **Bounds.** Besides the document size and nesting depth, an element may
-//! carry at most [`Limits::max_xml_attributes`] attributes and a document
-//! may produce at most [`Limits::max_xml_nodes`] nodes. The second exists
-//! because the tree costs about a hundred bytes per node, so eight MiB of
-//! `<a/>` — two million elements — would otherwise cost a few hundred MiB
-//! of memory to hold.
+//! Bounded XML layer: bytes to text to a small element tree; names compare by local name.
+//! `parse` is strict, `parse_html` repairs sloppy XHTML; unknown entities stay literal.
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -54,8 +13,7 @@ use crate::error::{Error, Limit, MarkupProblem};
 pub(crate) struct Node {
     /// The local name (`title` for `dc:title`); lower-cased in HTML mode.
     pub name: String,
-    /// `(local name, value)` in document order. A repeated name is kept;
-    /// [`Node::attr`] answers the first.
+    /// `(local name, value)` in document order. A repeated name is kept; `attr` answers the first.
     pub attrs: Vec<(String, String)>,
     /// The last non-whitespace run of direct character data.
     pub text: Option<String>,
@@ -106,7 +64,6 @@ impl Node {
     }
 
     /// Every descendant (not self) with this local name, in document order.
-    /// Iterative, so it costs no stack however deep the tree.
     pub(crate) fn find_all(&self, local: &str) -> Vec<&Node> {
         let mut out = Vec::new();
         let mut stack: Vec<std::slice::Iter<'_, Content>> = vec![self.content.iter()];
@@ -144,8 +101,8 @@ impl Node {
     }
 }
 
-/// A parsed document, the entities it used that were left unexpanded, and —
-/// in HTML mode — what had to be repaired to read it.
+/// A parsed document, the entities it used that were left unexpanded, and — in HTML mode —
+/// what had to be repaired to read it.
 pub(crate) struct Document {
     pub root: Node,
     pub undeclared_entities: Vec<String>,
@@ -156,8 +113,7 @@ pub(crate) fn is_xml_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r')
 }
 
-/// Whitespace runs (XML's four characters, not U+00A0) collapsed to one
-/// space, and trimmed.
+/// Collapses runs of XML whitespace (not U+00A0) to one space and trims.
 pub(crate) fn collapse(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for word in s.split(is_xml_ws).filter(|w| !w.is_empty()) {
@@ -169,10 +125,8 @@ pub(crate) fn collapse(s: &str) -> String {
     out
 }
 
-/// Bytes to text: a UTF-8 BOM is dropped; a UTF-16 BOM selects UTF-16 (decoded
-/// lossily, as the old crate did); without a BOM the XML declaration's
-/// `encoding` decides between UTF-8, ISO-8859-1 and US-ASCII. A document that
-/// declares anything else is accepted only if it is valid UTF-8.
+/// A UTF-8 BOM is dropped; a UTF-16 BOM selects UTF-16 (lossy); otherwise the declared `encoding`
+/// picks UTF-8, ISO-8859-1 or US-ASCII. Any other declaration is accepted only if valid UTF-8.
 pub(crate) fn decode(bytes: &[u8], path: &str) -> Result<String, Error> {
     let bad = || Error::Encoding {
         path: path.to_string(),
@@ -186,8 +140,8 @@ pub(crate) fn decode(bytes: &[u8], path: &str) -> Result<String, Error> {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         return Ok(utf16(rest, u16::from_le_bytes));
     }
-    // No BOM. UTF-16 without one still starts `<` `?` with a zero byte beside
-    // each; the encoding declaration cannot be read before that is known.
+    // BOM-less UTF-16 still starts `<` `?` with a zero byte beside each; detect it before reading
+    // the encoding declaration.
     if bytes.starts_with(&[b'<', 0, b'?', 0]) {
         return Ok(utf16(bytes, u16::from_le_bytes));
     }
@@ -253,8 +207,7 @@ pub(crate) fn parse(bytes: &[u8], path: &str, limits: &Limits) -> Result<Documen
     parse_mode(bytes, path, limits, Mode::Xml)
 }
 
-/// Decode and parse an (X)HTML document leniently, under the XML limits.
-/// Fails only on a limit, or when not even a root element could be read.
+/// Lenient; fails only on a limit, or when not even a root element could be read.
 pub(crate) fn parse_html(bytes: &[u8], path: &str, limits: &Limits) -> Result<Document, Error> {
     parse_mode(bytes, path, limits, Mode::Html)
 }
@@ -282,8 +235,8 @@ fn parse_mode(bytes: &[u8], path: &str, limits: &Limits, mode: Mode) -> Result<D
     Ok(doc)
 }
 
-/// HTML's void elements: never have content, whether written `<br>` or
-/// `<br/>`, and an end tag for one is ignored.
+/// HTML's void elements: never have content, whether written `<br>` or `<br/>`, and an end
+/// tag for one is ignored.
 fn is_void(name: &str) -> bool {
     matches!(
         name,
@@ -305,8 +258,7 @@ fn is_void(name: &str) -> bool {
     )
 }
 
-/// The longest name an HTML-mode reference is looked for over: the longest
-/// entity name is 8 bytes, the longest numeric reference 9.
+/// Longest name searched for a reference: entity names are at most 8 bytes, numeric ones 9.
 const MAX_REFERENCE_NAME: usize = 32;
 
 struct Builder<'p> {
@@ -314,10 +266,7 @@ struct Builder<'p> {
     mode: Mode,
     limits: Limits,
     stack: Vec<Node>,
-    /// HTML mode: how many open elements carry each name, so an end tag that
-    /// matches nothing open is known in O(1) rather than by scanning the
-    /// stack — a run of stray end tags would otherwise cost its length times
-    /// the depth.
+    /// HTML mode: open-element counts per name, so a stray end tag is detected in O(1).
     open_names: std::collections::HashMap<String, usize>,
     /// Character data since the last markup that splits a run.
     pending: String,
@@ -378,7 +327,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// Resolve one `&name;` into `out`. Unknown names stay literal.
+    /// Unknown names stay literal.
     fn reference(&mut self, name: &str, out: &mut String) -> Result<(), Error> {
         if let Some(num) = name.strip_prefix('#') {
             let code = if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
@@ -423,11 +372,8 @@ impl Builder<'_> {
             out.push_str(rest.get(..amp).unwrap_or_default());
             let after = rest.get(amp + 1..).unwrap_or_default();
             let name = if html {
-                // A reference is a short run of name characters and a `;`;
-                // anything else makes the `&` a stray one. Looking no further
-                // than that run keeps a value of ten thousand stray `&`s
-                // linear, where searching each time for the next `;` would
-                // not be.
+                // Look only a short run ahead for the `;`: searching for the next one each time makes a value
+                // of many stray `&`s quadratic.
                 let len = after
                     .bytes()
                     .take(MAX_REFERENCE_NAME)
@@ -468,10 +414,8 @@ impl Builder<'_> {
         } else {
             e.attributes()
         };
-        // quick-xml's duplicate check is quadratic in the attribute count of
-        // one element. Without it a repeated name is simply kept, and
-        // `Node::attr` answers the first — which is what the check would
-        // have protected.
+        // quick-xml's duplicate check is quadratic in attribute count; repeats are kept and
+        // `Node::attr` answers the first.
         iter.with_checks(false);
         let mut seen = 0usize;
         for a in iter {
@@ -532,8 +476,8 @@ impl Builder<'_> {
         self.open_names.get(name).is_some_and(|&n| n > 0)
     }
 
-    /// Put a finished element where it belongs: into its parent, or — when it
-    /// is the root — out as the document.
+    /// Put a finished element where it belongs: into its parent, or — when it is the root — out
+    /// as the document.
     fn place(&mut self, node: Node) -> Option<Node> {
         match self.stack.last_mut() {
             Some(parent) => {
@@ -544,7 +488,7 @@ impl Builder<'_> {
         }
     }
 
-    /// Close the top element. `Some(root)` when that was the root.
+    /// Close the top element.
     fn close_top(&mut self) -> Option<Node> {
         let node = self.pop()?;
         self.place(node)
@@ -656,8 +600,6 @@ fn parse_str_mode(text: &str, path: &str, limits: &Limits, mode: Mode) -> Result
                     if is_void(&name) {
                         continue;
                     }
-                    // Known open, the scan stops at most at the elements it
-                    // is about to close — amortised O(1).
                     let at = b
                         .is_open(&name)
                         .then(|| b.stack.iter().rposition(|n| n.name == name))
@@ -678,7 +620,7 @@ fn parse_str_mode(text: &str, path: &str, limits: &Limits, mode: Mode) -> Result
                 let Some(node) = b.pop() else {
                     return Err(b.malformed("closing tag with nothing open"));
                 };
-                // The root closed: anything after it is not ours to judge.
+                // The root closed: anything after it is ignored.
                 if let Some(root) = b.place(node) {
                     return Ok(b.done(root));
                 }
@@ -708,8 +650,6 @@ fn parse_str_mode(text: &str, path: &str, limits: &Limits, mode: Mode) -> Result
                 }
             }
             Event::PI(_) => b.flush()?,
-            // Comments do not split a run; the declaration and the DTD are
-            // skipped unread.
             Event::Comment(_) | Event::Decl(_) | Event::DocType(_) => {}
             Event::Eof => {
                 if html && !b.stack.is_empty() {
@@ -787,8 +727,8 @@ mod tests {
         assert!(p("<a/>trailing <<< junk").is_ok());
     }
 
-    /// A repeated attribute is no longer refused; the first one is the
-    /// answer, as `attr` has always given.
+    /// A repeated attribute is no longer refused; the first one is the answer, as `attr` has
+    /// always given.
     #[test]
     fn a_repeated_attribute_keeps_the_first() {
         let d = p(r#"<a x="1" x="2"/>"#).unwrap();
@@ -839,10 +779,7 @@ mod tests {
         ));
     }
 
-    /// One element with a hundred thousand attributes fits easily inside the
-    /// byte cap. It is refused at the attribute cap, quickly — the duplicate
-    /// check that made it quadratic is off — and a merely large count under
-    /// a raised cap still parses in linear time.
+    /// One element with a hundred thousand attributes fits easily inside the byte cap.
     #[test]
     fn attributes_per_element_are_capped() {
         let mut doc = String::from("<a");
@@ -877,8 +814,8 @@ mod tests {
         assert!(p(&at_cap).is_ok());
     }
 
-    /// Two million empty elements fit in eight MiB; the tree for them would
-    /// not fit in a few hundred. The node cap refuses the document instead.
+    /// Two million empty elements fit in eight MiB; the tree for them would not fit in a few
+    /// hundred.
     #[test]
     fn nodes_per_document_are_capped() {
         let doc = format!("<r>{}</r>", "<a/>".repeat(2_000_000));
@@ -904,9 +841,9 @@ mod tests {
         ));
     }
 
-    /// What the node cap's documentation claims: a node is about a hundred
-    /// bytes before its heap allocations (its name, its slot in the parent's
-    /// vector), so the default cap bounds a tree near 50–100 MiB.
+    /// What the node cap's documentation claims: a node is about a hundred bytes before its heap
+    /// allocations (its name, its slot in the parent's vector), so the default cap bounds a tree
+    /// near 50–100 MiB.
     #[test]
     fn a_node_is_about_a_hundred_bytes() {
         let size = std::mem::size_of::<Content>();
@@ -949,7 +886,6 @@ mod tests {
 
     #[test]
     fn html_mode_repairs_end_tags() {
-        // `</div>` skips the open <b>; `</i>` matches nothing.
         let d = h("<html><div><b>bold</div><p>after</i></p></html>");
         assert_eq!(d.problems, vec![MarkupProblem::MismatchedEnd]);
         let names: Vec<&str> = d.root.children().map(|n| n.name.as_str()).collect();
@@ -992,10 +928,9 @@ mod tests {
         assert_eq!(d.root.text_content(), "x&#xFFFFFFFF;y");
     }
 
-    /// Two shapes that are linear now and were not: an attribute of stray
-    /// `&`s (each once searched the rest of the value for a `;`), and a run
-    /// of end tags matching nothing under a deep stack (each once scanned the
-    /// whole stack). Loose bounds: the point is the shape, not the speed.
+    /// Two shapes that are linear now and were not: an attribute of stray `&`s (each once
+    /// searched the rest of the value for a `;`), and a run of end tags matching nothing under a
+    /// deep stack (each once scanned the whole stack).
     #[test]
     fn html_mode_repairs_cost_linear_time() {
         let started = std::time::Instant::now();
@@ -1039,8 +974,7 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Arbitrary bytes are parsed or refused, never a panic — in either
-        /// mode.
+        /// Arbitrary bytes are parsed or refused, never a panic — in either mode.
         #[test]
         fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
             let _ = parse(&bytes, "t", &Limits::default());
@@ -1064,8 +998,8 @@ mod props {
             prop_assert_eq!(d.root.text_content(), s);
         }
 
-        /// Every named entity in the table decodes to its character, in text
-        /// and in an attribute, in both modes.
+        /// Every named entity in the table decodes to its character, in text and in an attribute, in
+        /// both modes.
         #[test]
         fn every_named_entity_decodes(i in 0..entities::ENTITIES.len()) {
             let (name, c) = entities::ENTITIES[i];

@@ -1,25 +1,5 @@
-//! Calibre, driven through fake binaries.
-//!
-//! Nothing here needs calibre installed, and that is the point: the CI runners
-//! do not have it, and a feature that is only exercised on the developer's
-//! laptop is a feature with no tests. What is faked is the *program*; everything
-//! else — process spawn, exit codes, stdout, argv, JSON parsing, matching,
-//! upserting, covers, `external_ids` — is the real path.
-//!
-//! Two things are deliberately **not** faked with a `PATH` edit, which is the
-//! obvious way to do this:
-//!
-//! * `std::env::set_var` is `unsafe` in edition 2024 and is a data race with
-//!   every other test in this binary, which cargo runs on threads.
-//! * `EngineConfig::calibre_bin_dir` is searched before `PATH`, so pointing at a
-//!   directory achieves the same thing with no global state at all.
-//!
-//! The `PATH` half — that detection finds a tool the ordinary way — is covered
-//! from outside the process in `crates/cli/tests/cli.rs`, where the environment
-//! belongs to a child and mutating it is safe.
-//!
-//! Unix-only: the fakes are shell scripts. The workspace is already unix-only
-//! (`/Volumes`, `/run/media`), so this costs no coverage.
+//! Calibre tests driven through fake binaries via `calibre_bin_dir`, not a `PATH` edit
+//! (`set_var` races other threads).
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -31,7 +11,6 @@ mod common;
 
 const LIBRARY_JSON: &str = include_str!("fixtures/calibre/recorded/library.json");
 
-/// A directory holding fake `ebook-convert` / `calibredb` scripts.
 struct Fake {
     dir: tempfile::TempDir,
 }
@@ -47,7 +26,6 @@ impl Fake {
         self.dir.path().to_path_buf()
     }
 
-    /// Write an executable `/bin/sh` script under `name`.
     fn tool(&self, name: &str, body: &str) -> &Fake {
         use std::os::unix::fs::PermissionsExt;
         let p = self.dir.path().join(name);
@@ -56,7 +34,6 @@ impl Fake {
         self
     }
 
-    /// A `calibredb` that records its argv and prints `json`.
     fn calibredb(&self, json: &str) -> &Fake {
         let out = self.dir.path().join("argv.txt");
         self.tool(
@@ -77,8 +54,6 @@ impl Fake {
     }
 }
 
-/// A calibre library directory: `metadata.db` is the marker `library_root`
-/// insists on, and the cover/format files the JSON names.
 fn library(root: &Path, covers: &[(&str, &[u8])]) -> PathBuf {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("metadata.db"), b"not really sqlite").unwrap();
@@ -90,17 +65,10 @@ fn library(root: &Path, covers: &[(&str, &[u8])]) -> PathBuf {
     root.to_path_buf()
 }
 
-/// Rewrite the recorded fixture's absolute paths to point inside `root`, so the
-/// cover copy and the `partial_md5` link run against files that exist.
 fn json_rooted(root: &Path) -> String {
     LIBRARY_JSON.replace("/books/calibre", &root.display().to_string())
 }
 
-// ---- tier (i) ---------------------------------------------------------------
-
-/// The conversion path end to end: argv reaches the program, a written output is
-/// success, and a program that exits non-zero is a typed error carrying what it
-/// said.
 #[tokio::test]
 async fn a_conversion_runs_the_tool_and_is_judged_by_what_it_wrote() {
     let fake = Fake::new();
@@ -109,7 +77,6 @@ async fn a_conversion_runs_the_tool_and_is_judged_by_what_it_wrote() {
     let output = work.path().join("out.azw3");
     std::fs::write(&input, b"epub").unwrap();
 
-    // Writes its second argument, which is what `ebook-convert IN OUT` means.
     fake.tool("ebook-convert", "cp \"$1\" \"$2\"");
     let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
     assert!(engine.calibre().can_convert());
@@ -118,7 +85,6 @@ async fn a_conversion_runs_the_tool_and_is_judged_by_what_it_wrote() {
     assert_eq!(written, output);
     assert!(output.is_file());
 
-    // …and it refuses to do it again over the top.
     let e = engine
         .convert_ebook(&input, &output, false)
         .await
@@ -127,11 +93,9 @@ async fn a_conversion_runs_the_tool_and_is_judged_by_what_it_wrote() {
         matches!(&e, EngineError::InvalidInput(m) if m.contains("already exists")),
         "{e:?}"
     );
-    // Told to, it does.
     engine.convert_ebook(&input, &output, true).await.unwrap();
 }
 
-/// Calibre failing is not bookmole failing, and the message has to survive.
 #[tokio::test]
 async fn a_failing_conversion_is_typed_and_keeps_calibres_last_words() {
     let fake = Fake::new();
@@ -156,8 +120,6 @@ async fn a_failing_conversion_is_typed_and_keeps_calibres_last_words() {
         other => panic!("expected a typed calibre failure, got {other:?}"),
     }
 
-    // A tool that exits 0 and writes nothing is still a failure — an exit code
-    // is a claim, and the file is the evidence.
     fake.tool("ebook-convert", "exit 0");
     let (_tmp2, engine) = common::engine_with_calibre(Some(fake.path())).await;
     let e = engine
@@ -167,16 +129,9 @@ async fn a_failing_conversion_is_typed_and_keeps_calibres_last_words() {
     assert!(matches!(e, EngineError::Calibre { .. }), "{e:?}");
 }
 
-// The absent-calibre path is asserted in `calibre.rs`'s own tests
-// (`an_absent_calibre_is_a_named_error_and_never_a_panic`) and deliberately not
-// here: detection falls through to the real `PATH`, so on a developer machine
-// with calibre installed a test that claimed to observe "absent" would be
-// observing a real install and passing for the wrong reason. The facade methods
-// are one-line delegations to the two functions that test covers.
+// The absent-calibre path is not tested here: detection falls through to the real `PATH`, so an
+// installed calibre would pass for the wrong reason.
 
-// ---- tier (ii) --------------------------------------------------------------
-
-/// The whole import, once: argv, parse, create, cover, tags, `external_ids`.
 #[tokio::test]
 async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     let work = tempfile::tempdir().unwrap();
@@ -251,24 +206,17 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     assert_eq!(book.isbn_13.as_deref(), Some("9780140447101"));
     assert_eq!(book.publish_year, Some(2001));
     assert_eq!(book.language.as_deref(), Some("en"));
-    // Series used to be dropped outright for want of a column (migration
-    // `0013`). Calibre is the one origin here that curates it by hand.
     assert_eq!(book.series.as_deref(), Some("Household Tales"));
     assert_eq!(book.series_index, Some(1.0));
-    // …and its tags are still **shelves**, not subjects: they go to
-    // `book_tags`, which is a different table with a different meaning.
     assert!(
         book.subjects.is_empty(),
         "a calibre tag is a minted shelf, never a bibliographic subject"
     );
-    // The cover was copied into our own images dir, under a name that cannot
-    // collide — every cover in a calibre library is called `cover.jpg`.
     let cover = PathBuf::from(book.cover_path.expect("a cover path"));
     assert!(cover.is_file());
     assert!(cover.starts_with(engine.images_dir()));
     assert_eq!(std::fs::read(&cover).unwrap(), b"jpegbytes");
 
-    // Provenance: calibre's uuid, and the shelves as it wrote them.
     assert_eq!(
         engine
             .storage()
@@ -283,9 +231,6 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
         ["fairy-tales", "german-lit"]
     );
 
-    // Field provenance, beside the row provenance above: every column
-    // this import wrote is calibre's, and `page_count` — which `calibredb list`
-    // does not carry at all — is claimed by nobody rather than by calibre.
     let claimed = engine
         .storage()
         .field_provenance(book.id.unwrap())
@@ -302,7 +247,6 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
         "calibre said nothing about the page count, so it claims nothing: {fields:?}"
     );
 
-    // The undated book's sentinel `pubdate` did not become the year 101.
     let wallpaper = report
         .books
         .iter()
@@ -317,8 +261,6 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     assert_eq!(wallpaper_book.publish_year, None);
 }
 
-/// Re-running the import must find the same books, not make second copies of
-/// them — and the uuid is what makes that true for a book with no ISBN.
 #[tokio::test]
 async fn importing_the_same_library_twice_changes_nothing() {
     let work = tempfile::tempdir().unwrap();
@@ -356,17 +298,11 @@ async fn importing_the_same_library_twice_changes_nothing() {
         "every row found itself by uuid: {:?}",
         again.books.iter().map(|b| b.matched_by).collect::<Vec<_>>()
     );
-    // Every count on the report is what the import *changed*. A second run that
-    // announced a tag, a cover and a file against every book would be reporting
-    // work it did not do — the same rule the Goodreads import applies to a
-    // rating it did not rewrite.
     for b in &again.books {
         assert_eq!(b.tags_added, 0, "{}: tags", b.title);
         assert!(!b.cover, "{}: cover", b.title);
         assert_eq!(b.files_linked, 0, "{}: files", b.title);
     }
-    // …and the first run did report all three, so the zeroes above are the
-    // second run being quiet rather than the fields never being set.
     let first_grimm = first
         .books
         .iter()
@@ -386,9 +322,6 @@ async fn importing_the_same_library_twice_changes_nothing() {
     );
 }
 
-/// A book we already have is matched, not duplicated — and the rung that found
-/// it is reported, because "matched by title" and "matched by isbn" are
-/// different amounts of confidence.
 #[tokio::test]
 async fn an_existing_book_is_matched_by_isbn_and_never_duplicated() {
     let work = tempfile::tempdir().unwrap();
@@ -397,7 +330,6 @@ async fn an_existing_book_is_matched_by_isbn_and_never_duplicated() {
     fake.calibredb(&json_rooted(&work.path().join("lib")));
 
     let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
-    // Same ISBN, a different title entirely — so only the ISBN rung can find it.
     let existing = engine
         .save_book(&Book {
             title: Some("Household Stories (a different paperback)".into()),
@@ -428,20 +360,16 @@ async fn an_existing_book_is_matched_by_isbn_and_never_duplicated() {
         .await
         .unwrap()
         .unwrap();
-    // The **provider no-clobber merge**, not the device's straight assignment:
-    // a `calibredb list` row carries no page count at all, so assigning it
-    // straight would blank a field calibre has no opinion about.
+    // The provider no-clobber merge: `calibredb list` carries no page count, so straight assignment
+    // would blank it.
     assert_eq!(
         after.page_count,
         Some(490),
         "calibre must not blank what it does not carry"
     );
-    // And it filled what was empty.
     assert_eq!(after.publisher.as_deref(), Some("Penguin Classics"));
 }
 
-/// A near-miss is a decision, not a dead end — and `--new` is the escape hatch,
-/// exactly as `ko pull --new` and `goodreads import --new` are.
 #[tokio::test]
 async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
     let work = tempfile::tempdir().unwrap();
@@ -450,15 +378,11 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
     fake.calibredb(&json_rooted(&work.path().join("lib")));
 
     let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
-    // Close enough to be suspicious, far enough not to auto-match (0.77, and
-    // the band is 0.60..0.85), and with no ISBN so the title rung is the one
-    // that decides. A subtitle the library carries and the origin does not is
-    // the shape that used to become a duplicate in silence.
+    // 0.77 similarity: inside the 0.60..0.85 ambiguous band, with no ISBN so the title rung decides.
     engine
         .save_book(&Book {
             title: Some("The Yellow Wallpaper: A Story of a Rest Cure".into()),
-            // Stored the way the origin spelled it; the row the user reads must
-            // not be.
+            // Stored as the origin spelled it; the row the user reads must not be.
             authors: vec!["Gilman, Charlotte Perkins".into()],
             publish_year: Some(1899),
             ..Default::default()
@@ -480,9 +404,6 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
         !offered.candidates.is_empty(),
         "and it says what it probably is"
     );
-    // …and says it in full: authors and year as well as the title. Two
-    // editions of one title tie on the title alone, which is the whole reason
-    // a chooser exists.
     assert_eq!(
         offered.candidates[0].authors_display,
         ["Charlotte Perkins Gilman"]
@@ -490,7 +411,6 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
     assert_eq!(offered.candidates[0].publish_year, Some(1899));
     assert!(offered.uuid.is_some());
 
-    // Told to, it creates it anyway.
     let forced = engine
         .import_calibre_library(&ImportOptions {
             create_ambiguous: true,
@@ -507,9 +427,6 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
     );
 }
 
-/// `--dry-run` answers the same questions and writes nothing — including no
-/// covers, which is the half that is easy to get wrong because it happens on
-/// the filesystem rather than in the database.
 #[tokio::test]
 async fn a_dry_run_reports_the_same_thing_and_writes_nothing() {
     let work = tempfile::tempdir().unwrap();
@@ -553,9 +470,7 @@ async fn a_dry_run_reports_the_same_thing_and_writes_nothing() {
     assert_eq!(images, 0, "a dry run must not copy covers either");
 }
 
-/// The guard that keeps a mistyped `--library` from creating a calibre library
-/// on the user's disk. Verified against calibre 7.26 and 9.11, which both do
-/// exactly that: they write `metadata.db`, report `[]`, and exit 0.
+/// calibredb creates a library and exits 0 for a mistyped path, so the path is checked first.
 #[tokio::test]
 async fn a_mistyped_library_path_is_refused_before_calibredb_is_run() {
     let work = tempfile::tempdir().unwrap();
@@ -583,10 +498,6 @@ async fn a_mistyped_library_path_is_refused_before_calibredb_is_run() {
     );
 }
 
-/// The middle rung of dedup level 3, observed from both ends: an imported
-/// calibre file is identified by `partial_md5`, so a book later matched on that
-/// hash is *this* book — which is what makes a KOReader sidecar off the device
-/// land here instead of guessing at a title.
 #[tokio::test]
 async fn calibres_files_are_identified_so_the_device_can_find_them_later() {
     let work = tempfile::tempdir().unwrap();
@@ -628,8 +539,6 @@ async fn calibres_files_are_identified_so_the_device_can_find_them_later() {
     assert_eq!(found.id, grimm.book_id);
 }
 
-/// Rows the import cannot fully stand behind are reported, never silently
-/// dropped or silently duplicated.
 #[tokio::test]
 async fn a_titleless_row_is_skipped_and_an_id_less_row_says_it_will_recur() {
     let work = tempfile::tempdir().unwrap();
@@ -666,11 +575,6 @@ async fn a_titleless_row_is_skipped_and_an_id_less_row_says_it_will_recur() {
     );
 }
 
-// ---- one row at a time ------------------------------------------------------
-
-/// `ImportOptions::only` is what lets a frontend show a shelf and import one
-/// line of it. The filter has to reach the *listing*, not the report: a user who
-/// imported one book of three must not be told the import read three.
 #[tokio::test]
 async fn only_imports_the_row_it_was_asked_for_and_counts_only_that_row() {
     let work = tempfile::tempdir().unwrap();
@@ -699,8 +603,6 @@ async fn only_imports_the_row_it_was_asked_for_and_counts_only_that_row() {
     assert_eq!(shelf.len(), 1, "the other two rows were left alone");
 }
 
-/// An empty `only` is every row — the default, and what keeps every caller that
-/// predates the field unchanged.
 #[tokio::test]
 async fn an_empty_only_is_the_whole_library() {
     let work = tempfile::tempdir().unwrap();
@@ -722,9 +624,6 @@ async fn an_empty_only_is_the_whole_library() {
     assert_eq!(report.books.len(), 3);
 }
 
-/// Every report line names the calibre row it came from, in a dry run too — the
-/// dry run being the one a shelf screen renders, where a line that cannot be
-/// tied to a row is a line the user cannot act on.
 #[tokio::test]
 async fn every_report_line_names_its_calibre_row() {
     let work = tempfile::tempdir().unwrap();
@@ -748,11 +647,6 @@ async fn every_report_line_names_its_calibre_row() {
     }
 }
 
-// ---- linking by hand --------------------------------------------------------
-
-/// The escape hatch the shelf screen's `l` needs: say once that a calibre book
-/// is a book we already have, and the next import matches it by uuid instead of
-/// offering the same guess again.
 #[tokio::test]
 async fn linking_a_calibre_book_by_hand_is_matched_by_uuid_from_then_on() {
     let work = tempfile::tempdir().unwrap();
@@ -761,8 +655,6 @@ async fn linking_a_calibre_book_by_hand_is_matched_by_uuid_from_then_on() {
     fake.calibredb(&json_rooted(&work.path().join("lib")));
 
     let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
-    // A book whose title is nothing like calibre's, so no rung but the link can
-    // possibly find it.
     let mine = engine
         .save_book(&Book {
             title: Some("A Novel About Snow".into()),
@@ -797,9 +689,6 @@ async fn linking_a_calibre_book_by_hand_is_matched_by_uuid_from_then_on() {
     );
 }
 
-/// Repointing is the whole reason `external_ids` upserts rather than inserts: a
-/// link made by hand and then corrected has to move, or the correction is the
-/// one write that silently does nothing.
 #[tokio::test]
 async fn a_hand_link_can_be_corrected() {
     let (_tmp, engine) = common::engine_with_calibre(None).await;
@@ -825,8 +714,6 @@ async fn a_hand_link_can_be_corrected() {
     );
 }
 
-/// A candidate list can name a book another pane has since deleted, so the
-/// answer is typed rather than a foreign-key error naming a constraint.
 #[tokio::test]
 async fn linking_to_a_book_that_is_gone_says_so() {
     let (_tmp, engine) = common::engine_with_calibre(None).await;
@@ -837,8 +724,6 @@ async fn linking_to_a_book_that_is_gone_says_so() {
     assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
 }
 
-/// calibre ids are per-library and reused after a delete, so a row with no uuid
-/// has nothing durable to link by and is refused rather than linked by its id.
 #[tokio::test]
 async fn a_calibre_book_with_no_uuid_cannot_be_linked() {
     let (_tmp, engine) = common::engine_with_calibre(None).await;
@@ -852,8 +737,6 @@ async fn a_calibre_book_with_no_uuid_cannot_be_linked() {
         .expect_err("an empty uuid is not an identity");
     assert!(matches!(err, EngineError::InvalidInput(_)), "{err:?}");
 }
-
-// ---- copies: a calibre import points at calibre's files ---------------------
 
 const GRIMM_UUID: &str = "8810c85d-bb14-4a98-a1a9-897508436610";
 const WALLPAPER_UUID: &str = "e87a29fd-c971-4c30-ac0b-caabc783bac4";
@@ -897,8 +780,6 @@ async fn copy_import(
     (fake, tmp, engine, opts, id)
 }
 
-/// A calibre import points: one `file`/`own` copy per book with a `calibre`
-/// place, and no bytes copied into the store.
 #[tokio::test]
 async fn a_calibre_import_makes_a_pointed_copy_and_copies_no_bytes() {
     let work = tempfile::tempdir().unwrap();
@@ -925,7 +806,6 @@ async fn a_calibre_import_makes_a_pointed_copy_and_copies_no_bytes() {
     assert!(engine.book_standing(id).await.unwrap().in_library);
 }
 
-/// A second scan finds the same copy; it does not make another.
 #[tokio::test]
 async fn a_second_calibre_scan_makes_no_second_copy() {
     let work = tempfile::tempdir().unwrap();
@@ -939,16 +819,12 @@ async fn a_second_calibre_scan_makes_no_second_copy() {
     assert_eq!(after[0].places[0].missing_since, None);
 }
 
-/// A book calibre no longer lists has its place marked missing and nothing else
-/// changes: the copy stays, `have_now` stays unsaid, the book stays in the
-/// library. A place that comes back is un-missed.
 #[tokio::test]
 async fn a_calibre_book_that_vanishes_is_marked_missing_and_nothing_more() {
     let work = tempfile::tempdir().unwrap();
     let (fake, _tmp, engine, opts, id) = copy_import(work.path()).await;
     let before = engine.copies_for_book(id).await.unwrap();
 
-    // Calibre now lists only The Yellow Wallpaper.
     let all: serde_json::Value =
         serde_json::from_str(&json_rooted(&work.path().join("lib"))).unwrap();
     let kept: Vec<_> = all
@@ -974,7 +850,6 @@ async fn a_calibre_book_that_vanishes_is_marked_missing_and_nothing_more() {
         .unwrap();
     assert_eq!(wallpaper.places[0].missing_since, None);
 
-    // It comes back.
     fake.calibredb(&json_rooted(&work.path().join("lib")));
     engine.import_calibre_library(&opts).await.unwrap();
     let back = engine.copies_for_book(id).await.unwrap();
@@ -982,8 +857,6 @@ async fn a_calibre_book_that_vanishes_is_marked_missing_and_nothing_more() {
     assert_eq!(back[0].places[0].missing_since, None);
 }
 
-/// A library whose root cannot be reached (the drive is not mounted) marks its
-/// places missing; the import still refuses as it always did.
 #[tokio::test]
 async fn an_unreachable_library_marks_its_places_missing() {
     let work = tempfile::tempdir().unwrap();
@@ -998,11 +871,6 @@ async fn an_unreachable_library_marks_its_places_missing() {
     assert_eq!(copies[0].have_now, None);
 }
 
-// ---- the files a calibre place holds (migration 0031) ----------------------
-
-/// Each format's absolute path, as `calibredb list` reported it, is recorded
-/// against the place, and `copy_files` reads it back with what the disk says
-/// now (the fixture library holds the epub and not the azw3).
 #[tokio::test]
 async fn a_calibre_import_records_each_formats_path() {
     let work = tempfile::tempdir().unwrap();
@@ -1047,8 +915,6 @@ async fn a_calibre_import_records_each_formats_path() {
     assert_eq!((azw3.on_disk, azw3.size), (Some(false), None));
 }
 
-/// A re-scan replaces the place's paths: a format calibre stopped listing is
-/// gone, a renamed file is the new path. Calibre owns the list.
 #[tokio::test]
 async fn a_rescan_with_other_formats_replaces_the_recorded_paths() {
     let work = tempfile::tempdir().unwrap();

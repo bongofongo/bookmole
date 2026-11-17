@@ -1,20 +1,5 @@
-//! The `?` page: what this screen is, and what it responds to.
-//!
-//! One page per [`Screen`], and the split between them is the whole design.
-//! **A screen's page lists only the keys that screen gives a meaning of its
-//! own.** The keys that mean the same thing everywhere — `q`, `m`, `esc`, the
-//! `j`/`k` movement pair, `?` itself — are on the menu's page and nowhere else,
-//! because repeating them nine times would bury the two or three lines that are
-//! actually news about the screen you are standing on. That is a rule, not a
-//! habit: [`tests::no_screen_page_repeats_a_global_key`] asserts it.
-//!
-//! The menu's page therefore does double duty — it is the app's introduction as
-//! well as the global key table, which is right twice over: the menu is the one
-//! screen that is about the app rather than about a book, and it is both the
-//! screen the app opens on and the screen `esc` walks back to.
-//!
-//! Nothing here counts anything and nothing here is a dead end: the page is a
-//! place you look, and any key closes it.
+//! The `?` page per screen. A screen's page lists only keys it gives its own meaning; the
+//! global keys (`q`, `m`, `esc`, `j`/`k`, `?`) appear only on the menu's page.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -24,24 +9,17 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 use crate::app::Screen;
 use crate::theme;
 
-/// A run of key rows under an optional heading. Only the menu's page has more
-/// than one — the global table and the menu's own keys are two different kinds
-/// of fact and reading as one list would flatten them.
 pub struct Section {
     pub heading: Option<&'static str>,
     pub keys: &'static [(&'static str, &'static str)],
 }
 
-/// One screen's page: what it is, then what it responds to.
 pub struct Help {
     pub title: &'static str,
-    /// Prose, pre-split into lines. Short on purpose — the page describes the
-    /// screen in a breath and then gets out of the way.
     pub about: &'static [&'static str],
     pub sections: &'static [Section],
 }
 
-/// The keys every screen answers to. Listed once, on the menu's page.
 const GLOBAL: Section = Section {
     heading: Some("everywhere"),
     keys: &[
@@ -55,8 +33,6 @@ const GLOBAL: Section = Section {
     ],
 };
 
-/// The page for a screen. Exhaustive on [`Screen`], so a new screen cannot be
-/// added without deciding what its page says.
 pub fn page(screen: Screen) -> Help {
     match screen {
         Screen::Menu => Help {
@@ -294,16 +270,11 @@ pub fn page(screen: Screen) -> Help {
     }
 }
 
-/// The page as lines, ready to measure and draw. Public for the tests and for
-/// `print_help`, which is how a change to the wording is looked at without a
-/// terminal.
 pub fn lines(help: &Help) -> Vec<Line<'static>> {
     let mut out: Vec<Line> = Vec::new();
     for text in help.about {
         out.push(Line::from(Span::styled(*text, theme::dim())));
     }
-    // The key column is padded to the widest key across the *whole* page, so
-    // the descriptions line up down the page rather than per section.
     let width = help
         .sections
         .iter()
@@ -326,7 +297,6 @@ pub fn lines(help: &Help) -> Vec<Line<'static>> {
     out
 }
 
-/// Draw the page over whatever screen is underneath.
 pub fn render(f: &mut Frame, area: Rect, screen: Screen) {
     let help = page(screen);
     let rows = lines(&help);
@@ -338,17 +308,12 @@ pub fn render(f: &mut Frame, area: Rect, screen: Screen) {
         .max(help.title.chars().count() as u16)
         .saturating_add(4);
     let box_area = super::centered(area, width, rows.len() as u16 + 2);
-    // `Clear` first: this floats over a screen that is still drawn underneath,
-    // and a `Block` styles the cells it does not draw without blanking them.
     f.render_widget(ratatui::widgets::Clear, box_area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim())
         .padding(Padding::horizontal(1))
         .title(Span::styled(help.title, theme::accent()))
-        // The way out, in the border — the same place every other screen keeps
-        // its keys, and the reason this page cannot be the dead end it exists
-        // to prevent.
         .title_bottom(
             Line::from(vec![
                 Span::styled(" any key ", theme::key()),
@@ -358,8 +323,7 @@ pub fn render(f: &mut Frame, area: Rect, screen: Screen) {
         );
     let inner = block.inner(box_area);
     f.render_widget(block, box_area);
-    // A `Block` on a 1×1 pane has no inside at all, and a `Paragraph` into a
-    // zero rect is what panics.
+    // A `Block` on a 1x1 pane has no inside, and a `Paragraph` into a zero rect panics.
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -382,9 +346,6 @@ mod tests {
         Screen::Goodreads,
     ];
 
-    /// Every screen has a page, and every page says something and lists
-    /// something. A page with an empty key table would be a screen claiming it
-    /// responds to nothing.
     #[test]
     fn every_screen_has_a_page_with_prose_and_keys() {
         for screen in SCREENS {
@@ -401,13 +362,6 @@ mod tests {
         }
     }
 
-    /// **The rule the split exists for.** A key that means the same thing on
-    /// every screen belongs on the menu's page and nowhere else — repeated nine
-    /// times it buries the two or three lines that are actually news.
-    ///
-    /// `enter` is deliberately absent from this list: it opens, pulls, imports
-    /// and adds depending on where you are standing, so its meaning *is*
-    /// screen-specific and each page owes it a line.
     #[test]
     fn no_screen_page_repeats_a_global_key() {
         const GLOBALS: [&str; 9] = [
@@ -436,8 +390,6 @@ mod tests {
         }
     }
 
-    /// The menu's page is the one that carries the globals, and it is the app's
-    /// introduction as well — so it says the app's name and it lists `q`.
     #[test]
     fn the_menu_page_is_the_introduction_and_the_global_table() {
         let help = page(Screen::Menu);
@@ -456,9 +408,6 @@ mod tests {
         }
     }
 
-    /// No page tallies anything — the app rules out task-completion framing
-    /// everywhere, and a help page is exactly where a "3 of 7" would look
-    /// harmless.
     #[test]
     fn no_page_counts_anything() {
         for screen in SCREENS {
@@ -472,8 +421,6 @@ mod tests {
         }
     }
 
-    /// The key column is padded to the widest key on the page, so the
-    /// descriptions line up across sections rather than within them.
     #[test]
     fn the_key_column_is_one_width_down_the_whole_page() {
         let help = page(Screen::Book);

@@ -1,20 +1,15 @@
-//! The open read of one book, through the facade: finishing it on a named
-//! day, and saying how many pages the edition has. Both are new doors; reading again is `reread`, which is not.
-//!
-//! Offline, `sqlite::memory:` plus a `TempDir` vault.
+//! The open read of one book through the facade: finishing it on a named day, and setting the
+//! edition's page count.
 
 mod common;
 use bookmole::{EngineError, Progress};
 use common::{engine, seed_book};
 
-/// Today, UTC, as the engine's days are spelled.
 fn today() -> String {
     time::OffsetDateTime::now_utc().date().to_string()
 }
 
-/// Finishing is about the read you are in. With none open there is nothing to
-/// close, and — the reason this is not `update_progress(finished)` — nothing
-/// is opened in order to be closed.
+/// With no open read there is nothing to close, and finishing must not open one to close.
 #[tokio::test]
 async fn finishing_a_book_with_no_open_read_is_refused_and_writes_nothing() {
     let (_tmp, engine) = engine().await;
@@ -49,7 +44,6 @@ async fn finishing_on_today_closes_the_open_read_and_reading_again_opens_a_new_o
         "a read finished today, the day it began, finishes no earlier than it began"
     );
 
-    // Read it again: a second read, and the first is still there, finished.
     let second = engine.reread(id).await.unwrap();
     assert_ne!(second, first.id);
     let readings = engine.list_readings(id).await.unwrap();
@@ -84,8 +78,6 @@ async fn a_day_before_the_read_began_is_refused_and_the_read_stays_open() {
     );
 }
 
-/// The second box of *Page [N] of [M]*: the user's number, held as theirs, and
-/// the progress the engine words from it gains a denominator.
 #[tokio::test]
 async fn a_page_count_the_reader_sets_is_theirs_and_gives_progress_a_length() {
     let (_tmp, engine) = engine().await;

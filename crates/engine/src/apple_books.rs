@@ -1,104 +1,7 @@
-//! Apple Books (macOS): highlights and notes out of the app's own databases.
-//!
-//! Import is one-way. bookmole never writes into Apple Books, and never
-//! opens its databases at all: they are **live WAL databases owned by another
-//! app**, so each is copied (the db, its `-wal` and its `-shm`, whichever
-//! exist) into a private temp dir through [`crate::ko_statistics`]' `copy_out`
-//! — the same discipline, for the same reason (RUSTSEC-2026-0459, the vendored
-//! SQLite) — and **the copy** is opened read-only, read, closed and deleted.
-//! No code path names an original after the copy.
-//!
-//! ## Where
-//!
-//! `root` is Apple Books' `Data/Documents` ([`default_root`] on a Mac, always a
-//! parameter so tests pass a temp dir). The annotation database is
-//! `AEAnnotation/AEAnnotation*.sqlite` and the library database
-//! `BKLibrary/BKLibrary*.sqlite`, found **by pattern**: the version suffix is
-//! Apple's and changes. Several matches → the most recently modified. None →
-//! [`DiagnosticKind::AppleBooksAbsent`], never an error. macOS refusing access
-//! (the "access data from other apps" prompt declined) →
-//! [`DiagnosticKind::AppleBooksPermissionDenied`], which a frontend explains.
-//!
-//! ## What is read
-//!
-//! `ZBKLIBRARYASSET` (`ZASSETID` required; `ZTITLE`, `ZAUTHOR`, `ZPATH`,
-//! `ZSTOREID`, `ZCONTENTTYPE`) and `ZAEANNOTATION` (`ZANNOTATIONUUID` and
-//! `ZANNOTATIONASSETID` required; the rest optional). A missing table or key
-//! column is [`DiagnosticKind::AppleBooksSchemaUnknown`]; a missing optional
-//! column is read as NULL for every row and reported once as
-//! [`DiagnosticKind::AppleBooksColumnsMissing`]. Values are read by storage
-//! class, so a text where a number belongs is NULL, never a guessed number.
-//! Dates are Core Data's, seconds since 2001-01-01 UTC: [`core_data_to_unix`]
-//! is the one conversion.
-//!
-//! ## Which annotations
-//!
-//! `ZANNOTATIONTYPE` 2 is a highlight (with or without a note) and is
-//! imported. 1 (a bookmark) and 3 (not a passage: no selected text the reader
-//! chose) are **not highlights** and are counted in
-//! [`AppleBooksReport::not_highlights`]. Any other value is counted
-//! `unparsed`, never guessed at. A NULL type (or no type column) is judged by
-//! content. A row with a note and no selected text is a **note-only** row
-//! (`text = ""`, as Preview's sticky notes), not `text_unavailable`; a row
-//! with neither is `unparsed`.
-//!
-//! Every highlight is `origin = apple_books`, `origin_id = ZANNOTATIONUUID`
-//! ([`IdentityScope::Global`]: the uuid is Apple's and names one highlight
-//! wherever it is seen), `origin_note = ZANNOTATIONNOTE`, `pos_kind =
-//! epub_cfi` with `pos0 = ZANNOTATIONLOCATION` **verbatim** (never converted,
-//! and no page: the source gives none), `made_at` from the creation date and
-//! the colour from [`style_color`].
-//!
-//! ## Which book
-//!
-//! An asset is matched, in order: by its `apple_books` **place** (an asset we
-//! have imported before: identity is the place); by `ZPATH`, when it is a
-//! regular file here, through [`crate::files::identify`] — the one matching
-//! ladder (bytes a place last saw, ISBN, `partial_md5`, title band), copying no
-//! bytes; by `ZSTOREID` through `external_ids` (source [`STORE_ID_SOURCE`],
-//! recorded on every match so the next import takes this rung); then by title
-//! and author through `koreader::scores_for`'s **auto-match band only**.
-//!
-//! An asset that matches nothing is **created as a book only when it has a
-//! highlight to import**: Apple Books holding a passage the reader marked is
-//! evidence they have the book in an app (only an explicit act brings a book
-//! into the library: an importer that found a thing, or the reader saying how
-//! they have it). One without highlights is
-//! skipped and counted, never listed by title. Like `files::import`, it
-//! **refuses to create over a candidate**: an asset whose title lands in the
-//! candidate band comes back [`AssetOutcome::Unmatched`] with the candidates
-//! and nothing written; [`link_apple_books_asset`] is the next move, after
-//! which the place rung finds it.
-//!
-//! ## Copies
-//!
-//! Find-or-create through the `apple_books` place (`ref` = asset id). A
-//! side-loaded file (no `ZSTOREID`, a usable `ZPATH`) is attached to the
-//! book's copy that already holds those bytes or that KOReader identity (one
-//! file is one copy wherever it sits), else a new `file`/`own` copy; the place
-//! records the file's sha256 and mtime. Anything else — store-bought, or a file
-//! that is not a regular file here (Apple keeps many epubs as folders) — is a
-//! `form = app`, `app = "apple_books"`, `tenure = own` copy. `learned_from =
-//! apple_books`, and `have_now` is never set: only the reader says.
-//!
-//! ## Deletions follow the source
-//!
-//! `ZANNOTATIONDELETED = 1` removes the row (through
-//! [`Storage::remove_imported_highlight`], which keeps one carrying anything
-//! of the reader's own; those are counted in
-//! [`DiagnosticKind::AppleBooksHighlightsKept`]). A highlight merely **absent**
-//! from the database is not removed: absence is not a deletion mark.
-//!
-//! ## Privacy
-//!
-//! Highlight text and notes never reach a log field; book titles reach only
-//! `trace!`.
-//!
-//! [`DiagnosticKind::AppleBooksAbsent`]: crate::DiagnosticKind::AppleBooksAbsent
-//! [`DiagnosticKind::AppleBooksPermissionDenied`]: crate::DiagnosticKind::AppleBooksPermissionDenied
-//! [`DiagnosticKind::AppleBooksSchemaUnknown`]: crate::DiagnosticKind::AppleBooksSchemaUnknown
-//! [`DiagnosticKind::AppleBooksColumnsMissing`]: crate::DiagnosticKind::AppleBooksColumnsMissing
-//! [`DiagnosticKind::AppleBooksHighlightsKept`]: crate::DiagnosticKind::AppleBooksHighlightsKept
+//! Apple Books (macOS): imports highlights and notes. The databases are live WAL files owned by
+//! another app, so each is copied out and only the copy is opened.
+//! Only `ZANNOTATIONDELETED = 1` removes a highlight; absence from the database is not deletion.
+//! An unmatched asset becomes a book only if it has a highlight, and never over a candidate.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -119,30 +22,21 @@ use crate::highlight_origin::{
 use crate::koreader::MatchCandidate;
 use crate::storage::Storage;
 
-/// The folder under `root` holding the annotation database.
 pub const ANNOTATION_DIR: &str = "AEAnnotation";
-/// The folder under `root` holding the library database.
 pub const LIBRARY_DIR: &str = "BKLibrary";
 const ANNOTATION_TABLE: &str = "ZAEANNOTATION";
 const ASSET_TABLE: &str = "ZBKLIBRARYASSET";
-/// The `external_ids.source` a `ZSTOREID` is recorded under.
 pub const STORE_ID_SOURCE: &str = "apple_books";
-/// `copies.app` for an Apple Books app copy.
 pub const APP: &str = "apple_books";
-/// 2001-01-01 00:00:00 UTC as a unix timestamp: Core Data's epoch.
 pub const CORE_DATA_EPOCH_UNIX: i64 = 978_307_200;
-/// 0001-01-01 00:00:00 UTC and 9999-12-31 23:59:59 UTC: the instants a
-/// four-digit `YYYY-MM-DD HH:MM:SS` stamp can name.
 const MIN_UNIX: i64 = -62_135_596_800;
 const MAX_UNIX: i64 = 253_402_300_799;
 
-/// `ZANNOTATIONTYPE` values (see the module doc, "Which annotations").
 const TYPE_BOOKMARK: i64 = 1;
 const TYPE_HIGHLIGHT: i64 = 2;
 const TYPE_NOT_A_PASSAGE: i64 = 3;
 
-/// `ZANNOTATIONSTYLE` → colour name, the one table. 0 is an underline, which
-/// has no colour, and anything not listed is `None`.
+/// `ZANNOTATIONSTYLE` to colour name; 0 is an underline, which has no colour.
 const STYLE_COLORS: &[(i64, &str)] = &[
     (1, "green"),
     (2, "blue"),
@@ -151,16 +45,11 @@ const STYLE_COLORS: &[(i64, &str)] = &[
     (5, "purple"),
 ];
 
-/// Apple Books' `Data/Documents` for this user, if `HOME` is set. Only ever a
-/// default for a caller: the import takes its root as a parameter.
 pub fn default_root() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join("Library/Containers/com.apple.iBooksX/Data/Documents"))
 }
 
-/// A Core Data date (seconds since 2001-01-01 UTC, a REAL) as whole unix
-/// seconds, rounded down. `None` for a non-finite value or one outside years
-/// 1–9999. **The one conversion**; monotonic (a property test pins it).
 pub fn core_data_to_unix(seconds: f64) -> Option<i64> {
     if !seconds.is_finite() {
         return None;
@@ -172,8 +61,6 @@ pub fn core_data_to_unix(seconds: f64) -> Option<i64> {
     Some(unix as i64)
 }
 
-/// A Core Data date as the UTC `YYYY-MM-DD HH:MM:SS` text every importer's
-/// "when" is stored in (`highlights.ko_datetime`).
 pub fn core_data_stamp(seconds: f64) -> Option<String> {
     let t = time::OffsetDateTime::from_unix_timestamp(core_data_to_unix(seconds)?).ok()?;
     Some(format!(
@@ -187,7 +74,6 @@ pub fn core_data_stamp(seconds: f64) -> Option<String> {
     ))
 }
 
-/// The colour name of a `ZANNOTATIONSTYLE`, from [`STYLE_COLORS`].
 pub fn style_color(style: i64) -> Option<&'static str> {
     STYLE_COLORS
         .iter()
@@ -195,93 +81,57 @@ pub fn style_color(style: i64) -> Option<&'static str> {
         .map(|(_, c)| *c)
 }
 
-// ---- the report ----------------------------------------------------------------
-
-/// Which rung matched an asset to a book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetMatch {
-    /// We had imported this asset before: its `apple_books` place.
     Place,
-    /// Its `ZPATH` file, through the files ladder.
     File(FileMatch),
-    /// Its `ZSTOREID`, through `external_ids`.
     StoreId,
-    /// Title and author, auto-match band.
     Title,
 }
 
-/// What became of one asset.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssetOutcome {
     Matched {
         book_id: i64,
         by: AssetMatch,
     },
-    /// Nothing matched and nothing was close, and it has highlights: a book
-    /// was made from its title and author.
     Created {
         book_id: i64,
     },
-    /// `dry_run`: [`AssetOutcome::Created`] would have happened.
     WouldCreate,
-    /// Nothing matched outright. With candidates, they are the decision to make
-    /// ([`link_apple_books_asset`]); empty when the asset has no title to make
-    /// a book from. Nothing was written for this asset.
+    /// Nothing matched outright. Candidates, if any, are the decision to make; nothing was written.
     Unmatched {
         candidates: Vec<MatchCandidate>,
     },
 }
 
-/// One Apple Books asset (a book in the app) that had something to import.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppleBooksBook {
-    /// `ZASSETID`, the `apple_books` place's `ref`.
     pub asset_id: String,
-    /// What Apple Books calls it (`ZTITLE`), when the library knows.
     pub title: Option<String>,
     pub authors: Vec<String>,
-    /// `ZSTOREID` present: bought in the Book Store.
     pub store_bought: bool,
     pub outcome: AssetOutcome,
-    /// The copy its highlights are stamped with.
     pub copy_id: Option<i64>,
-    /// Live highlights (and note-only rows) Apple Books holds for it.
     pub highlights_in_source: usize,
-    /// Annotations Apple Books marks deleted.
     pub deleted_in_source: usize,
-    /// What the import did (all zero but `unparsed` on a dry run).
     pub summary: HighlightImportSummary,
 }
 
-/// One pass over Apple Books.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppleBooksReport {
     pub dry_run: bool,
-    /// The annotation database read (the original's path), if one was found.
     pub annotation_db: Option<PathBuf>,
-    /// The library database read, if one was found.
     pub library_db: Option<PathBuf>,
-    /// One entry per asset that had something to import or remove.
     pub books: Vec<AppleBooksBook>,
-    /// The sum of every book's summary, plus annotations that could not be
-    /// placed on any asset. Its `diagnostics` is empty: they are in each
-    /// book's summary and in [`AppleBooksReport::diagnostics`].
+    /// Sum of every book's summary plus annotations placed on no asset; its `diagnostics` is empty.
     pub totals: HighlightImportSummary,
-    /// Rows in the library table.
     pub assets_in_library: usize,
-    /// Assets with nothing to import that matched no book: skipped, counted,
-    /// not listed.
     pub assets_skipped: usize,
-    /// Bookmarks and other annotations that are not highlights.
     pub not_highlights: usize,
-    /// Highlights whose asset neither the library database nor a place of
-    /// ours knows, so there was no book to put them on.
     pub orphaned: usize,
-    /// About the databases themselves.
     pub diagnostics: Vec<Diagnostic>,
 }
-
-// ---- reading ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Asset {
@@ -348,9 +198,8 @@ const ANNOTATION_COLUMNS: &[Spec] = &[
     spec("ZANNOTATIONMODIFICATIONDATE", Col::Real, false),
 ];
 
-/// The select expression for one column, by storage class: a number column
-/// holding text reads as NULL rather than as SQLite's `CAST('x' AS INTEGER)`
-/// zero, which would be a fabricated value (a type, a 2001 date).
+/// A number column holding text reads as NULL, not SQLite's `CAST('x' AS INTEGER)` zero, which
+/// would be a fabricated value.
 fn select_expr(s: &Spec) -> String {
     let c = s.name;
     match s.col {
@@ -364,8 +213,6 @@ fn select_expr(s: &Spec) -> String {
     }
 }
 
-/// Read `table`'s rows with exactly `specs`' columns. `Ok(None)` (with a
-/// diagnostic) when the table or a required column is not there.
 async fn read_table(
     conn: &mut SqliteConnection,
     db: &Path,
@@ -435,8 +282,6 @@ fn real(row: &SqliteRow, col: &str) -> Option<f64> {
     row.try_get::<Option<f64>, _>(col).ok().flatten()
 }
 
-/// Copy `db` (and its WAL siblings) out, and open **the copy** read-only.
-/// `None` with a diagnostic when it cannot be copied or opened.
 async fn open_snapshot(
     db: &Path,
     diagnostics: &mut Vec<Diagnostic>,
@@ -465,11 +310,8 @@ async fn open_snapshot(
             return None;
         }
     };
-    // Read-only, and never created: a missing copy is an error, not an empty
-    // database. With the `-wal` and `-shm` beside it in a directory we own,
-    // SQLite reads the write-ahead log's frames (the uncheckpointed rows) on a
-    // read-only connection; `tests/apple_books.rs` holds a writer open across
-    // an import to prove those rows arrive.
+    // Read-only and never created: a missing copy is an error. With `-wal`/`-shm` beside it, SQLite
+    // still reads the uncheckpointed rows.
     let opts = SqliteConnectOptions::new()
         .filename(&copy)
         .read_only(true)
@@ -488,8 +330,8 @@ async fn open_snapshot(
 
 async fn read_assets(db: &Path, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<Asset>> {
     let (scratch, mut conn) = open_snapshot(db, diagnostics).await?;
-    // Every statement inside one fallible region: SQLite only notices a file
-    // is not a database on the first statement (`ko_statistics`' lesson).
+    // Every statement in one fallible region: SQLite only notices a non-database file on its first
+    // statement.
     let read = read_table(&mut conn, db, ASSET_TABLE, ASSET_COLUMNS, diagnostics).await;
     conn.close().await.ok();
     drop(scratch);
@@ -515,7 +357,6 @@ async fn read_assets(db: &Path, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec
     )
 }
 
-/// The annotations, and how many rows had no uuid or asset id to key them.
 async fn read_annotations(
     db: &Path,
     diagnostics: &mut Vec<Diagnostic>,
@@ -562,8 +403,6 @@ async fn read_annotations(
     Some((out, unkeyed))
 }
 
-/// Where a database matching `prefix*.sqlite` is in `dir`: the most recently
-/// modified one (ties broken by name, so the answer is deterministic).
 fn locate(dir: &Path, prefix: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<PathBuf> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -611,15 +450,10 @@ fn locate(dir: &Path, prefix: &str, diagnostics: &mut Vec<Diagnostic>) -> Option
     best.map(|(_, p)| p)
 }
 
-/// `AEAnnotation_v10312011_1727_local.sqlite` for prefix `AEAnnotation`: the
-/// prefix, anything, `.sqlite`. Its `-wal`/`-shm` siblings do not match.
 fn is_database_name(name: &str, prefix: &str) -> bool {
     name.starts_with(prefix) && name.ends_with(".sqlite") && name.len() > prefix.len()
 }
 
-// ---- turning rows into highlights ----------------------------------------------
-
-/// What one live annotation is.
 #[derive(Debug, Clone, PartialEq)]
 enum Verdict {
     Highlight(Box<ImportedHighlight>),
@@ -665,9 +499,6 @@ fn authors_of(author: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// ---- matching ----------------------------------------------------------------------
-
-/// `ZPATH` as a regular file on this computer, if it is one.
 fn usable_file(path: Option<&str>) -> Option<PathBuf> {
     let raw = path?;
     let p = if raw.starts_with("file:") {
@@ -678,14 +509,12 @@ fn usable_file(path: Option<&str>) -> Option<PathBuf> {
     (p.is_absolute() && std::fs::metadata(&p).is_ok_and(|m| m.is_file())).then_some(p)
 }
 
-/// The ladder for one asset that no place of ours holds. Read-only.
 async fn match_asset(
     storage: &Storage,
     asset: &Asset,
     file: Option<&FileIdentity>,
 ) -> Result<(Option<(i64, AssetMatch)>, Vec<MatchCandidate>)> {
     let mut candidates = Vec::new();
-    // ZPATH: a place that last saw these bytes, else the files ladder.
     if let Some(f) = file {
         if let Some(c) = storage.copy_for_hash(&f.sha256).await? {
             return Ok((
@@ -698,7 +527,6 @@ async fn match_asset(
         }
         candidates = f.candidates.clone();
     }
-    // ZSTOREID.
     if let Some(store_id) = &asset.store_id
         && let Some(book_id) = storage
             .book_for_external_id(STORE_ID_SOURCE, store_id)
@@ -706,7 +534,6 @@ async fn match_asset(
     {
         return Ok((Some((book_id, AssetMatch::StoreId)), Vec::new()));
     }
-    // Title and author: the one matcher, auto band only.
     let authors = authors_of(asset.author.as_deref());
     let scored = crate::koreader::scores_for(
         storage,
@@ -726,9 +553,6 @@ async fn match_asset(
     Ok((None, candidates))
 }
 
-// ---- copies ------------------------------------------------------------------------
-
-/// Find or create the copy this asset is, through its `apple_books` place.
 /// `None` when the place is held by another book's copy.
 async fn copy_for_asset(
     storage: &Storage,
@@ -765,7 +589,6 @@ async fn copy_for_asset(
         Some(f) => {
             place.last_hash = Some(f.sha256.clone());
             place.last_mtime = crate::files::mtime_of(&f.path);
-            // One file is one copy wherever it sits.
             let same_bytes = storage
                 .copy_for_hash(&f.sha256)
                 .await?
@@ -800,7 +623,6 @@ async fn copy_for_asset(
     })
 }
 
-/// A `form = app`, `app = apple_books`, `tenure = own` copy. `have_now` unsaid.
 async fn create_app_copy(storage: &Storage, book_id: i64) -> Result<i64> {
     let mut new = NewCopy::new(
         book_id,
@@ -812,11 +634,8 @@ async fn create_app_copy(storage: &Storage, book_id: i64) -> Result<i64> {
     Ok(storage.create_copy(&new).await?.id)
 }
 
-/// The reader's answer to an [`AssetOutcome::Unmatched`]: this asset is that
-/// book. Records an app copy with the asset's `apple_books` place (or returns
-/// the copy already holding it), so the next import matches it by place. A
-/// place held by another book's copy is `InvalidInput`; an unknown book is
-/// `NotFound`. Returns the copy id.
+/// Records an app copy with the asset's `apple_books` place (or returns the one holding it), so the
+/// next import matches by place. A place held by another book's copy is `InvalidInput`.
 pub async fn link_apple_books_asset(
     storage: &Storage,
     asset_id: &str,
@@ -843,15 +662,8 @@ pub async fn link_apple_books_asset(
     Ok(copy_id)
 }
 
-// ---- the import --------------------------------------------------------------------
-
-/// Import Apple Books' highlights and notes from the databases under `root`
-/// (its `Data/Documents`; see [`default_root`]). `dry_run` writes nothing at
-/// all — no book, copy, external id or highlight — and reports what it read
-/// and how each asset would match.
-///
-/// Never fails on absence, permission, or a schema it cannot read: each is a
-/// [`Diagnostic`] in the report. `Err` is only a failure of our own database.
+/// `dry_run` writes nothing at all. Absence, permission and unreadable schemas are diagnostics;
+/// `Err` is only a failure of our own database.
 #[tracing::instrument(skip(storage), fields(root = %root.display()))]
 pub async fn import_apple_books(
     storage: &Storage,
@@ -938,7 +750,6 @@ pub async fn import_apple_books(
     Ok(report)
 }
 
-/// One asset's annotations. `None` when it is skipped (counted in `report`).
 async fn import_asset(
     storage: &Storage,
     asset_id: &str,
@@ -964,8 +775,7 @@ async fn import_asset(
         .copy_for_place(PlaceKind::AppleBooks, asset_id)
         .await?;
     if place_copy.is_none() && importable == 0 {
-        // Nothing to bring in, and nothing of ours to remove from: never a
-        // reason to make a book. Counted, not listed.
+        // Nothing to import and nothing of ours to remove: never a reason to create a book.
         report.assets_skipped += 1;
         report.totals.unparsed += summary.unparsed;
         return Ok(None);
@@ -977,8 +787,6 @@ async fn import_asset(
             ..Default::default()
         },
         (None, None) => {
-            // The library database does not know it and neither do we: there is
-            // no title, path or store id to find a book by.
             report.orphaned += importable;
             report.totals.unparsed += summary.unparsed;
             return Ok(None);
@@ -987,7 +795,6 @@ async fn import_asset(
     tracing::trace!(asset_id, title = ?asset.title, "apple books asset");
     let store_bought = asset.store_id.is_some();
 
-    // The file, for matching and for the copy, only when no place decides.
     let file = match &place_copy {
         Some(_) => None,
         None => match usable_file(asset.path.as_deref()) {
@@ -1062,7 +869,7 @@ async fn import_asset(
         }
     }
 
-    // Deletions follow the source: only rows Apple Books marks deleted.
+    // Deletions follow the source: only rows Apple Books marks deleted; merely absent rows stay.
     if deleted > 0 {
         let held: HashMap<String, i64> = storage
             .imported_highlights(book_id, HighlightOrigin::AppleBooks)
@@ -1102,14 +909,12 @@ mod tests {
     fn core_data_dates_are_seconds_since_2001_utc() {
         assert_eq!(core_data_to_unix(0.0), Some(978_307_200));
         assert_eq!(core_data_stamp(0.0).as_deref(), Some("2001-01-01 00:00:00"));
-        // 2026-01-05 21:14:08 UTC.
         let secs = (1_767_647_648 - CORE_DATA_EPOCH_UNIX) as f64 + 0.75;
         assert_eq!(core_data_to_unix(secs), Some(1_767_647_648), "rounded down");
         assert_eq!(
             core_data_stamp(secs).as_deref(),
             Some("2026-01-05 21:14:08")
         );
-        // Before the epoch is negative, and still a date.
         assert_eq!(
             core_data_stamp(-86_400.0).as_deref(),
             Some("2000-12-31 00:00:00")
@@ -1192,12 +997,10 @@ mod tests {
             Verdict::Unparsed
         );
         assert_eq!(verdict(&ann(Some(2), None, None), None), Verdict::Unparsed);
-        // A NULL type is judged by content.
         assert!(matches!(
             verdict(&ann(None, Some("x"), None), None),
             Verdict::Highlight(_)
         ));
-        // Note-only: empty text, not text_unavailable.
         let Verdict::Highlight(h) = verdict(&ann(Some(2), None, Some("a thought")), None) else {
             panic!("note-only");
         };
@@ -1223,9 +1026,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Conversion preserves order: a later Core Data date is never an
-        /// earlier unix second or an earlier stamp. Stamps compare as text, so
-        /// this is also what keeps `ko_datetime` sortable for Apple rows.
         #[test]
         fn core_data_conversion_is_monotonic(a in -1e11f64..1e11, b in -1e11f64..1e11) {
             let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
@@ -1236,7 +1036,6 @@ mod props {
             }
         }
 
-        /// Whole seconds round-trip exactly.
         #[test]
         fn whole_seconds_land_on_the_epoch_offset(s in -1_000_000_000i64..4_000_000_000) {
             prop_assert_eq!(core_data_to_unix(s as f64), Some(s + CORE_DATA_EPOCH_UNIX));

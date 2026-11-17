@@ -1,29 +1,5 @@
-//! How well a result answers a [`ParsedQuery`].
-//!
-//! [`rank`] is pure: a query, a candidate, a number. The weights are **set by
-//! the benchmark** (`tests/search_bench.rs`), not argued here; what is argued
-//! is the shape.
-//!
-//! - **Identity** dominates: the typed ISBN is one of the candidate's. It is
-//!   worth more than every other signal at its ceiling put together, which
-//!   `props` asserts.
-//! - **Text** is the best of the query's readings, each weighted by how far the
-//!   reading is believed. Under one reading a result scores on its **title**
-//!   (`matching.rs`'s blend, against the work's title, the title without its
-//!   subtitle, and the title of the edition the provider matched — which is how
-//!   *The Name of the Rose* finds *Il nome della rosa*), its **author** (shared
-//!   name tokens, order-free, initials tolerated), its **series** and place in
-//!   it, and its **coverage** of the query: a query word that nothing on the
-//!   result explains costs.
-//! - **Standing**: the log of the provider's edition count, the tie-breaker
-//!   between equally good text matches. It is what puts a novel above the study
-//!   guide that shares its title. It has a second half, the offline index's
-//!   **notability** (Wikidata sitelinks) for a work the index knows, also
-//!   log-scaled. Standing is the "popularity" a user notices, and it never
-//!   outranks a better text match.
-//! - **Agreement** (more than one provider found it), the provider's own
-//!   **position**, and **language** (an edition in the preferred one exists),
-//!   each lightly.
+//! Scores how well a result answers a `ParsedQuery`; `rank` is pure, weights come from the bench.
+//! An exact ISBN outweighs every other signal at its ceiling; standing never beats text.
 
 use std::collections::BTreeSet;
 
@@ -34,71 +10,45 @@ use crate::book::{Book, isbn10_to_13};
 use crate::matching::title_similarity;
 use crate::providers::{ProviderId, WorkFacts};
 
-/// One result, as ranking sees it.
 #[derive(Debug, Clone, Copy)]
 pub struct Candidate<'a> {
     pub book: &'a Book,
     pub facts: &'a WorkFacts,
     pub sources: &'a [ProviderId],
-    /// The best (lowest) position any provider gave it, from 0.
+    /// The lowest position any provider gave it, from 0.
     pub best_position: usize,
-    /// The offline index's notability for this work (its sitelinks), when the
-    /// index knows it.
     pub notability: Option<u32>,
 }
 
-// ---- the weights, set by the benchmark --------------------------------------
-
-/// The typed ISBN is one of the candidate's.
 pub const IDENTITY: f64 = 1000.0;
-/// The best reading's score, `0..=1`, times this.
 pub const TEXT: f64 = 100.0;
-/// Edition count, log-scaled to `0..=1` at [`STANDING_FULL`] editions.
 pub const STANDING: f64 = 14.0;
-/// The offline index's notability, log-scaled to `0..=1` at
-/// [`NOTABILITY_FULL`] sitelinks: the other half of standing.
 pub const NOTABILITY: f64 = 6.0;
-/// Found by more than one provider.
 pub const AGREEMENT: f64 = 3.0;
-/// `POSITION / (1 + position)`: the provider's own order, lightly.
 pub const POSITION: f64 = 4.0;
-/// An edition in the preferred language exists.
 pub const LANGUAGE: f64 = 1.0;
 
-/// Everything but identity at its ceiling. `IDENTITY` must exceed it.
+/// Everything but identity at its ceiling; `IDENTITY` must exceed it.
 pub const MAX_WITHOUT_IDENTITY: f64 =
     TEXT + STANDING + NOTABILITY + AGREEMENT + POSITION + LANGUAGE;
 
-/// The edition count at which standing is full. A work with a thousand
-/// editions is as standing as standing gets.
 const STANDING_FULL: f64 = 1000.0;
 
-/// The sitelink count at which notability is full: a work with a page on a
-/// hundred and fifty wikis is as notable as notability gets.
 const NOTABILITY_FULL: f64 = 150.0;
 
-/// The language preferred when the query names none. The library's own
-/// majority language would be better here; the default-edition choice in
-/// `session.rs` already prefers it, and ranking does not yet.
 const DEFAULT_LANGUAGE: &str = "en";
 
-// Within one reading: how the parts it names are weighed against each other.
-// The score is their weighted mean over the parts the reading has, so a
-// title-only reading and a title-and-author one are both `0..=1`.
+// The score is the weighted mean over the parts a reading has, so title-only and
+// title-and-author readings are both `0..=1`.
 const PART_TITLE: f64 = 0.5;
 const PART_AUTHOR: f64 = 0.35;
 const PART_SERIES: f64 = 0.3;
 const PART_POSITION: f64 = 0.3;
 const PART_COVERAGE: f64 = 0.2;
 
-/// A query word that is not on the result but is this close to a word that is
-/// gets this much credit — a typo is not nothing.
 const NEAR_WORD: f64 = 0.9;
 const NEAR_CREDIT: f64 = 0.7;
 
-// ---- the function -----------------------------------------------------------
-
-/// How well `c` answers `q`. Pure, finite, never negative.
 pub fn rank(q: &ParsedQuery, c: &Candidate<'_>) -> f64 {
     let side = Side::of(c);
     let mut score = 0.0;
@@ -129,9 +79,6 @@ pub fn rank(q: &ParsedQuery, c: &Candidate<'_>) -> f64 {
     score
 }
 
-/// How well `c`'s text answers `q`, `0..=1`: the best reading's score times
-/// how far that reading is believed. The text half of [`rank`], alone — what
-/// the session asks of a result before it corrects a query (`correct.rs`).
 pub(crate) fn text_part(q: &ParsedQuery, c: &Candidate<'_>) -> f64 {
     text_of(q, &Side::of(c))
 }
@@ -143,18 +90,14 @@ fn text_of(q: &ParsedQuery, side: &Side) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-/// Sitelinks to `0..=1`, logarithmically, as [`standing`] does editions.
 fn notability(sitelinks: u32) -> f64 {
     ((1.0 + f64::from(sitelinks)).ln() / (1.0 + NOTABILITY_FULL).ln()).min(1.0)
 }
 
-/// Edition count to `0..=1`, logarithmically: the step from one edition to ten
-/// is worth what the step from a hundred to a thousand is.
 fn standing(editions: u32) -> f64 {
     ((1.0 + f64::from(editions)).ln() / (1.0 + STANDING_FULL).ln()).min(1.0)
 }
 
-/// One reading's score for one candidate, `0..=1`.
 fn reading_score(q: &ParsedQuery, r: &Reading, side: &Side) -> f64 {
     let mut num = 0.0;
     let mut den = 0.0;
@@ -178,11 +121,9 @@ fn reading_score(q: &ParsedQuery, r: &Reading, side: &Side) -> f64 {
         }
     }
     if den == 0.0 {
-        // An ISBN reading names nothing to compare: identity is its whole say.
         return 0.0;
     }
-    // Coverage of the words this reading reads as text: a series reading's
-    // `book 2` is a position, scored above, not a word the result must carry.
+    // A series reading's `book 2` is a position scored above, not a word the result must carry.
     let words: Vec<String> = [&r.title, &r.author, &r.series]
         .into_iter()
         .flatten()
@@ -194,17 +135,12 @@ fn reading_score(q: &ParsedQuery, r: &Reading, side: &Side) -> f64 {
     num / den
 }
 
-// ---- the candidate, folded once ---------------------------------------------
-
 struct Side {
-    /// Every title the candidate answers to, folded and without an article.
     titles: Vec<String>,
-    /// Each author's folded name tokens.
     authors: Vec<Vec<String>>,
     series: Option<String>,
     series_position: Option<f64>,
     found_by_author: Option<String>,
-    /// Every word on the candidate: titles, authors, series.
     words: BTreeSet<String>,
 }
 
@@ -215,8 +151,7 @@ impl Side {
         let mut add_title = |raw: &str, titles: &mut Vec<String>| {
             let full = fold(raw);
             words.extend(full.split_whitespace().map(str::to_string));
-            // The title, and the title without its subtitle: *Middlemarch: A
-            // Novel* answers *middlemarch* as well as *Middlemarch* does.
+            // The title and the title without its subtitle: *Middlemarch: A Novel* answers *middlemarch*.
             let short = raw
                 .split([':', '(', '['])
                 .next()
@@ -245,8 +180,7 @@ impl Side {
         for a in &authors {
             words.extend(a.iter().cloned());
         }
-        // A work a provider returned for an author request carries that
-        // author's name as surely as one whose byline spells it.
+        // A work returned for an author request carries that author's name as surely as a byline does.
         if let Some(a) = &c.facts.found_by_author {
             words.extend(a.split_whitespace().map(str::to_string));
         }
@@ -294,8 +228,7 @@ impl Side {
 
     fn author(&self, reading_author: &str) -> f64 {
         if self.found_by_author.as_deref() == Some(reading_author) {
-            // The provider was asked for this author and answered with this
-            // work: its word, whatever script it files her name in.
+            // The provider was asked for this author and answered with this work, in whatever script.
             return 1.0;
         }
         let want: Vec<&str> = reading_author.split_whitespace().collect();
@@ -312,8 +245,6 @@ impl Side {
         }
     }
 
-    /// How much of the query the candidate explains: the share of its words
-    /// (less the fillers, unless that is all there is) found on it.
     fn coverage(&self, query_words: &[String]) -> f64 {
         let content: Vec<&String> = query_words.iter().filter(|w| !is_filler(w)).collect();
         let counted: Vec<&String> = if content.is_empty() {
@@ -345,15 +276,10 @@ impl Side {
     }
 }
 
-/// The share of a typed name found in one author's, order-free: `le guin`
-/// against *Ursula K. Le Guin* is all of it, `herbert` against *Frank Herbert*
-/// is all of it (a surname is what people type), and an initial answers a name
-/// that begins with it.
 fn name_match(want: &[&str], have: &[String]) -> f64 {
     if want.is_empty() || have.is_empty() {
         return 0.0;
     }
-    // `leguin` and `le guin` are one name.
     let joined_want: String = want.concat();
     let joined_have: String = have.concat();
     if joined_want == joined_have {
@@ -364,7 +290,6 @@ fn name_match(want: &[&str], have: &[String]) -> f64 {
         .map(|w| {
             have.iter()
                 .map(|h| {
-                    // The same word, or an initial that a name begins with.
                     if w == h || (w.chars().count() == 1 && h.starts_with(w)) {
                         1.0
                     } else if h.chars().count() == 1 && w.starts_with(h.as_str()) {
@@ -573,8 +498,6 @@ mod props {
     }
 
     proptest! {
-        /// Finite and never negative: `total_cmp` would order a NaN by its
-        /// bits and scramble the list with nothing looking wrong.
         #[test]
         fn rank_is_always_finite(
             q in text(),
@@ -589,8 +512,6 @@ mod props {
             prop_assert!(s <= IDENTITY + MAX_WITHOUT_IDENTITY + 1e-9, "{}", s);
         }
 
-        /// An exact ISBN outranks anything without it, however well that
-        /// matches and wherever each was found.
         #[test]
         fn an_exact_isbn_dominates(
             rival in arb_book(),
@@ -611,9 +532,6 @@ mod props {
             prop_assert!(a > b, "{} vs {}", a, b);
         }
 
-        /// A candidate's score is its own: the order results arrive in, and
-        /// which other results there are, cannot move it. (`rank` takes one
-        /// candidate; this pins that the fan-out's ranking pass is a map.)
         #[test]
         fn ranking_is_invariant_to_result_order(
             q in text(),
@@ -641,7 +559,6 @@ mod props {
             prop_assert_eq!(score_all(&books), score_all(&shuffled));
         }
 
-        /// The provider's own order counts, and only ever in its favour.
         #[test]
         fn earlier_positions_never_score_lower(
             q in text(), b in arb_book(), f in arb_facts(), x in 0usize..500, y in 0usize..500,

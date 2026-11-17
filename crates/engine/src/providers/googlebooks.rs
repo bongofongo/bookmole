@@ -12,8 +12,6 @@ use super::{
 use crate::book::{Book, normalize_isbn};
 use crate::error::{EngineError, Result};
 
-/// Redact `key=...` query params so an API key can never leak through error
-/// messages, warnings, or logs (reqwest errors embed the full request URL).
 pub fn scrub_key(msg: &str) -> String {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"key=[^&\s]+").expect("static regex"))
@@ -21,12 +19,8 @@ pub fn scrub_key(msg: &str) -> String {
         .into_owned()
 }
 
-/// A request's failure, as an error that names **neither the key nor the
-/// query**. reqwest puts the whole request URL in its error text, and the URL
-/// carries both: the key (`scrub_key` redacts it, and stays as the second
-/// guard) and the query, which is the reader's private reading and has no
-/// redaction short of dropping the URL (`reqwest::Error::without_url`, as Open
-/// Library does too).
+/// A request's failure naming neither the key nor the query: reqwest puts the whole URL in its
+/// error text, and the query is the reader's private reading.
 fn scrubbed(e: reqwest::Error) -> EngineError {
     EngineError::Provider {
         provider: ProviderId::GoogleBooks,
@@ -34,9 +28,7 @@ fn scrubbed(e: reqwest::Error) -> EngineError {
     }
 }
 
-/// Live-check an API key against the volumes endpoint. `Ok(())` means Google
-/// accepted it; `Err` carries a human-readable reason (invalid key, quota,
-/// network down). Never includes the key itself.
+/// Live-checks an API key. `Err` carries a human-readable reason and never the key itself.
 pub async fn verify_key(key: &str) -> std::result::Result<(), String> {
     let client = Client::new();
     let mut url = Url::parse("https://www.googleapis.com/books/v1/volumes").expect("static url");
@@ -61,17 +53,14 @@ pub async fn verify_key(key: &str) -> std::result::Result<(), String> {
     Err(scrub_key(&reason))
 }
 
-/// The live endpoint. Overridable only so tests can point at a local server —
-/// see [`GoogleBooksProvider::with_base`].
 const DEFAULT_BASE: &str = "https://www.googleapis.com/books/v1/volumes";
 
 pub struct GoogleBooksProvider {
     client: Client,
     api_key: Option<String>,
     base: String,
-    /// Its rate and its *closed until* (`Manners`), the mechanism Open Library
-    /// has. An `Arc` so the engine keeps one across rebuilds of the provider
-    /// list: a key change must not forget that Google asked us to wait.
+    /// An `Arc` so the engine keeps one across provider rebuilds: a key change must not forget a wait
+    /// Google asked for.
     manners: Arc<Manners>,
 }
 
@@ -80,11 +69,6 @@ impl GoogleBooksProvider {
         Self::with_base(client, api_key, DEFAULT_BASE)
     }
 
-    /// Point the provider at a different base URL.
-    ///
-    /// The only reason this exists is to let tests exercise real HTTP status
-    /// handling (404/429/500, truncated bodies) against a local server, which
-    /// no amount of pure-function testing can reach.
     #[doc(hidden)]
     pub fn with_base(client: Client, api_key: Option<String>, base: impl Into<String>) -> Self {
         GoogleBooksProvider {
@@ -95,16 +79,13 @@ impl GoogleBooksProvider {
         }
     }
 
-    /// Share a rate limit with other instances, or lift it — Open Library's
-    /// `with_manners`, for the same two callers (the engine, the benchmark).
     pub fn with_manners(mut self, manners: Arc<Manners>) -> Self {
         self.manners = manners;
         self
     }
 
-    /// One GET, in turn, refused without asking while Google has asked us to
-    /// wait, and closing on a 429 or 503 that says for how long. The error
-    /// carries neither the URL nor the key ([`scrubbed`]).
+    /// One GET, refused without asking while Google has asked us to wait; a 429 or 503 closes it
+    /// for the stated time. The error carries neither the URL nor the key.
     async fn get_text(&self, url: String) -> Result<String> {
         if self.manners.closed_for().is_some() {
             return Err(EngineError::Provider {
@@ -159,12 +140,7 @@ struct VolumeInfo {
     page_count: Option<i64>,
     language: Option<String>,
     image_links: Option<ImageLinks>,
-    /// What Google says the book is about (migration `0013`).
-    ///
-    /// BISAC-shaped paths — `Fiction / Literary`, `History / Europe / Great Britain` —
-    /// and usually one or two of them, unlike OpenLibrary's long headings list.
-    /// Stored as published; see `normalize_subjects` for why they are not
-    /// mapped onto anything.
+    /// BISAC-shaped paths such as `Fiction / Literary`; stored as published.
     categories: Option<Vec<String>>,
 }
 
@@ -176,14 +152,8 @@ struct IndustryId {
     identifier: String,
 }
 
-/// Every size Google documents for `volumeInfo.imageLinks`, largest first in
-/// [`ImageLinks::best`].
-///
-/// Only `thumbnail` and `smallThumbnail` used to be read, and a
-/// `thumbnail` is 128px on its long edge — under a third of what a shelf tile
-/// wants and a tenth of a hero shot. The other four are in the same documented
-/// object and are simply absent for volumes Google has no larger scan of,
-/// which is what the fallback chain is for.
+/// Every size Google documents for `volumeInfo.imageLinks`; larger ones are absent for volumes
+/// without a bigger scan, hence the fallback chain in [`ImageLinks::best`].
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ImageLinks {
@@ -196,21 +166,8 @@ struct ImageLinks {
 }
 
 impl ImageLinks {
-    /// The largest published size, cleaned up.
-    ///
-    /// Two fixes travel with the URL, and both are about what is *in* the image
-    /// rather than how big it is:
-    ///
-    /// - `https`, as before. Covers must be fetchable outside a browser session.
-    /// - **`edge=curl` is dropped.** It asks Google to composite a page-curl
-    ///   graphic onto the jacket — a skeuomorphic fold in the corner — which is
-    ///   a decoration in somebody else's taste, baked into bytes we then store
-    ///   for ever and take the border colour of. A cover is a scan of an object;
-    ///   the curl is not on the object.
-    ///
-    /// Nothing here carries an API key (`imageLinks` URLs are keyless, unlike
-    /// the query), and nothing here is logged, so [`scrub_key`] is not being
-    /// leaned on either way.
+    /// The largest published size, as `https`, with `edge=curl` dropped: it composites a page-curl
+    /// graphic onto the jacket, and the stored cover must be a clean scan.
     fn best(&self) -> Option<String> {
         [
             &self.extra_large,
@@ -228,13 +185,8 @@ impl ImageLinks {
     }
 }
 
-/// Remove one `key=value` pair from a URL's query string, leaving the rest
-/// exactly as it was.
-///
-/// String surgery rather than `Url::query_pairs_mut`, deliberately: that
-/// round-trip re-escapes every *other* parameter, so a URL Google returned
-/// byte-for-byte would be stored in a different spelling — and `cover_url` is a
-/// stored value that two records get compared on.
+/// Removes one `key=value` pair from a query string, leaving the rest byte-for-byte. Not
+/// `Url::query_pairs_mut`, which re-escapes the others and changes the stored `cover_url`.
 fn strip_param(url: &str, key: &str) -> String {
     let Some((base, query)) = url.split_once('?') else {
         return url.to_string();
@@ -271,13 +223,7 @@ impl Volume {
         book.page_count = info.page_count;
         book.language = info.language.as_ref().map(|l| l.to_lowercase());
         book.subjects = normalize_subjects(info.categories.iter().flatten());
-        // **No series.** `volumeInfo` has no documented series field: the
-        // `seriesInfo` block some volumes carry is absent from the API
-        // reference, so the only fixture possible is one written from memory —
-        // which would prove that we agree with ourselves and nothing else, the
-        // same argument `tests/fixtures/goodreads/README.md` makes for keeping
-        // recorded samples recorded. OpenLibrary's edition record carries the
-        // field outright, and that is where series comes from.
+        // No series: `volumeInfo` has no documented series field; series comes from Open Library.
         book.cover_url = info.image_links.as_ref().and_then(ImageLinks::best);
         for iid in info.industry_identifiers.iter().flatten() {
             if let Some(norm) = normalize_isbn(&iid.identifier) {
@@ -304,8 +250,7 @@ fn build_query(req: &SearchRequest) -> String {
         parts.push(format!("inauthor:\"{a}\""));
     }
     if let Some(tr) = &req.translator {
-        // Google has no translator facet; translators usually appear among
-        // authors/contributors, so fold into inauthor.
+        // Google has no translator facet; translators appear among authors, so fold into inauthor.
         parts.push(format!("inauthor:\"{tr}\""));
     }
     if let Some(p) = &req.publisher {
@@ -364,7 +309,7 @@ impl MetadataProvider for GoogleBooksProvider {
                 position,
             })
             .collect();
-        // langRestrict can be flaky; also filter year client-side if requested.
+        // langRestrict can be flaky, so also filter by year client-side.
         if let Some(y) = req.year {
             out.retain(|pb| pb.book.publish_year.is_none() || pb.book.publish_year == Some(y));
         }
@@ -408,7 +353,7 @@ mod tests {
         let s = scrub_key(msg);
         assert!(!s.contains("AIzaSySECRET123"));
         assert!(s.contains("key=REDACTED"));
-        assert!(s.contains("q=dune")); // rest of the URL survives
+        assert!(s.contains("q=dune"));
     }
 
     #[test]
@@ -423,10 +368,6 @@ mod tests {
         assert!(with.contains("key=SECRET"));
     }
 
-    /// Pins the exact query string for a fully-populated request. The
-    /// `intitle:`/`inauthor:`/`inpublisher:` mapping is the thing that breaks
-    /// silently when someone edits `build_query` — the search still returns
-    /// *something*, just the wrong something.
     #[test]
     fn a_full_request_maps_to_an_exact_url() {
         let req = SearchRequest {
@@ -449,7 +390,6 @@ mod tests {
         );
     }
 
-    /// The API caps maxResults at 40, and 0 means "unset" rather than "none".
     #[test]
     fn limits_are_clamped_to_what_the_api_accepts() {
         let mk = |limit| SearchRequest {
@@ -503,14 +443,10 @@ mod tests {
         assert_eq!(b.publish_year, Some(2017));
         assert_eq!(b.description.as_deref(), Some("A saga."));
         assert!(b.cover_url.unwrap().starts_with("https://"));
-        // Trimmed, deduped case-insensitively, empties dropped — and otherwise
-        // exactly what Google published, slashes and all.
         assert_eq!(b.subjects, vec!["Fiction / Literary", "History"]);
         assert_eq!(b.series, None);
     }
 
-    /// A volume with no `categories` says *nothing* about subjects, which the
-    /// merge reads as silence rather than as "this book has none".
     #[test]
     fn a_volume_without_categories_claims_no_subjects() {
         let json = r#"{"items": [{"id": "x", "volumeInfo": {"title": "T"}}]}"#;
@@ -518,9 +454,6 @@ mod tests {
         assert!(resp.items.unwrap()[0].to_book().subjects.is_empty());
     }
 
-    /// **The largest published size wins**, and the chain falls all
-    /// the way back to `smallThumbnail` — Google publishes the big ones only
-    /// for volumes it has a big scan of, which is most but not all of them.
     #[test]
     fn the_cover_url_is_the_largest_size_google_published() {
         let mk = |body: &str| {
@@ -554,13 +487,6 @@ mod tests {
         assert_eq!(mk("{}"), None);
     }
 
-    /// The page-curl graphic is not on the book.
-    ///
-    /// `edge=curl` asks Google to composite a skeuomorphic fold onto the
-    /// jacket. It is somebody else's decoration, and the cover store
-    /// (`images.rs`) keeps these bytes
-    /// for ever *and* takes the border colour off them — a fold in the corner
-    /// is exactly where that border is.
     #[test]
     fn the_page_curl_is_stripped_and_nothing_else_is_touched() {
         let url = "http://books.google.com/books/content?id=AAA&printsec=frontcover\
@@ -570,23 +496,16 @@ mod tests {
         let got = links.best().unwrap();
         assert!(got.starts_with("https://"), "{got}");
         assert!(!got.contains("edge=curl"), "{got}");
-        // Every other parameter survives, in the spelling Google used — a cover
-        // URL is a stored value that two records get compared on.
         assert_eq!(
             got,
             "https://books.google.com/books/content?id=AAA&printsec=frontcover\
              &img=1&zoom=1&source=gbs_api"
                 .replace(char::is_whitespace, "")
         );
-        // A URL with no query at all is returned untouched.
         assert_eq!(strip_param("https://x/y.jpg", "edge"), "https://x/y.jpg");
-        // …and one whose only parameter was the curl loses the `?` with it.
         assert_eq!(strip_param("https://x/y?edge=curl", "edge"), "https://x/y");
     }
 
-    /// Open Library's manners, for Google too: a 429 with
-    /// `Retry-After` closes the provider, the next search is refused without a
-    /// request, and no error names the query or the key. Loopback only.
     #[tokio::test]
     async fn retry_after_closes_google_and_no_url_or_key_leaks() {
         use wiremock::matchers::method;
@@ -618,8 +537,6 @@ mod tests {
         server.verify().await;
     }
 
-    /// A transport failure's text is reqwest's, which names the whole URL —
-    /// query and key — unless it is dropped. It is.
     #[tokio::test]
     async fn a_transport_failure_names_neither_the_query_nor_the_key() {
         let dead = {

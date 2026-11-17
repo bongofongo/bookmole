@@ -1,7 +1,5 @@
-//! The settings screen: where data lives, the accent, the glyph set, and the
-//! Google Books API key. The key can be entered here (`g`, a paste box) or via
-//! the CLI (`bookmole config set google-api-key`); both write the same
-//! mode-600 file. Only a masked form of the key is ever shown.
+//! The settings screen: data location, accent, glyph set and the Google Books API key.
+//! Only a masked form of the key is ever shown.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,11 +12,7 @@ use crate::render3d::caps::Passthrough;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    // Through the facade's accessors, not `engine.config` — and for the key that
-    // is the only correct source, not a tidier one. `g` sets a key at runtime
-    // through `set_google_api_key`, which writes the engine's own live copy;
-    // `EngineConfig` still carries whatever the app started with, so
-    // reading it here would show "not set" a keystroke after the user set one.
+    // Read through the facade's accessors: `engine.config` is stale after the key is set at runtime.
     let key = match app.engine.google_api_key() {
         Some(k) => format!("set  {}", mask(&k)),
         None => "not set (keyless, lower quota)".to_string(),
@@ -45,7 +39,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(value, theme::primary()),
         ]));
     }
-    // Accent gets a live swatch beside its hex.
     lines.push(Line::from(vec![
         Span::styled(format!("{:<12}", "accent"), theme::dim()),
         Span::styled("███", theme::accent()),
@@ -77,7 +70,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(20)
         .saturating_add(4);
     let inner = super::centered(area, width, lines.len() as u16 + 2);
-    // See `menu::draw`: the ambient layer would otherwise show through.
     f.render_widget(ratatui::widgets::Clear, inner);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -85,9 +77,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), inner);
 }
 
-/// One line summarising what the startup probe found, so a surprising renderer
-/// choice can be diagnosed from inside the app rather than by guesswork:
-/// `kitty graphics, 19x39px cells, tmux passthrough on (ours)`.
 fn describe_caps(caps: &Caps) -> String {
     let mut parts = vec![if caps.kitty_graphics {
         "kitty graphics".to_string()
@@ -117,21 +106,8 @@ fn describe_caps(caps: &Caps) -> String {
     parts.join(", ")
 }
 
-/// What calibre this machine has, and therefore which features exist.
-///
-/// Feature detection is otherwise invisible — the calibre screen would just be
-/// empty and the convert key would just report absence — which is the whole
-/// reason `calibre status` exists on the CLI. This is that, in one line.
-///
-/// **Reported, never prescribed.** calibre is feature-detected, and its absence
-/// is a first-class answer, not a failure to fix: with neither tool present
-/// this says so and names nothing to install. The
-/// rule is asserted below rather than just written down, because it is the sort
-/// that erodes by helpfulness — the CLI's own
-/// `an_absent_calibre_is_reported_and_never_prescribed` makes the same check.
-///
-/// **Two tools, not one flag**: a half install degrades to the half that works,
-/// so the line says which half rather than collapsing to "calibre: no".
+/// Reports which calibre tools exist and never prescribes an install; a half install says
+/// which half works.
 fn describe_calibre(cal: &bookmole::Calibre) -> String {
     match (cal.can_convert(), cal.can_read_library()) {
         (true, true) => "converting and library import".to_string(),
@@ -141,8 +117,6 @@ fn describe_calibre(cal: &bookmole::Calibre) -> String {
     }
 }
 
-/// Show a secret without revealing it: `AIza…f3Qk` (first/last 4 chars),
-/// mirroring the CLI's `config_file::mask`.
 fn mask(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() <= 8 {

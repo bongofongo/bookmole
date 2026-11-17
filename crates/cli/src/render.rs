@@ -1,10 +1,5 @@
 use bookmole::{Book, Progress, RankedResult, Reading};
 
-/// One reading of a book: which of how many, its dates, and where it got to.
-///
-/// The device-owned mirror is shown separately from ours (`ko …`) because they
-/// are different claims — theirs is what the reader said, ours is what the user
-/// told bookmole — and collapsing them would hide a disagreement.
 pub fn reading_line(r: &Reading, nth: usize, of: usize) -> String {
     let dates = match (r.started_at, r.finished_at) {
         (Some(a), Some(b)) => format!("{} → {}", date(a), date(b)),
@@ -38,12 +33,7 @@ pub fn reading_line(r: &Reading, nth: usize, of: usize) -> String {
     )
 }
 
-/// Unix seconds as a plain date. Times of day are noise here — a reading is a
-/// span of days.
-///
-/// `pub(crate)` because `ko plugin status` prints the day a reader was
-/// last in your hands, and a second date formatter would be a second answer to
-/// what a day is.
+/// Unix seconds as a plain date, without the time of day.
 pub(crate) fn date(unix: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp(unix)
         .ok()
@@ -57,10 +47,7 @@ pub fn book_line(b: &Book) -> String {
         .publish_year
         .map(|y| format!(" ({y})"))
         .unwrap_or_default();
-    // This arm once had no `t > 0` guard, so the dev library's zero-page book
-    // printed `[12/0]` — a false denominator rather than a crash, which is why
-    // nothing ever caught it. `Progress` normalises a zero length to absence,
-    // so the `[p.12]` arm now takes it.
+    // A zero page count must not print as `[12/0]`; `Progress` reports it as absent.
     let p = Progress::of_book(b);
     let progress = match (p.is_finished(), p.page(), p.of()) {
         (true, ..) => "  [finished]".to_string(),
@@ -97,8 +84,6 @@ pub fn book_details(b: &Book) -> String {
     push("language", b.language.clone());
     push("isbn-10", b.isbn_10.clone());
     push("isbn-13", b.isbn_13.clone());
-    // One line, because the pair is one fact: `Dune #2`, not a name and a
-    // number on separate rows for the reader to put back together.
     push("series", b.series_label());
     push(
         "subjects",

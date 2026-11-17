@@ -1,7 +1,4 @@
-//! A minimal multi-line text editor for composing a short note in-pane — no
-//! undo, no selection, no scrolling cleverness. It exists so writing a note
-//! never has to hand the terminal to `$EDITOR`. Notes are 2–3 sentences; this
-//! only needs the most basic editing.
+//! A minimal multi-line note editor, so writing a note never hands the terminal to `$EDITOR`.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -10,7 +7,6 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::theme;
 
-/// Lines of text plus a char-indexed cursor at `(row, col)`.
 #[derive(Debug, Clone)]
 pub struct TextEditor {
     lines: Vec<String>,
@@ -41,7 +37,6 @@ impl TextEditor {
         self.lines[row].chars().count()
     }
 
-    /// Byte offset of char `col` within `row` (or end-of-line).
     fn byte_at(&self, row: usize, col: usize) -> usize {
         self.lines[row]
             .char_indices()
@@ -70,7 +65,6 @@ impl TextEditor {
             self.lines[self.row].remove(b);
             self.col -= 1;
         } else if self.row > 0 {
-            // Join with the previous line, cursor landing at the seam.
             let cur = self.lines.remove(self.row);
             self.row -= 1;
             self.col = self.line_len(self.row);
@@ -111,7 +105,6 @@ impl TextEditor {
     }
 }
 
-/// Draw the editor as a bordered box with a cursor and a hint line.
 pub fn render(f: &mut Frame, area: Rect, title: &str, ed: &TextEditor) {
     f.render_widget(Clear, area);
     let block = Block::default()
@@ -127,10 +120,8 @@ pub fn render(f: &mut Frame, area: Rect, title: &str, ed: &TextEditor) {
     let [text_area, hint] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
-    // Wrap manually rather than via ratatui's `Wrap`: a whitespace-only line
-    // (an empty line carries just the reversed cursor cell) makes the word
-    // wrapper emit a phantom blank row, floating the cursor one line below the
-    // text. Doing it ourselves also pins the cursor's visual row exactly.
+    // Wrap manually: ratatui's `Wrap` emits a phantom blank row for a whitespace-only line,
+    // floating the cursor one line below the text.
     let lines = wrapped_lines(ed, text_area.width as usize, text_area.height as usize);
     f.render_widget(Paragraph::new(lines), text_area);
 
@@ -149,14 +140,9 @@ pub fn render(f: &mut Frame, area: Rect, title: &str, ed: &TextEditor) {
     );
 }
 
-/// How many spaces a `\t` occupies on screen. The buffer keeps the real tab;
-/// only the rendering expands it. A literal `\t` written into the cell buffer
-/// would make the terminal jump to its own tab stop, desyncing ratatui's diff
-/// and smearing text across the pane.
+/// Spaces a `\t` occupies on screen. A literal tab in the cell buffer would desync ratatui's diff.
 const TAB_WIDTH: usize = 4;
 
-/// A logical line as display cells: tabs expanded to spaces, so one cell = one
-/// column on screen.
 fn display_cells(line: &str) -> Vec<char> {
     let mut cells = Vec::new();
     for c in line.chars() {
@@ -169,8 +155,6 @@ fn display_cells(line: &str) -> Vec<char> {
     cells
 }
 
-/// The display column of char `col` within `line` (tabs counting as `TAB_WIDTH`);
-/// clamps to the line's full display width when `col` is past the end.
 fn display_col(line: &str, col: usize) -> usize {
     line.chars()
         .take(col)
@@ -178,11 +162,6 @@ fn display_col(line: &str, col: usize) -> usize {
         .sum()
 }
 
-/// Lay the editor out as visual rows, character-wrapping each logical line to
-/// `width` and scrolling vertically so the cursor's row stays inside `height`.
-/// The cursor is a reversed cell placed at its exact display column (a trailing
-/// block when it sits past the last character), wrapping to the next row when
-/// it reaches the edge.
 fn wrapped_lines(ed: &TextEditor, width: usize, height: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let mut visual: Vec<Line<'static>> = Vec::new();
@@ -192,7 +171,6 @@ fn wrapped_lines(ed: &TextEditor, width: usize, height: usize) -> Vec<Line<'stat
         let cells = display_cells(line);
         let active = r == ed.row;
         let cur = if active { display_col(line, ed.col) } else { 0 };
-        // Cover the text and, when the cursor sits past it, its trailing cell.
         let extent = if active {
             cells.len().max(cur + 1)
         } else {
@@ -210,7 +188,6 @@ fn wrapped_lines(ed: &TextEditor, width: usize, height: usize) -> Vec<Line<'stat
                     spans.push(Span::raw(ch.to_string()));
                 }
             }
-            // Cursor beyond the last character: pad to it, then the block.
             if active && cur >= cells.len() && (start..start + width).contains(&cur) {
                 for _ in end..cur {
                     spans.push(Span::raw(" ".to_string()));
@@ -245,20 +222,17 @@ mod tests {
         assert_eq!(ed.text(), "hello\nworld");
         assert!(!ed.is_blank());
 
-        // Backspace at column 0 joins the two lines.
         ed.left();
         ed.left();
         ed.left();
         ed.left();
-        ed.left(); // now at start of "world"
+        ed.left();
         assert_eq!((ed.row, ed.col), (1, 0));
         ed.backspace();
         assert_eq!(ed.text(), "helloworld");
         assert_eq!((ed.row, ed.col), (0, 5));
     }
 
-    /// Flatten a rendered line back to its text, marking the reversed cursor
-    /// cell with `#`.
     fn row_text(line: &Line) -> String {
         line.spans
             .iter()
@@ -277,14 +251,12 @@ mod tests {
 
     #[test]
     fn a_tab_renders_as_spaces_never_a_raw_tab() {
-        // The buffer keeps the real tab...
         let mut ed = TextEditor::new("");
         ed.insert('a');
         ed.insert('\t');
         ed.insert('b');
         assert_eq!(ed.text(), "a\tb");
 
-        // ...but the rendered line must not carry one, or the terminal desyncs.
         let rows = wrapped_lines(&ed, 40, 6);
         let rendered = row_text(&rows[0]);
         assert!(
@@ -299,20 +271,16 @@ mod tests {
 
     #[test]
     fn the_cursor_sits_on_the_text_row_not_below_it() {
-        // An empty trailing line: the cursor block must be the row right after
-        // the last text, with no phantom blank between them.
         let ed = TextEditor::new("one\ntwo\n");
         let rows = wrapped_lines(&ed, 30, 6);
         assert_eq!(row_text(&rows[0]), "one");
         assert_eq!(row_text(&rows[1]), "two");
         assert_eq!(row_text(&rows[2]), "#", "cursor floated off its row");
 
-        // A fresh, wholly empty note: the cursor is on the very first row.
         let empty = TextEditor::new("");
         let rows = wrapped_lines(&empty, 30, 6);
         assert_eq!(row_text(&rows[0]), "#");
 
-        // Typing onto that line keeps the cursor on the same row.
         let typed = TextEditor::new("one\ntwo\ns");
         let rows = wrapped_lines(&typed, 30, 6);
         assert_eq!(row_text(&rows[2]), "s#");
@@ -320,20 +288,18 @@ mod tests {
 
     #[test]
     fn a_long_line_wraps_and_carries_the_cursor() {
-        let ed = TextEditor::new("abcdefghij"); // 10 chars, width 4
+        let ed = TextEditor::new("abcdefghij");
         let rows = wrapped_lines(&ed, 4, 6);
         assert_eq!(row_text(&rows[0]), "abcd");
         assert_eq!(row_text(&rows[1]), "efgh");
-        assert_eq!(row_text(&rows[2]), "ij#"); // cursor past the end, wrapped
+        assert_eq!(row_text(&rows[2]), "ij#");
     }
 
     #[test]
     fn cursor_moves_and_clamps() {
         let mut ed = TextEditor::new("ab\ncdef");
-        // starts at end of last line
         assert_eq!((ed.row, ed.col), (1, 4));
         ed.up();
-        // col clamps to the shorter line
         assert_eq!((ed.row, ed.col), (0, 2));
         ed.down();
         assert_eq!((ed.row, ed.col), (1, 2));

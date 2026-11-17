@@ -1,12 +1,4 @@
-//! The package document's `<metadata>`, typed.
-//!
-//! Two views of one block. The **typed** fields (`titles`, `creators`, …)
-//! read each element's whole text, trimmed, and resolve EPUB 3 `refines`
-//! (role, file-as, display-seq, title-type, identifier-type, collection-type,
-//! group-position) as well as the EPUB 2 `opf:` attributes. The **flat**
-//! [`Metadata::entries`] list is the key → value view the `epub` 2.x crate
-//! offered, reproduced exactly, for callers that must keep giving the
-//! answers they gave before.
+//! The package document's `<metadata>`: typed fields plus a flat key/value view of every entry.
 
 use std::collections::HashMap;
 
@@ -72,11 +64,9 @@ pub struct Contributor {
     pub name: String,
     /// The element's `id`.
     pub id: Option<String>,
-    /// The role (a MARC relator such as `aut`), from `opf:role` or a refining
-    /// `role` meta; the attribute wins when both are present.
+    /// A MARC relator such as `aut`; `opf:role` wins over a refining `role` meta.
     pub role: Option<String>,
-    /// The sort form, from `opf:file-as` or a refining `file-as` meta; the
-    /// attribute wins when both are present.
+    /// Sort form; `opf:file-as` wins over a refining `file-as` meta.
     pub file_as: Option<String>,
     /// EPUB 3 `display-seq`.
     pub display_seq: Option<u32>,
@@ -85,9 +75,6 @@ pub struct Contributor {
 }
 
 /// A `dc:identifier`.
-///
-/// Whether the value is a *valid* ISBN is the caller's question; this only
-/// reports what the book says about it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Identifier {
@@ -95,20 +82,17 @@ pub struct Identifier {
     pub value: String,
     /// The element's `id`.
     pub id: Option<String>,
-    /// The scheme: an `opf:scheme` attribute, else a refining
-    /// `identifier-type` meta's value, else a `urn:` value's namespace
-    /// (`isbn` for `urn:isbn:…`).
+    /// `opf:scheme`, else a refining `identifier-type` meta, else a `urn:` namespace (`isbn`).
     pub scheme: Option<String>,
-    /// The `scheme` attribute of the refining `identifier-type` meta, when
-    /// the scheme came from one (`onix:codelist5`).
+    /// The `scheme` attribute of the refining `identifier-type` meta, when the scheme came from
+    /// one (`onix:codelist5`).
     pub scheme_authority: Option<String>,
     /// Whether this is the package's `unique-identifier`.
     pub is_unique: bool,
 }
 
 impl Identifier {
-    /// Whether the book *says* this is an ISBN: scheme `ISBN` in any case, a
-    /// `urn:isbn:` value, or ONIX code list 5's `02`/`15`.
+    /// True when the book says this is an ISBN: scheme `ISBN`, a `urn:isbn:` value, or ONIX `02`/`15`.
     pub fn scheme_says_isbn(&self) -> bool {
         if self.value.len() >= 9
             && self
@@ -155,8 +139,8 @@ pub enum SeriesSource {
 pub struct Series {
     /// The series name, trimmed.
     pub name: String,
-    /// The book's position, as written (`group-position` or
-    /// `calibre:series_index`; may be fractional, `"1.5"`).
+    /// The book's position, as written (`group-position` or `calibre:series_index`; may be
+    /// fractional, `"1.5"`).
     pub position: Option<String>,
     /// EPUB 3 `collection-type` (`series`, `set`), when given.
     pub collection_type: Option<String>,
@@ -188,23 +172,16 @@ pub struct Meta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MetaEntry {
-    /// An element's local name (`title`), a `meta`'s `name`, or a `meta`'s
-    /// `property`.
+    /// An element's local name (`title`), a `meta`'s `name`, or a `meta`'s `property`.
     pub key: String,
     /// The value, untrimmed.
     pub value: String,
 }
 
 impl Metadata {
-    /// The flat key → value view, in document order — what the `epub` 2.x
-    /// crate's `metadata` map held, value for value:
-    ///
-    /// - every direct child of `<metadata>` other than `meta` gives
-    ///   `(local name, text)`, where text is the element's last
-    ///   non-whitespace run of direct character data, or `""`;
-    /// - a `meta` with `name` and `content` gives `(name, content)`;
-    /// - otherwise a `meta` with `property` gives `(property, text)`;
-    /// - any other `meta` gives nothing.
+    /// Flat key/value view in document order. Each non-`meta` child gives `(local name, text)`, text
+    /// being its last non-whitespace run of direct character data or `""`; a `meta` gives
+    /// `(name, content)`, else `(property, text)`, else nothing.
     pub fn entries(&self) -> &[MetaEntry] {
         &self.entries
     }
@@ -217,8 +194,7 @@ impl Metadata {
             .map(|e| e.value.as_str())
     }
 
-    /// The main title: the first with EPUB 3 `title-type` `main`, else the
-    /// first title.
+    /// The first title with EPUB 3 `title-type` `main`, else the first title.
     pub fn main_title(&self) -> Option<&str> {
         self.titles
             .iter()
@@ -227,8 +203,7 @@ impl Metadata {
             .map(|t| t.value.as_str())
     }
 
-    /// The publication date: the first `dc:date` with no `opf:event` or with
-    /// event `publication`.
+    /// The first `dc:date` with no `opf:event` or event `publication`.
     pub fn publication_date(&self) -> Option<&str> {
         self.dates
             .iter()
@@ -247,7 +222,7 @@ pub(crate) struct Parsed {
     pub metadata: Metadata,
     /// The `unique-identifier` value, by the old crate's rule.
     pub unique_identifier: Option<String>,
-    /// The last `<meta name="cover" content="…">`'s content.
+    /// Content of the last `<meta name="cover">`.
     pub cover_meta: Option<String>,
     pub warnings: Vec<Warning>,
 }
@@ -279,7 +254,6 @@ pub(crate) fn parse(
     let mut cover_meta = None;
     let mut warnings = Vec::new();
 
-    // The flat view: direct children only, exactly as the old crate read them.
     for item in node.children() {
         if item.name == "meta" {
             if let (Some(k), Some(v)) = (item.attr("name"), item.attr("content")) {
@@ -312,8 +286,6 @@ pub(crate) fn parse(
         }
     }
 
-    // The typed view. OPF 2.0's legacy `dc-metadata` / `x-metadata` wrappers
-    // are looked through.
     let mut elements: Vec<&Node> = Vec::new();
     for item in node.children() {
         if item.name == "dc-metadata" || item.name == "x-metadata" {
@@ -409,13 +381,11 @@ pub(crate) fn parse(
             _ => None,
         };
         if let (Some(id), Some(t)) = (id, target) {
-            // The first element to carry an id is the one it names.
             ids.entry(id).or_insert(t);
         }
     }
 
-    // Resolve `refines`. Refinements of manifest items (media overlays) are
-    // legitimate and simply not ours to apply.
+    // Refinements of manifest items (media overlays) are legitimate and deliberately not applied.
     for i in 0..md.metas.len() {
         let Some(meta) = md.metas.get(i).cloned() else {
             continue;
@@ -444,13 +414,11 @@ pub(crate) fn parse(
             .map(|m| m.value.clone());
     }
 
-    // Series, both conventions, in document order.
     let mut series_index_calibre = md
         .metas
         .iter()
         .find(|m| m.name.as_deref() == Some("calibre:series_index"))
         .and_then(|m| m.content.clone());
-    // id → (group-position, collection-type), first of each, in one pass.
     let mut collection_refines: HashMap<&str, (Option<String>, Option<String>)> = HashMap::new();
     for r in md.metas.iter() {
         let Some(id) = r
@@ -497,7 +465,6 @@ pub(crate) fn parse(
         }
     }
 
-    // A `urn:` value names its own scheme when nothing else did.
     for ident in &mut md.identifiers {
         if ident.scheme.is_none()
             && ident
