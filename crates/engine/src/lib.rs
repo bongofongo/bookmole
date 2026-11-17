@@ -1936,13 +1936,11 @@ impl Engine {
         let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
         let (header, _) = notes::frontmatter_and_body(&content);
-        std::fs::write(&file, format!("{header}{}\n", body.trim_end()))?;
-        self.storage
-            .refresh_note_body(note.id, &note.title, body)
-            .await?;
+        let body = body.trim_end();
+        std::fs::write(&file, format!("{header}{body}\n"))?;
         let links = notes::extract_wikilinks(body);
         self.storage
-            .set_note_links(note.id, &note.title, &links)
+            .reindex_note(note.id, &note.title, body, &links)
             .await
     }
 
@@ -3766,5 +3764,83 @@ mod tests {
             Loader::Embedded { dir } => assert_eq!(dir, PathBuf::from("./database")),
             other => panic!("{other:?}"),
         }
+    }
+
+    async fn sql(engine: &Engine, statement: &str) {
+        sqlx::query(statement)
+            .execute(engine.storage.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_body_update_the_index_refuses_leaves_the_index_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+        let created = engine
+            .create_note(NewNoteInput {
+                body: "Plain.".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let note = engine.get_note(created.id).await.unwrap().unwrap();
+
+        sql(
+            &engine,
+            "CREATE TRIGGER refuse_links BEFORE INSERT ON note_links
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+        .await;
+        let edited = "Now about [[Vocation]].";
+        assert!(engine.update_note_body(&note, edited).await.is_err());
+        let indexed = engine.storage.indexed_body(note.id).await.unwrap();
+        let links = engine.storage.note_links(note.id).await.unwrap();
+        assert_eq!(
+            (indexed.as_deref().map(str::trim_end), links.len()),
+            (Some("Plain."), 0),
+            "body and edges are indexed together or not at all"
+        );
+
+        sql(&engine, "DROP TRIGGER refuse_links").await;
+        engine.update_note_body(&note, edited).await.unwrap();
+        assert_eq!(
+            engine
+                .storage
+                .indexed_body(note.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(edited)
+        );
+        assert_eq!(engine.storage.note_links(note.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_delete_the_database_refuses_can_be_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+        let created = engine
+            .create_note(NewNoteInput {
+                body: "Brief.".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let note = engine.get_note(created.id).await.unwrap().unwrap();
+
+        sql(
+            &engine,
+            "CREATE TRIGGER refuse_delete BEFORE DELETE ON notes
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+        .await;
+        assert!(engine.delete_note(&note).await.is_err());
+        assert!(!created.file.exists());
+        assert!(engine.get_note(note.id).await.unwrap().is_some());
+
+        sql(&engine, "DROP TRIGGER refuse_delete").await;
+        engine.delete_note(&note).await.unwrap();
+        assert!(engine.get_note(note.id).await.unwrap().is_none());
     }
 }

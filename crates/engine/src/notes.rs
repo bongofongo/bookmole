@@ -763,7 +763,7 @@ pub async fn create_note(
     // make the whole vault re-index.
     let (_, written_body) = frontmatter_and_body(&content);
     let links = extract_wikilinks(written_body);
-    let id = storage
+    let inserted = storage
         .insert_note(
             crate::storage::NewNoteMeta {
                 book_id: input.book_id,
@@ -778,7 +778,15 @@ pub async fn create_note(
             written_body,
             &links,
         )
-        .await?;
+        .await;
+    let id = match inserted {
+        Ok(id) => id,
+        Err(e) => {
+            // No row claims the file, so nothing would ever adopt it.
+            std::fs::remove_file(&file).ok();
+            return Err(e);
+        }
+    };
 
     Ok(CreatedNote {
         id,
@@ -1214,6 +1222,73 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].as_note().unwrap().id, created.id);
+    }
+
+    fn markdown_under(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(markdown_under(&path));
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_note_whose_row_is_refused_leaves_no_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let vault = scratch.path().join("vault");
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+
+        // A book deleted after the caller looked it up: the row's foreign key is refused.
+        let input = || NewNoteInput {
+            book_id: Some(4242),
+            body: "Lydgate's ambitions.".into(),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert!(create_note(&s, &vault, None, input()).await.is_err());
+        }
+
+        assert_eq!(markdown_under(&vault), Vec::<PathBuf>::new());
+        assert!(s.note_files().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_a_refused_insert_makes_exactly_one_note() {
+        let scratch = tempfile::tempdir().unwrap();
+        let vault = scratch.path().join("vault");
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER refuse_notes BEFORE INSERT ON notes
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+        .execute(s.pool())
+        .await
+        .unwrap();
+
+        let input = || NewNoteInput {
+            body: "Casaubon's key to all mythologies.".into(),
+            ..Default::default()
+        };
+        assert!(create_note(&s, &vault, None, input()).await.is_err());
+
+        sqlx::query("DROP TRIGGER refuse_notes")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let created = create_note(&s, &vault, None, input()).await.unwrap();
+
+        assert_eq!(markdown_under(&vault), vec![created.file.clone()]);
+        let rows = s.note_files().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(vault.join(&rows[0].file_path), created.file);
     }
 
     #[tokio::test]
