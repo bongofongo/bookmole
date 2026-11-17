@@ -21,7 +21,7 @@ pub struct BookFile {
 impl Storage {
     /// `DO NOTHING` on conflict; returns true when new. Never repoint: a second import must not move a
     /// file to another book.
-    pub async fn add_book_file(&self, file: &BookFile) -> Result<bool> {
+    pub(crate) async fn add_book_file(&self, file: &BookFile) -> Result<bool> {
         let done = sqlx::query(
             "INSERT INTO book_files (sha256, book_id, format, original_name, size, added_at)
              VALUES (?, ?, ?, ?, ?, ?)
@@ -65,7 +65,7 @@ impl Storage {
     }
 
     /// Forgets the row; the caller owns the bytes on disk.
-    pub async fn delete_book_file(&self, sha256: &str) -> Result<bool> {
+    pub(crate) async fn delete_book_file(&self, sha256: &str) -> Result<bool> {
         let done = sqlx::query("DELETE FROM book_files WHERE sha256 = ?")
             .bind(sha256)
             .execute(self.pool())

@@ -179,7 +179,7 @@ impl Storage {
         self.insert_highlight_in(book_id, h, None).await
     }
 
-    pub async fn insert_highlight_in(
+    pub(crate) async fn insert_highlight_in(
         &self,
         book_id: i64,
         h: &NewHighlight,
@@ -264,7 +264,11 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    pub async fn device_fields_differ(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
+    pub(crate) async fn device_fields_differ(
+        &self,
+        book_id: i64,
+        h: &NewHighlight,
+    ) -> Result<bool> {
         let sql = format!(
             "SELECT count(*) FROM highlights
              WHERE book_id = ?1 AND identity_hash = ?2 AND {DEVICE_FIELDS_DIFFER}"
@@ -291,7 +295,7 @@ impl Storage {
     }
 
     /// Restricted to `source = 'koreader'` so other highlights cannot make a sidecar look imported.
-    pub async fn device_highlight_digest(&self, book_id: i64) -> Result<String> {
+    pub(crate) async fn device_highlight_digest(&self, book_id: i64) -> Result<String> {
         let rows = sqlx::query(
             "SELECT ko_datetime, pos0, text, origin_note, color, chapter, page
              FROM highlights WHERE book_id = ? AND origin = 'koreader'",
@@ -323,7 +327,7 @@ impl Storage {
         Ok(digest.finish())
     }
 
-    pub async fn highlight_exists(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
+    pub(crate) async fn highlight_exists(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
         let n: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM highlights WHERE book_id = ? AND identity_hash = ?",
         )
@@ -335,7 +339,7 @@ impl Storage {
     }
 
     /// Returns only the book id, not the row, to keep private text off a yes/no path.
-    pub async fn highlight_book(&self, highlight_id: i64) -> Result<Option<i64>> {
+    pub(crate) async fn highlight_book(&self, highlight_id: i64) -> Result<Option<i64>> {
         Ok(
             sqlx::query_scalar("SELECT book_id FROM highlights WHERE id = ?")
                 .bind(highlight_id)
@@ -357,7 +361,7 @@ impl Storage {
     }
 
     /// Cannot ask for unattributed highlights (`reading_id IS NULL`); filter `list_highlights`.
-    pub async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
+    pub(crate) async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE reading_id = ?
              ORDER BY page ASC, ko_datetime ASC"
@@ -370,7 +374,7 @@ impl Storage {
     }
 
     /// The passage the reader chose for the reading's card; `None` means not chosen.
-    pub async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
+    pub(crate) async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights
               WHERE id = (SELECT card_highlight_id FROM readings WHERE id = ?)"
@@ -384,7 +388,11 @@ impl Storage {
 
     /// The highlight must be of the reading's book, and of this reading when attributed at all;
     /// unattributed is accepted because imported highlights start unattributed.
-    pub async fn set_card_passage(&self, reading_id: i64, highlight_id: Option<i64>) -> Result<()> {
+    pub(crate) async fn set_card_passage(
+        &self,
+        reading_id: i64,
+        highlight_id: Option<i64>,
+    ) -> Result<()> {
         let reading = self
             .get_reading(reading_id)
             .await?
@@ -416,7 +424,7 @@ impl Storage {
     }
 
     /// Exactly the set `set_card_passage` accepts, so a chooser never offers a passage it refuses.
-    pub async fn card_passage_candidates(&self, reading_id: i64) -> Result<Vec<Highlight>> {
+    pub(crate) async fn card_passage_candidates(&self, reading_id: i64) -> Result<Vec<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights
               WHERE book_id = (SELECT book_id FROM readings WHERE id = ?)

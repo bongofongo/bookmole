@@ -263,7 +263,7 @@ impl Storage {
 
     /// Empty the search cache; with `records`, the kept records and their index too. Never touches a
     /// book.
-    pub async fn forget_searches(&self, records: bool) -> Result<()> {
+    pub(crate) async fn forget_searches(&self, records: bool) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         sqlx::query("DELETE FROM search_cache")
             .execute(&mut *tx)
@@ -278,7 +278,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn search_cache_status(&self) -> Result<SearchCacheStatus> {
+    pub(crate) async fn search_cache_status(&self) -> Result<SearchCacheStatus> {
         let row = sqlx::query(
             "SELECT (SELECT min(fetched_at) FROM provider_records) AS oldest,
                     EXISTS (SELECT 1 FROM search_cache) AS searches",
@@ -295,7 +295,7 @@ impl Storage {
 
     /// A provider with no row has its default; a row naming an unknown provider (a newer build's) is
     /// ignored.
-    pub async fn provider_settings(&self) -> Result<HashMap<ProviderId, bool>> {
+    pub(crate) async fn provider_settings(&self) -> Result<HashMap<ProviderId, bool>> {
         let rows = sqlx::query("SELECT provider, enabled FROM provider_settings")
             .fetch_all(self.pool())
             .await?;
@@ -308,7 +308,11 @@ impl Storage {
         Ok(settings)
     }
 
-    pub async fn set_provider_enabled(&self, provider: ProviderId, enabled: bool) -> Result<()> {
+    pub(crate) async fn set_provider_enabled(
+        &self,
+        provider: ProviderId,
+        enabled: bool,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO provider_settings (provider, enabled, updated_at) VALUES (?, ?, ?)
              ON CONFLICT (provider) DO UPDATE SET

@@ -35,7 +35,7 @@ fn check_key(key: &str) -> Result<()> {
 }
 
 impl Storage {
-    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+    pub(crate) async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         check_key(key)?;
         Ok(
             sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
@@ -47,7 +47,7 @@ impl Storage {
 
     /// Refuses a bad key or a non-JSON value (`InvalidInput`); the value is stored as written, not
     /// re-serialised.
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+    pub(crate) async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         check_key(key)?;
         if serde_json::from_str::<serde_json::Value>(value).is_err() {
             return Err(EngineError::InvalidInput(format!(
@@ -67,7 +67,7 @@ impl Storage {
     }
 
     /// Prefix is compared with `substr`, not `LIKE`, so `_` is a literal underscore.
-    pub async fn list_settings(&self, prefix: &str) -> Result<Vec<Setting>> {
+    pub(crate) async fn list_settings(&self, prefix: &str) -> Result<Vec<Setting>> {
         let rows = sqlx::query(
             "SELECT key, value FROM settings
               WHERE substr(key, 1, length(?1)) = ?1

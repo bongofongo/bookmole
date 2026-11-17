@@ -72,7 +72,7 @@ fn json_ids(ids: &[i64]) -> String {
 impl Storage {
     /// Ordered by `latest_part_at DESC, id DESC`. Every narrowing is a predicate before the `LIMIT`,
     /// since filtering after a limit can return nothing.
-    pub async fn note_row_facts(&self, f: &NoteRowFilter) -> Result<Vec<NoteRowFacts>> {
+    pub(crate) async fn note_row_facts(&self, f: &NoteRowFilter) -> Result<Vec<NoteRowFacts>> {
         let columns = qualified(NOTE_COLUMNS, "n");
         let mut clauses: Vec<&str> = Vec::new();
         if f.kinds.is_some() {
@@ -139,12 +139,12 @@ impl Storage {
     }
 
     /// `(year, month)` in UTC, newest first; the engine has no zone.
-    pub async fn note_periods(&self) -> Result<Vec<(i32, u8)>> {
+    pub(crate) async fn note_periods(&self) -> Result<Vec<(i32, u8)>> {
         self.note_periods_in(0).await
     }
 
     /// In a fixed zone `offset_seconds` east of UTC; the caller validates the offset.
-    pub async fn note_periods_in(&self, offset_seconds: i64) -> Result<Vec<(i32, u8)>> {
+    pub(crate) async fn note_periods_in(&self, offset_seconds: i64) -> Result<Vec<(i32, u8)>> {
         let rows = sqlx::query(
             "SELECT DISTINCT CAST(strftime('%Y', latest_part_at + ?1, 'unixepoch') AS INTEGER) AS y,
                              CAST(strftime('%m', latest_part_at + ?1, 'unixepoch') AS INTEGER) AS m
@@ -165,7 +165,7 @@ impl Storage {
     }
 
     /// In body order within each source (`note_links.rowid`).
-    pub async fn all_link_edges(&self) -> Result<Vec<LinkEdge>> {
+    pub(crate) async fn all_link_edges(&self) -> Result<Vec<LinkEdge>> {
         let rows = sqlx::query(
             "SELECT from_note, to_note, target_title FROM note_links ORDER BY from_note, rowid",
         )
@@ -182,7 +182,7 @@ impl Storage {
             .collect()
     }
 
-    pub async fn note_stamps(&self) -> Result<Vec<NoteStamp>> {
+    pub(crate) async fn note_stamps(&self) -> Result<Vec<NoteStamp>> {
         let sql =
             format!("SELECT n.id AS id, {LATEST} AS latest, n.book_id AS book_id FROM notes n");
         let rows = sqlx::query(&sql).fetch_all(self.pool()).await?;
@@ -198,7 +198,7 @@ impl Storage {
     }
 
     /// Grouped by source, body order within one; the engine orders the sources.
-    pub async fn links_written(
+    pub(crate) async fn links_written(
         &self,
         note_ids: &[i64],
     ) -> Result<Vec<(i64, String, Option<NoteRecord>)>> {
@@ -226,7 +226,7 @@ impl Storage {
             .collect()
     }
 
-    pub async fn resolve_title(&self, title: &str) -> Result<Option<NoteRecord>> {
+    pub(crate) async fn resolve_title(&self, title: &str) -> Result<Option<NoteRecord>> {
         let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE {RESOLVE_TITLE}");
         sqlx::query(&sql)
             .bind(title.trim())
@@ -238,7 +238,7 @@ impl Storage {
     }
 
     /// Only dangling edges (`to_note IS NULL`): exactly the ones a note with this title would resolve.
-    pub async fn dangling_links_to(&self, title: &str) -> Result<Vec<(String, NoteRecord)>> {
+    pub(crate) async fn dangling_links_to(&self, title: &str) -> Result<Vec<(String, NoteRecord)>> {
         let columns = qualified(NOTE_COLUMNS, "n");
         let sql = format!(
             "SELECT l.target_title AS target_title, {columns}
@@ -257,7 +257,7 @@ impl Storage {
 
     /// The body comes back because fts tokenisation ignores punctuation and `[[…]]`; the engine then
     /// filters with `find_mention`. The phrase is the reader's words: never logged above `trace!`.
-    pub async fn mention_candidates(
+    pub(crate) async fn mention_candidates(
         &self,
         phrase: &str,
     ) -> Result<Vec<(NoteRecord, String, String)>> {
@@ -279,7 +279,7 @@ impl Storage {
             .collect()
     }
 
-    pub async fn linked_note_ids(&self, note_id: i64) -> Result<Vec<i64>> {
+    pub(crate) async fn linked_note_ids(&self, note_id: i64) -> Result<Vec<i64>> {
         let rows = sqlx::query(
             "SELECT from_note AS id FROM note_links WHERE to_note = ?1
              UNION SELECT to_note FROM note_links WHERE from_note = ?1 AND to_note IS NOT NULL",

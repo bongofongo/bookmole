@@ -54,7 +54,10 @@ impl Storage {
         Ok(res.rows_affected() > 0)
     }
 
-    pub async fn list_flashcards(&self, include_exported: bool) -> Result<Vec<FlashcardRow>> {
+    pub(crate) async fn list_flashcards(
+        &self,
+        include_exported: bool,
+    ) -> Result<Vec<FlashcardRow>> {
         let filter = if include_exported {
             ""
         } else {
@@ -82,7 +85,7 @@ impl Storage {
         rows.iter().map(row_to_flashcard).collect()
     }
 
-    pub async fn mark_flashcards_exported(&self, ids: &[i64]) -> Result<()> {
+    pub(crate) async fn mark_flashcards_exported(&self, ids: &[i64]) -> Result<()> {
         for id in ids {
             sqlx::query("UPDATE flashcards SET exported = 1 WHERE id = ?")
                 .bind(id)

@@ -222,7 +222,11 @@ pub(super) async fn repoint_entries(conn: &mut SqliteConnection, src: i64, dst: 
 }
 
 impl Storage {
-    pub async fn create_list(&self, name: &str, description: Option<&str>) -> Result<BookList> {
+    pub(crate) async fn create_list(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<BookList> {
         let name = clean_name(name)?;
         let now = now_unix();
         let id: i64 = sqlx::query_scalar(
@@ -238,7 +242,7 @@ impl Storage {
         self.get_list(id).await
     }
 
-    pub async fn get_list(&self, id: i64) -> Result<BookList> {
+    pub(crate) async fn get_list(&self, id: i64) -> Result<BookList> {
         let sql = format!("SELECT {LIST_COLUMNS} FROM book_lists WHERE id = ?");
         let row = sqlx::query(&sql)
             .bind(id)
@@ -250,7 +254,7 @@ impl Storage {
         }
     }
 
-    pub async fn update_list(
+    pub(crate) async fn update_list(
         &self,
         id: i64,
         name: &str,
@@ -272,7 +276,7 @@ impl Storage {
         self.get_list(id).await
     }
 
-    pub async fn delete_list(&self, id: i64) -> Result<()> {
+    pub(crate) async fn delete_list(&self, id: i64) -> Result<()> {
         let done = sqlx::query("DELETE FROM book_lists WHERE id = ?")
             .bind(id)
             .execute(self.pool())
@@ -283,7 +287,11 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn list_summaries(&self, sort: ListSort, preview: usize) -> Result<Vec<ListSummary>> {
+    pub(crate) async fn list_summaries(
+        &self,
+        sort: ListSort,
+        preview: usize,
+    ) -> Result<Vec<ListSummary>> {
         let order = match sort {
             ListSort::Name => "name COLLATE NOCASE ASC, id ASC",
             ListSort::RecentlyChanged => "updated_at DESC, id DESC",
@@ -329,7 +337,7 @@ impl Storage {
     }
 
     /// `sort` is a view: it never rewrites `position`.
-    pub async fn list_entries(
+    pub(crate) async fn list_entries(
         &self,
         list_id: i64,
         show: EntryShow,
@@ -374,7 +382,7 @@ impl Storage {
     }
 
     /// Idempotent: a book already on the list comes back unchanged, its note kept, the list unstamped.
-    pub async fn add_to_list(
+    pub(crate) async fn add_to_list(
         &self,
         list_id: i64,
         book_id: i64,
@@ -409,7 +417,7 @@ impl Storage {
         entry.ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))
     }
 
-    pub async fn remove_from_list(&self, list_id: i64, book_id: i64) -> Result<()> {
+    pub(crate) async fn remove_from_list(&self, list_id: i64, book_id: i64) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         list_exists(&mut tx, list_id).await?;
         book_exists(&mut tx, book_id).await?;
@@ -426,7 +434,7 @@ impl Storage {
     }
 
     /// `to` is clamped to the last place; the book must be on the list.
-    pub async fn move_in_list(&self, list_id: i64, book_id: i64, to: usize) -> Result<()> {
+    pub(crate) async fn move_in_list(&self, list_id: i64, book_id: i64, to: usize) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         list_exists(&mut tx, list_id).await?;
         let mut ids = entry_order(&mut tx, list_id).await?;
@@ -443,7 +451,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn set_list_note(
+    pub(crate) async fn set_list_note(
         &self,
         list_id: i64,
         book_id: i64,
@@ -468,7 +476,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn lists_for_book(&self, book_id: i64) -> Result<Vec<ListMembership>> {
+    pub(crate) async fn lists_for_book(&self, book_id: i64) -> Result<Vec<ListMembership>> {
         let mut conn = self.pool().acquire().await?;
         book_exists(&mut conn, book_id).await?;
         let rows = sqlx::query(
@@ -494,7 +502,7 @@ impl Storage {
     }
 
     /// Dated books then undated, each in list order; `ready` once `TIMELINE_MIN_DATED` have a year.
-    pub async fn list_timeline(&self, list_id: i64) -> Result<ListTimeline> {
+    pub(crate) async fn list_timeline(&self, list_id: i64) -> Result<ListTimeline> {
         let entries = self
             .list_entries(list_id, EntryShow::All, EntrySort::Yours)
             .await?;
@@ -507,7 +515,7 @@ impl Storage {
         })
     }
 
-    pub async fn shelf_suggestions(&self, preview: usize) -> Result<Vec<ShelfSuggestion>> {
+    pub(crate) async fn shelf_suggestions(&self, preview: usize) -> Result<Vec<ShelfSuggestion>> {
         let rows = sqlx::query(
             "SELECT bt.tag AS tag, count(*) AS n FROM book_tags bt \
              WHERE bt.source = ? \
@@ -566,7 +574,7 @@ impl Storage {
     }
 
     /// Holds a copy of the shelf's books; keeping twice returns the first list. Only `goodreads`.
-    pub async fn keep_shelf(&self, source: &str, tag: &str) -> Result<BookList> {
+    pub(crate) async fn keep_shelf(&self, source: &str, tag: &str) -> Result<BookList> {
         if source != SHELF_SOURCE {
             return Err(EngineError::InvalidInput(format!(
                 "no shelves are offered from {source:?}"
@@ -617,7 +625,7 @@ impl Storage {
     }
 
     /// Idempotent; the tag need not exist.
-    pub async fn dismiss_shelf(&self, source: &str, tag: &str) -> Result<()> {
+    pub(crate) async fn dismiss_shelf(&self, source: &str, tag: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO dismissed_shelves (source, tag, dismissed_at) VALUES (?, ?, ?) \
              ON CONFLICT (source, tag) DO NOTHING",

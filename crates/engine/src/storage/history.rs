@@ -56,7 +56,7 @@ pub struct ReadWindow {
 
 impl Storage {
     /// The review join cannot duplicate a row: `idx_one_review` allows one review per reading.
-    pub async fn history_reads(&self) -> Result<Vec<ReadFacts>> {
+    pub(crate) async fn history_reads(&self) -> Result<Vec<ReadFacts>> {
         let reading = reading_columns_as("readings", "r_");
         let mine = reading_age_key("readings");
         let sibling = reading_age_key("sib");
@@ -94,7 +94,7 @@ impl Storage {
     }
 
     /// Inclusive `from..=to` as `YYYY-MM-DD`; either end may be open.
-    pub async fn history_events(
+    pub(crate) async fn history_events(
         &self,
         from: Option<&str>,
         to: Option<&str>,
@@ -122,7 +122,7 @@ impl Storage {
     }
 
     /// A `ko_datetime` that cannot be read falls back to when the row was stored.
-    pub async fn passage_stamps(&self) -> Result<Vec<MarkStamp>> {
+    pub(crate) async fn passage_stamps(&self) -> Result<Vec<MarkStamp>> {
         let rows = sqlx::query(
             "SELECT id, book_id, reading_id, source,
                     COALESCE(CAST(strftime('%s', ko_datetime) AS INTEGER), created_at) AS at
@@ -145,7 +145,7 @@ impl Storage {
     }
 
     /// Dated by `created_at`, not by when its latest part was written.
-    pub async fn note_stamps_for_history(&self) -> Result<Vec<MarkStamp>> {
+    pub(crate) async fn note_stamps_for_history(&self) -> Result<Vec<MarkStamp>> {
         let rows =
             sqlx::query("SELECT id, book_id, reading_id, kind, created_at FROM notes ORDER BY id")
                 .fetch_all(self.pool())
@@ -165,7 +165,7 @@ impl Storage {
     }
 
     /// Ids that name no reading are absent from the map.
-    pub async fn read_counts(&self, reading_ids: &[i64]) -> Result<HashMap<i64, ReadCount>> {
+    pub(crate) async fn read_counts(&self, reading_ids: &[i64]) -> Result<HashMap<i64, ReadCount>> {
         if reading_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -193,7 +193,7 @@ impl Storage {
             .collect()
     }
 
-    pub async fn read_windows(&self) -> Result<Vec<ReadWindow>> {
+    pub(crate) async fn read_windows(&self) -> Result<Vec<ReadWindow>> {
         let rows = sqlx::query(ALL_READING_WINDOWS)
             .fetch_all(self.pool())
             .await?;
