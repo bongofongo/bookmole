@@ -33,6 +33,7 @@ const NOD_SPEED: f32 = 0.011;
 pub const TICK: Duration = Duration::from_millis(50);
 
 const HOME_LIMIT: i64 = 50;
+const RATING_PROMPT: &str = "rating (enter to skip)";
 
 /// Fixed row count, not the drawn height: lists are shrink-wrapped, so a screenful varies.
 const PAGE: isize = 12;
@@ -2202,6 +2203,26 @@ impl App {
             || self.pending_goodreads.is_some()
     }
 
+    /// The error boundary for everything a key or a queued job starts: a failure is shown on the
+    /// status line and the app keeps running. `None` when `r` failed.
+    fn absorb<T>(&mut self, r: Result<T>) -> Option<T> {
+        match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "an action failed");
+                self.status = Some(format!("could not finish that: {e:#}"));
+                self.dirty = true;
+                None
+            }
+        }
+    }
+
+    /// `pump_deferred` behind the error boundary; true when there is something new to draw.
+    async fn pump(&mut self) -> bool {
+        let pumped = self.pump_deferred().await;
+        self.absorb(pumped).unwrap_or(true)
+    }
+
     /// Key handlers queue slow work; the loop draws the announcing frame, then runs one unit per
     /// call so `select!` stays reachable between units.
     pub async fn pump_deferred(&mut self) -> Result<bool> {
@@ -2498,71 +2519,59 @@ impl App {
         Ok(())
     }
 
+    /// The draft stays in `note_editor` until its write lands, so a failed save can be retried.
     async fn save_note_editor(&mut self) -> Result<()> {
-        let Some(draft) = self.note_editor.take() else {
+        let Some(draft) = self.note_editor.as_ref() else {
             return Ok(());
         };
         if draft.editor.is_blank() {
+            self.note_editor = None;
             self.status = Some("empty note, nothing saved".into());
             return Ok(());
         }
         let body = draft.editor.text();
-        match draft.target {
+        match &draft.target {
             NoteTarget::New {
                 book_id,
                 page,
                 location,
                 highlight_id: Some(highlight_id),
             } => {
-                self.create_note_from(book_id, page, location, Some(highlight_id), body)
-                    .await?;
+                let input =
+                    note_input(*book_id, *page, location.clone(), Some(*highlight_id), body);
+                let created = self.engine.create_note(input).await?;
+                self.note_editor = None;
+                self.show_saved_note(&created.title).await?;
             }
             NoteTarget::New {
                 book_id, location, ..
             } => {
                 self.pending_note = Some(PendingNote {
-                    book_id,
-                    location,
+                    book_id: *book_id,
+                    location: location.clone(),
                     body,
                 });
+                self.note_editor = None;
                 self.start_input(InputContext::NotePage, "page (optional, enter to skip)", "");
             }
             NoteTarget::Edit(note) => {
+                let note = note.clone();
                 self.engine.update_note_body(&note, &body).await?;
+                self.note_editor = None;
                 self.status = Some(format!("updated “{}”", note.title));
                 self.reload_view().await?;
                 self.clamp_tab_selection();
                 if note.kind == NoteKind::Review.as_str() {
                     self.pending_rating = Some(note.id);
-                    self.start_input(InputContext::ReviewRating, "rating (enter to skip)", "");
+                    self.start_input(InputContext::ReviewRating, RATING_PROMPT, "");
                 }
             }
         }
         Ok(())
     }
 
-    async fn create_note_from(
-        &mut self,
-        book_id: Option<i64>,
-        page: Option<i64>,
-        location: Option<String>,
-        highlight_id: Option<i64>,
-        body: String,
-    ) -> Result<()> {
-        let created = self
-            .engine
-            .create_note(NewNoteInput {
-                book_id,
-                reading_id: None,
-                highlight_id,
-                page,
-                location,
-                kind: NoteKind::Note,
-                title: None,
-                body,
-            })
-            .await?;
-        self.status = Some(format!("saved note “{}”", created.title));
+    async fn show_saved_note(&mut self, title: &str) -> Result<()> {
+        self.status = Some(format!("saved note “{title}”"));
         self.book_tab = BookTab::Notes;
         self.in_section = true;
         self.reload_view().await?;
@@ -2570,14 +2579,35 @@ impl App {
         Ok(())
     }
 
+    /// A failed write reopens the editor with the body, so the page prompt never holds the only copy.
     async fn commit_pending_note(&mut self, page_text: String) -> Result<()> {
         let Some(pending) = self.pending_note.take() else {
             return Ok(());
         };
         let page = page_text.trim().parse::<i64>().ok().filter(|p| *p > 0);
-        self.create_note_from(pending.book_id, page, pending.location, None, pending.body)
-            .await?;
-        Ok(())
+        let input = note_input(
+            pending.book_id,
+            page,
+            pending.location.clone(),
+            None,
+            pending.body.clone(),
+        );
+        let created = match self.engine.create_note(input).await {
+            Ok(created) => created,
+            Err(e) => {
+                self.note_editor = Some(NoteDraft {
+                    target: NoteTarget::New {
+                        book_id: pending.book_id,
+                        page,
+                        location: pending.location,
+                        highlight_id: None,
+                    },
+                    editor: TextEditor::new(&pending.body),
+                });
+                return Err(e.into());
+            }
+        };
+        self.show_saved_note(&created.title).await
     }
 
     async fn toggle_finished(&mut self) -> Result<()> {
@@ -2885,10 +2915,15 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                let text = input.state.take().trim().to_string();
-                let context = input.context;
+                let raw = input.state.take();
+                let (context, prompt) = (input.context, input.prompt);
                 self.input = None;
-                self.commit_input(context, text).await?;
+                let committed = self.commit_input(context, raw.trim().to_string()).await;
+                // The page prompt's text is not the draft: a failed note write reopens the editor instead.
+                if committed.is_err() && self.input.is_none() && context != InputContext::NotePage {
+                    self.start_input(context, prompt, &raw);
+                }
+                committed?;
             }
             KeyCode::Backspace => input.state.backspace(),
             KeyCode::Left => input.state.left(),
@@ -2982,10 +3017,12 @@ impl App {
         }
         let Ok(value) = text.parse::<f64>() else {
             self.status = Some(format!("'{text}' isn't a number"));
+            self.reask_rating(note_id, text);
             return Ok(());
         };
         if let Err(e) = self.engine.set_rating(note_id, value).await {
             self.status = Some(format!("{e}"));
+            self.reask_rating(note_id, text);
             return Ok(());
         }
         self.status = Some(match self.engine.goodreads_rating(note_id).await {
@@ -2997,6 +3034,11 @@ impl App {
             Err(e) => format!("rated {value}, but: {e}"),
         });
         Ok(())
+    }
+
+    fn reask_rating(&mut self, note_id: i64, text: &str) {
+        self.pending_rating = Some(note_id);
+        self.start_input(InputContext::ReviewRating, RATING_PROMPT, text);
     }
 
     async fn commit_progress(&mut self, text: String) -> Result<()> {
@@ -3121,6 +3163,25 @@ impl App {
     }
 }
 
+fn note_input(
+    book_id: Option<i64>,
+    page: Option<i64>,
+    location: Option<String>,
+    highlight_id: Option<i64>,
+    body: String,
+) -> NewNoteInput {
+    NewNoteInput {
+        book_id,
+        reading_id: None,
+        highlight_id,
+        page,
+        location,
+        kind: NoteKind::Note,
+        title: None,
+        body,
+    }
+}
+
 /// Title and authors only; `to_lowercase`, not ASCII folding (`Ä` must find `ä`). ISBNs are not
 /// searched.
 fn matches_book(b: &Book, query: &str) -> bool {
@@ -3191,7 +3252,7 @@ pub async fn run<B: Backend>(
             biased;
             maybe_event = events.next() => {
                 match maybe_event {
-                    Some(Ok(Event::Key(key))) => dispatch_key(app, key).await?,
+                    Some(Ok(Event::Key(key))) => on_key(app, key).await,
                     Some(Ok(Event::Resize(_, _))) => app.dirty = true,
                     Some(Err(e)) => return Err(e.into()),
                     None => break,
@@ -3219,7 +3280,7 @@ pub async fn run<B: Backend>(
         if app.dirty {
             redraw(terminal, app)?;
         }
-        if app.pump_deferred().await? {
+        if app.pump().await {
             redraw(terminal, app)?;
         }
     }
@@ -3267,6 +3328,12 @@ fn park_cursor<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     backend.set_cursor_position(Position::new(area.width - 1, area.height - 1))?;
     backend.flush()?;
     Ok(())
+}
+
+/// Only reading or drawing the terminal ends the app; a key's failure goes to the status line.
+async fn on_key(app: &mut App, key: KeyEvent) {
+    let handled = dispatch_key(app, key).await;
+    app.absorb(handled);
 }
 
 /// Routes a key to the open text input, a pending confirmation, or the action map, in that
@@ -6810,5 +6877,197 @@ mod tests {
                 screen_text(&mut app, w, h);
             }
         }
+    }
+
+    async fn press(app: &mut App, code: KeyCode) {
+        on_key(app, KeyEvent::from(code)).await;
+    }
+
+    async fn type_keys(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c)).await;
+        }
+    }
+
+    fn draft_text(app: &App) -> Option<String> {
+        app.note_editor.as_ref().map(|d| d.editor.text())
+    }
+
+    /// A file where the folder was: creating a note there fails for every user, root included.
+    fn block_dir(dir: &Path) -> PathBuf {
+        let aside = dir.with_extension("aside");
+        std::fs::rename(dir, &aside).expect("move the folder aside");
+        std::fs::write(dir, "").expect("put a file in its place");
+        aside
+    }
+
+    fn unblock_dir(dir: &Path, aside: &Path) {
+        std::fs::remove_file(dir).expect("remove the blocker");
+        std::fs::rename(aside, dir).expect("put the folder back");
+    }
+
+    /// The seeded note, selected in its book's Notes tab, and the vault folder it lives in.
+    async fn on_seeded_note() -> (App, PathBuf, PathBuf) {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        let note = app.view.as_ref().unwrap().notes[0].clone();
+        let file = app.engine.vault_dir().join(&note.file_path);
+        let dir = file.parent().expect("book folder").to_path_buf();
+        (app, file, dir)
+    }
+
+    fn assert_failed(app: &App) {
+        assert!(!app.quit, "a failed action ended the app");
+        let status = app.status.clone().unwrap_or_default();
+        assert!(status.starts_with("could not finish that"), "{status}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_key_is_reported_and_the_app_keeps_running() {
+        let (mut app, file, _) = on_seeded_note().await;
+        // A non-empty directory where the note file was: removing it fails, root included.
+        std::fs::remove_file(&file).expect("remove note file");
+        std::fs::create_dir_all(file.join("kept")).expect("directory in its place");
+
+        app.handle(Action::Delete).await.expect("ask");
+        assert!(matches!(app.confirm, Some(Confirm::DeleteNote(_))));
+        press(&mut app, KeyCode::Char('y')).await;
+
+        assert_failed(&app);
+        assert_eq!(
+            app.view.as_ref().unwrap().notes.len(),
+            1,
+            "the note row went"
+        );
+        let text = screen_text(&mut app, 120, 40);
+        assert!(text.contains("could not finish that"), "{text}");
+
+        press(&mut app, KeyCode::Down).await;
+        assert!(!app.quit);
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_of_an_edited_note_keeps_the_draft() {
+        let (mut app, file, _) = on_seeded_note().await;
+        let original = std::fs::read_to_string(&file).unwrap();
+        app.handle(Action::Select).await.expect("open editor");
+        type_keys(&mut app, " and more").await;
+        let typed = draft_text(&app).expect("editor open");
+        assert!(typed.ends_with(" and more"), "{typed}");
+
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        press(&mut app, KeyCode::Enter).await;
+        assert_failed(&app);
+        assert_eq!(
+            draft_text(&app).as_deref(),
+            Some(typed.as_str()),
+            "the draft is gone"
+        );
+
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::write(&file, original).unwrap();
+        press(&mut app, KeyCode::Enter).await;
+        assert!(app.note_editor.is_none(), "the retry did not save");
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains(" and more")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_of_a_note_on_a_highlight_keeps_the_draft() {
+        let (mut app, _, dir) = on_seeded_note().await;
+        app.book_tab = BookTab::Highlights;
+        app.clamp_tab_selection();
+        app.handle(Action::Select)
+            .await
+            .expect("new note on the highlight");
+        type_keys(&mut app, "on survival").await;
+
+        let aside = block_dir(&dir);
+        press(&mut app, KeyCode::Enter).await;
+        assert_failed(&app);
+        assert_eq!(
+            draft_text(&app).as_deref(),
+            Some("on survival"),
+            "the draft is gone"
+        );
+
+        unblock_dir(&dir, &aside);
+        press(&mut app, KeyCode::Enter).await;
+        assert!(app.note_editor.is_none(), "the retry did not save");
+        assert_eq!(app.view.as_ref().unwrap().notes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_after_the_page_prompt_returns_the_draft_to_the_editor() {
+        let (mut app, _, dir) = on_seeded_note().await;
+        app.handle(Action::NewNote).await.expect("new note");
+        type_keys(&mut app, "a loose thought").await;
+        press(&mut app, KeyCode::Enter).await;
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::NotePage)
+        );
+
+        let aside = block_dir(&dir);
+        type_keys(&mut app, "12").await;
+        press(&mut app, KeyCode::Enter).await;
+        assert_failed(&app);
+        assert!(app.input.is_none());
+        assert_eq!(
+            draft_text(&app).as_deref(),
+            Some("a loose thought"),
+            "the draft is gone"
+        );
+
+        unblock_dir(&dir, &aside);
+        press(&mut app, KeyCode::Enter).await;
+        press(&mut app, KeyCode::Enter).await;
+        assert!(app.note_editor.is_none() && app.input.is_none());
+        assert_eq!(app.view.as_ref().unwrap().notes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_progress_write_keeps_the_typed_page() {
+        let (mut app, _, _) = on_seeded_note().await;
+        let id = app.view.as_ref().unwrap().book.id.expect("id");
+        app.handle(Action::EditProgress)
+            .await
+            .expect("ask for a page");
+        type_keys(&mut app, "42").await;
+        app.engine.delete_book(id).await.expect("delete elsewhere");
+        press(&mut app, KeyCode::Enter).await;
+
+        assert_failed(&app);
+        let input = app.input.as_mut().expect("the page prompt closed");
+        assert_eq!(input.context, InputContext::ProgressPage);
+        assert_eq!(input.state.take(), "42");
+    }
+
+    #[tokio::test]
+    async fn a_refused_rating_keeps_the_typed_value() {
+        let mut app = home_app().await;
+        app.handle(Action::Review).await.expect("review");
+        type_keys(&mut app, "worth it").await;
+        press(&mut app, KeyCode::Enter).await;
+        assert!(app.pending_rating.is_some());
+
+        type_keys(&mut app, "4.3").await;
+        press(&mut app, KeyCode::Enter).await;
+        assert!(!app.quit);
+        assert!(
+            app.pending_rating.is_some(),
+            "the review lost its rating prompt"
+        );
+        let input = app.input.as_mut().expect("the rating prompt closed");
+        assert_eq!(input.context, InputContext::ReviewRating);
+        assert_eq!(input.state.take(), "4.3");
     }
 }
