@@ -268,7 +268,7 @@ impl Storage {
     /// One transaction, since the fillers overlap. Idempotent: a second call with nothing new reports
     /// zero inserted and updated.
     #[tracing::instrument(skip(self))]
-    pub async fn refill_reading_events(&self) -> Result<RefillReport> {
+    pub(crate) async fn refill_reading_events(&self) -> Result<RefillReport> {
         let now = now_unix();
         let mut tx = self.pool().begin().await?;
         let report = RefillReport {
@@ -348,7 +348,7 @@ impl Storage {
     /// Called by `update_progress` only. The first typed page records `pages: None` (a page is not a
     /// count); a lower page adds nothing; later pages add to the day's total; confidence is
     /// `Measured`.
-    pub async fn record_typed_page(
+    pub(crate) async fn record_typed_page(
         &self,
         book_id: i64,
         reading_id: i64,
@@ -392,7 +392,7 @@ impl Storage {
 
     /// Uses the same `READING_WINDOWS` as `attribute_highlights`; overlap, not containment, and two
     /// overlapping windows give `None` since the day's minutes cannot be split.
-    pub async fn reading_for_day(&self, book_id: i64, day: &str) -> Result<Option<i64>> {
+    pub(crate) async fn reading_for_day(&self, book_id: i64, day: &str) -> Result<Option<i64>> {
         if !is_day(day) {
             return Err(EngineError::InvalidInput(format!(
                 "{day:?} is not a YYYY-MM-DD day"
@@ -424,7 +424,7 @@ impl Storage {
 
     /// Counts over instant columns compare the bare column via `unix_bounds` so indexes serve; `day`
     /// is a zero-padded ISO string, so `BETWEEN` on it is the range query. `None` sums mean no data.
-    pub async fn activity_summary(&self, range: &DayRange) -> Result<ActivitySummary> {
+    pub(crate) async fn activity_summary(&self, range: &DayRange) -> Result<ActivitySummary> {
         let (from, to) = (range.from(), range.to());
         let (start, end) = range.unix_bounds();
 
@@ -482,7 +482,7 @@ impl Storage {
         })
     }
 
-    pub async fn activity_by_day(&self, range: &DayRange) -> Result<Vec<DayActivity>> {
+    pub(crate) async fn activity_by_day(&self, range: &DayRange) -> Result<Vec<DayActivity>> {
         let rows = sqlx::query(
             "SELECT day,
                     count(DISTINCT book_id) AS books,
@@ -511,7 +511,7 @@ impl Storage {
 
     /// Grouped by `substr(day, 1, 7)`; a month at the range edge covers only its days inside the
     /// range. Not derivable from `activity_by_day`: `None` minutes and distinct `books` do not sum.
-    pub async fn activity_by_month(&self, range: &DayRange) -> Result<Vec<MonthActivity>> {
+    pub(crate) async fn activity_by_month(&self, range: &DayRange) -> Result<Vec<MonthActivity>> {
         let rows = sqlx::query(
             "SELECT substr(day, 1, 7)    AS month,
                     count(DISTINCT book_id) AS books,

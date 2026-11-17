@@ -155,7 +155,7 @@ impl Storage {
 
     /// By the `is_default` flag, never creation order, so the seeded `goodreads` scale cannot become
     /// the default. `None` if unset.
-    pub async fn active_rating_scale(&self) -> Result<Option<RatingScale>> {
+    pub(crate) async fn active_rating_scale(&self) -> Result<Option<RatingScale>> {
         let row = sqlx::query(
             "SELECT id, name, min, max, step FROM rating_scales WHERE is_default = 1 LIMIT 1",
         )
@@ -164,7 +164,7 @@ impl Storage {
         row.as_ref().map(row_to_scale).transpose()
     }
 
-    pub async fn rating_scale_by_name(&self, name: &str) -> Result<Option<RatingScale>> {
+    pub(crate) async fn rating_scale_by_name(&self, name: &str) -> Result<Option<RatingScale>> {
         let row = sqlx::query("SELECT id, name, min, max, step FROM rating_scales WHERE name = ?")
             .bind(name)
             .fetch_optional(self.pool())
@@ -172,7 +172,7 @@ impl Storage {
         row.as_ref().map(row_to_scale).transpose()
     }
 
-    pub async fn list_rating_scales(&self) -> Result<Vec<RatingScale>> {
+    pub(crate) async fn list_rating_scales(&self) -> Result<Vec<RatingScale>> {
         let rows =
             sqlx::query("SELECT id, name, min, max, step FROM rating_scales ORDER BY id ASC")
                 .fetch_all(self.pool())
@@ -180,7 +180,7 @@ impl Storage {
         rows.iter().map(row_to_scale).collect()
     }
 
-    pub async fn set_review_rating(
+    pub(crate) async fn set_review_rating(
         &self,
         note_id: i64,
         scale: &RatingScale,
@@ -200,7 +200,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn clear_review_rating(&self, note_id: i64) -> Result<bool> {
+    pub(crate) async fn clear_review_rating(&self, note_id: i64) -> Result<bool> {
         let done = sqlx::query("DELETE FROM review_ratings WHERE note_id = ?")
             .bind(note_id)
             .execute(self.pool())
@@ -226,7 +226,12 @@ impl Storage {
         .transpose()
     }
 
-    pub async fn map_rating(&self, scale: &RatingScale, value: f64, goodreads: f64) -> Result<()> {
+    pub(crate) async fn map_rating(
+        &self,
+        scale: &RatingScale,
+        value: f64,
+        goodreads: f64,
+    ) -> Result<()> {
         let Some(goodreads) = goodreads_point(goodreads) else {
             return Err(EngineError::InvalidInput(format!(
                 "Goodreads ratings are 0 to 5 in quarters (0 = unrated); got {goodreads}"
@@ -245,7 +250,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn rating_map(&self, scale_id: i64) -> Result<Vec<(f64, f64)>> {
+    pub(crate) async fn rating_map(&self, scale_id: i64) -> Result<Vec<(f64, f64)>> {
         let rows = sqlx::query(
             "SELECT value, goodreads FROM rating_map WHERE scale_id = ? ORDER BY value ASC",
         )
@@ -263,7 +268,11 @@ impl Storage {
     }
 
     /// `None` is an answer, not a failure: the caller reports it rather than rounding.
-    pub async fn goodreads_for(&self, scale: &RatingScale, value: f64) -> Result<Option<f64>> {
+    pub(crate) async fn goodreads_for(
+        &self,
+        scale: &RatingScale,
+        value: f64,
+    ) -> Result<Option<f64>> {
         let Some(n) = scale.step_index(value) else {
             return Ok(None);
         };

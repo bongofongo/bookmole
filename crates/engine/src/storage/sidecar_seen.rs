@@ -54,7 +54,7 @@ impl Storage {
 
     /// Overwrites in full: a sidecar is the complete state, so a vanished field is gone.
     /// `seen_at` is the scan's token, not the clock.
-    pub async fn record_sidecar_facts(
+    pub(crate) async fn record_sidecar_facts(
         &self,
         path: &str,
         f: &SidecarFacts,
@@ -94,7 +94,7 @@ impl Storage {
     }
 
     /// A cache hit must still be stamped seen, or the prune would delete the rows doing their job.
-    pub async fn touch_sidecar_seen(&self, path: &str, seen_at: i64) -> Result<()> {
+    pub(crate) async fn touch_sidecar_seen(&self, path: &str, seen_at: i64) -> Result<()> {
         sqlx::query("UPDATE sidecar_seen SET last_seen = ? WHERE path = ?")
             .bind(seen_at)
             .bind(path)
@@ -106,7 +106,7 @@ impl Storage {
     /// Drops rows under `root` that this scan did not see; other mounts' rows are left alone.
     /// `seen_at` is a token compared with `<>`, not `<`: at second resolution consecutive scans tie.
     /// The prefix test uses `substr`, not `LIKE`, since mount names may contain `%` or `_`.
-    pub async fn forget_sidecars_under(&self, root: &str, seen_at: i64) -> Result<u64> {
+    pub(crate) async fn forget_sidecars_under(&self, root: &str, seen_at: i64) -> Result<u64> {
         let prefix = format!("{}/", root.trim_end_matches('/'));
         let done =
             sqlx::query("DELETE FROM sidecar_seen WHERE substr(path, 1, ?) = ? AND last_seen <> ?")

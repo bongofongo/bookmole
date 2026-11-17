@@ -140,7 +140,7 @@ fn like_escape(needle: &str) -> String {
 impl Storage {
     /// At most `limit` ids with scores, best first. `filter` and `scope` narrow candidates in SQL
     /// before the cut; an empty query issues no statement.
-    pub async fn search_books(
+    pub(crate) async fn search_books(
         &self,
         query: &str,
         filter: &BookFilter,

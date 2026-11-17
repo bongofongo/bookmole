@@ -16,7 +16,7 @@ pub struct BookTag {
 impl Storage {
     /// Repoints on conflict: an id belongs to one book on the far side, so a stale mapping must not
     /// win.
-    pub async fn link_external_id(
+    pub(crate) async fn link_external_id(
         &self,
         source: &str,
         external_id: &str,

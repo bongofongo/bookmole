@@ -233,7 +233,11 @@ impl Storage {
 impl Storage {
     /// Keys of `texts` matching `query` by `notes_fts`'s own rules, ascending; when no text holds
     /// every term, those holding any term.
-    pub async fn matching_texts(&self, query: &str, texts: &[(i64, &str)]) -> Result<Vec<i64>> {
+    pub(crate) async fn matching_texts(
+        &self,
+        query: &str,
+        texts: &[(i64, &str)],
+    ) -> Result<Vec<i64>> {
         let (Some(all), Some(any)) = (fts_query(query), fts_any(query)) else {
             return Ok(Vec::new());
         };

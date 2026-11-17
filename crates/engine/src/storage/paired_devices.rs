@@ -98,7 +98,7 @@ impl Storage {
 
     /// Wireless pairing stamps neither `last_seen_at` nor a mount path, and re-keys the token because
     /// it is a real re-pairing.
-    pub async fn record_wireless_pairing(
+    pub(crate) async fn record_wireless_pairing(
         &self,
         device_id: &str,
         label: Option<&str>,
@@ -125,7 +125,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn paired_device(&self, device_id: &str) -> Result<Option<PairedDevice>> {
+    pub(crate) async fn paired_device(&self, device_id: &str) -> Result<Option<PairedDevice>> {
         let sql = format!("SELECT {COLUMNS} FROM paired_devices WHERE device_id = ?");
         let row = sqlx::query(&sql)
             .bind(device_id)
@@ -134,7 +134,7 @@ impl Storage {
         row.as_ref().map(row_to_device).transpose()
     }
 
-    pub async fn list_paired_devices(&self) -> Result<Vec<PairedDevice>> {
+    pub(crate) async fn list_paired_devices(&self) -> Result<Vec<PairedDevice>> {
         let sql = format!(
             "SELECT {COLUMNS} FROM paired_devices
              ORDER BY COALESCE(last_seen_at, installed_at) DESC, device_id"
@@ -145,7 +145,7 @@ impl Storage {
 
     /// Returns whether a row existed; `false` is ordinary (a reader paired with another copy of
     /// bookmole).
-    pub async fn touch_device_seen(
+    pub(crate) async fn touch_device_seen(
         &self,
         device_id: &str,
         mount_path: Option<&str>,
@@ -165,7 +165,7 @@ impl Storage {
     }
 
     /// Separate from `touch_device_seen`: plugging a reader in to charge is not a sync.
-    pub async fn stamp_device_sync(&self, device_id: &str) -> Result<bool> {
+    pub(crate) async fn stamp_device_sync(&self, device_id: &str) -> Result<bool> {
         let done = sqlx::query("UPDATE paired_devices SET last_synced_at = ? WHERE device_id = ?")
             .bind(now_unix())
             .bind(device_id)
@@ -176,7 +176,7 @@ impl Storage {
 
     /// Stamps no sync and not `last_seen_at`; `addr` of `None` keeps the previous hint. Returns
     /// whether a row existed.
-    pub async fn stamp_wireless_contact(
+    pub(crate) async fn stamp_wireless_contact(
         &self,
         device_id: &str,
         addr: Option<&str>,
@@ -196,7 +196,7 @@ impl Storage {
     }
 
     /// An empty or whitespace-only label clears it rather than storing a blank.
-    pub async fn set_device_label(&self, device_id: &str, label: &str) -> Result<bool> {
+    pub(crate) async fn set_device_label(&self, device_id: &str, label: &str) -> Result<bool> {
         let trimmed = label.trim();
         let value = (!trimmed.is_empty()).then_some(trimmed);
         let done = sqlx::query("UPDATE paired_devices SET label = ? WHERE device_id = ?")
@@ -207,7 +207,7 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    pub async fn forget_pairing(&self, device_id: &str) -> Result<bool> {
+    pub(crate) async fn forget_pairing(&self, device_id: &str) -> Result<bool> {
         let done = sqlx::query("DELETE FROM paired_devices WHERE device_id = ?")
             .bind(device_id)
             .execute(self.pool())

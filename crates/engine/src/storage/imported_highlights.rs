@@ -254,7 +254,7 @@ impl Storage {
 
     /// Dry run of `upsert_imported_highlight` using the same `SOURCE_FIELDS_DIFFER` predicate; `None`
     /// means it would insert. Stamping `copy_id` / `origin_id` is not reported.
-    pub async fn preview_imported_highlight(
+    pub(crate) async fn preview_imported_highlight(
         &self,
         book_id: i64,
         h: &ImportedHighlight,

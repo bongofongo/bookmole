@@ -151,7 +151,7 @@ pub fn runs_of_days(days: &[String]) -> Vec<(String, String, usize)> {
 }
 
 impl Storage {
-    pub async fn moment_epoch(&self) -> Result<i64> {
+    pub(crate) async fn moment_epoch(&self) -> Result<i64> {
         Ok(
             sqlx::query_scalar::<_, i64>("SELECT began_at FROM moment_epoch WHERE id = 1")
                 .fetch_one(self.pool())
@@ -168,7 +168,11 @@ impl Storage {
     }
 
     /// `limit` truncates after ordering. There is deliberately no count: a number waiting is a badge.
-    pub async fn pending_moments(&self, now: i64, limit: Option<i64>) -> Result<Vec<Moment>> {
+    pub(crate) async fn pending_moments(
+        &self,
+        now: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<Moment>> {
         let epoch = self.moment_epoch().await?;
         let mut out = Vec::new();
         out.extend(self.readings_closed(epoch).await?);
@@ -197,7 +201,7 @@ impl Storage {
 
     /// Idempotent, keeping the first `surfaced_at`. The id is checked only for a known kind, not
     /// re-derived: a run can stop being pending after it was shown, and refusing would replay it.
-    pub async fn acknowledge_moment(&self, id: &str) -> Result<()> {
+    pub(crate) async fn acknowledge_moment(&self, id: &str) -> Result<()> {
         let tag = id.split(':').next().unwrap_or_default();
         if !MomentKind::TAGS.contains(&tag) || id.len() <= tag.len() + 1 {
             return Err(EngineError::InvalidInput(format!(

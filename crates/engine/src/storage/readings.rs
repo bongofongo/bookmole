@@ -260,7 +260,7 @@ pub fn ko_datetime_to_unix(s: &str) -> Option<i64> {
 }
 
 impl Storage {
-    pub async fn active_reading(&self, book_id: i64) -> Result<Option<Reading>> {
+    pub(crate) async fn active_reading(&self, book_id: i64) -> Result<Option<Reading>> {
         let sql = format!(
             "SELECT {READING_COLUMNS} FROM readings WHERE book_id = ? AND finished_at IS NULL"
         );
@@ -271,7 +271,7 @@ impl Storage {
         row.as_ref().map(row_to_reading).transpose()
     }
 
-    pub async fn get_reading(&self, id: i64) -> Result<Option<Reading>> {
+    pub(crate) async fn get_reading(&self, id: i64) -> Result<Option<Reading>> {
         let sql = format!("SELECT {READING_COLUMNS} FROM readings WHERE id = ?");
         let row = sqlx::query(&sql)
             .bind(id)
@@ -296,7 +296,7 @@ impl Storage {
 
     /// Books with an open reading (abandoned included), newest of book/reading `last_modified` first.
     /// Keep `cur.id IS NOT NULL`: the LEFT JOIN yields all-NULL `cur` rows for books with no reading.
-    pub async fn list_open_readings(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
+    pub(crate) async fn list_open_readings(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
         let reading = reading_columns_as("cur", JOINED_READING_PREFIX);
         let sql = format!(
             "SELECT {BOOK_COLUMNS}, {reading} {BOOK_FROM}
@@ -318,7 +318,7 @@ impl Storage {
     /// One page of the library's readings, driven from `readings` so the sort reaches its indexes.
     /// The read number is a correlated subquery, not a window function, so a filtered page still counts
     /// every sibling.
-    pub async fn list_reading_rows(&self, query: &ReadingQuery) -> Result<Vec<ReadingRow>> {
+    pub(crate) async fn list_reading_rows(&self, query: &ReadingQuery) -> Result<Vec<ReadingRow>> {
         let predicate = query.filter.predicate();
         let sql = reading_rows_sql(query.sort, &predicate);
         let q = bind_all(sqlx::query(&sql), &predicate.binds)
@@ -358,7 +358,7 @@ impl Storage {
 
     /// Count under the same predicate as the page (`ReadingFilter::predicate`); a separate call, not a
     /// field on the rows.
-    pub async fn count_readings(&self, filter: &ReadingFilter) -> Result<i64> {
+    pub(crate) async fn count_readings(&self, filter: &ReadingFilter) -> Result<i64> {
         let predicate = filter.predicate();
         let where_sql = &predicate.sql;
         let sql = format!(
@@ -373,7 +373,7 @@ impl Storage {
     /// Years matching readings ended in, plus whether any is open; shares `ReadingFilter::predicate`
     /// with the page.
     /// With `finished_in` set `open` is false; with `open: Some(true)` `years` is empty.
-    pub async fn reading_years(&self, filter: &ReadingFilter) -> Result<ReadingYears> {
+    pub(crate) async fn reading_years(&self, filter: &ReadingFilter) -> Result<ReadingYears> {
         let predicate = filter.predicate();
         let sql = reading_years_sql(&predicate);
         let rows = bind_all(sqlx::query(&sql), &predicate.binds)
@@ -455,7 +455,11 @@ impl Storage {
     }
 
     /// Lets an importer count only the readings it recorded itself.
-    pub async fn readings_from_source(&self, book_id: i64, source: &str) -> Result<Vec<Reading>> {
+    pub(crate) async fn readings_from_source(
+        &self,
+        book_id: i64,
+        source: &str,
+    ) -> Result<Vec<Reading>> {
         let age = reading_age_key("readings");
         let sql = format!(
             "SELECT {READING_COLUMNS} FROM readings WHERE book_id = ? AND source = ?
@@ -469,7 +473,7 @@ impl Storage {
         rows.iter().map(row_to_reading).collect()
     }
 
-    pub async fn close_reading_at(
+    pub(crate) async fn close_reading_at(
         &self,
         reading_id: i64,
         finished_at: i64,
@@ -520,7 +524,7 @@ impl Storage {
     /// The current reading's id, opening one only if the book has none at all, not none open:
     /// a `complete` sidecar closes its reading and the idempotent import would otherwise open one per
     /// run.
-    pub async fn ensure_reading(
+    pub(crate) async fn ensure_reading(
         &self,
         book_id: i64,
         started_at: Option<i64>,
@@ -626,7 +630,7 @@ impl Storage {
     /// Mirror device status/percent/rating onto the current reading; returns whether anything changed.
     /// Straight assignment, not `COALESCE`: an absent rating means the user cleared it. Opens no
     /// reading.
-    pub async fn set_device_state(
+    pub(crate) async fn set_device_state(
         &self,
         book_id: i64,
         status: Option<&KoStatus>,
