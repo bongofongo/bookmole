@@ -121,7 +121,9 @@ pub fn kindle_clippings_on(roots: &[PathBuf]) -> Vec<PathBuf> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeviceState {
     /// Not in the library. Non-empty `candidates` are likely matches to an existing book.
-    New { candidates: Vec<MatchCandidate> },
+    New {
+        candidates: Vec<MatchCandidate>,
+    },
     Unchanged,
     /// Linked, with annotations to bring across. `refreshed` counts rows whose device-owned fields
     /// differ.

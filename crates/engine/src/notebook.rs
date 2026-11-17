@@ -688,9 +688,15 @@ impl Engine {
 
 #[derive(Debug, Clone)]
 pub enum ReadMark {
-    Note { at: i64, row: Box<NoteRow> },
+    Note {
+        at: i64,
+        row: Box<NoteRow>,
+    },
     /// A passage; `at` is the device's stamp, else when it was stored.
-    Passage { at: i64, highlight: Box<Highlight> },
+    Passage {
+        at: i64,
+        highlight: Box<Highlight>,
+    },
 }
 
 impl ReadMark {

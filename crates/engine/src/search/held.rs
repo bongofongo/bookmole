@@ -13,7 +13,10 @@ pub enum Held {
     #[default]
     None,
     Certain(i64),
-    Likely { book_id: i64, title: Option<String> },
+    Likely {
+        book_id: i64,
+        title: Option<String>,
+    },
 }
 
 impl Held {

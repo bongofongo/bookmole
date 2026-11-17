@@ -1448,24 +1448,10 @@ mod props {
 
     #[derive(Debug, Clone)]
     enum Evidence {
-        Highlight {
-            book: usize,
-            day: u8,
-        },
-        Note {
-            book: usize,
-            day: u8,
-        },
-        Reading {
-            book: usize,
-            start: u8,
-            len: u8,
-        },
-        Measured {
-            book: usize,
-            day: u8,
-            minutes: u8,
-        },
+        Highlight { book: usize, day: u8 },
+        Note { book: usize, day: u8 },
+        Reading { book: usize, start: u8, len: u8 },
+        Measured { book: usize, day: u8, minutes: u8 },
     }
 
     fn evidence() -> impl Strategy<Value = Evidence> {

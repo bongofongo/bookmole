@@ -66,10 +66,17 @@ pub fn thread_index(threads: &[Thread]) -> HashMap<i64, i64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphScope {
     Everything,
-    Recent { since: i64 },
-    Book { book_id: i64 },
+    Recent {
+        since: i64,
+    },
+    Book {
+        book_id: i64,
+    },
     /// One note, its neighbours out to `steps` (1 or 2), its unwritten targets and unlinked mentions.
-    Around { note_id: i64, steps: u8 },
+    Around {
+        note_id: i64,
+        steps: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

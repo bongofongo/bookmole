@@ -71,14 +71,9 @@ fn plain_punctuation(s: &str) -> String {
 
 /// `i` is left out: Italian's plural article and English's pronoun; *I, Robot* is a title.
 const ARTICLES: &[&str] = &[
-    "the", "a", "an",
-    "le", "la", "les", "l", "un", "une",
-    "der", "die", "das", "ein", "eine",
-    "el", "los", "las", "una",
-    "il", "lo", "gli", "uno",
-    "o", "os", "as", "um", "uma",
-    "de", "het", "een",
-    "en", "ett", "den", "det",
+    "the", "a", "an", "le", "la", "les", "l", "un", "une", "der", "die", "das", "ein", "eine",
+    "el", "los", "las", "una", "il", "lo", "gli", "uno", "o", "os", "as", "um", "uma", "de", "het",
+    "een", "en", "ett", "den", "det",
 ];
 
 /// A title that is nothing but an article keeps it.

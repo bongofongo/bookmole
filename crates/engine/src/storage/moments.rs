@@ -19,7 +19,10 @@ pub enum MomentKind {
     /// like today.
     FirstAnnotation,
     /// `Moment::book_id` is the reflection's own book; `reached_book_id` is the far side.
-    ReflectionReached { note_id: i64, reached_book_id: i64 },
+    ReflectionReached {
+        note_id: i64,
+        reached_book_id: i64,
+    },
     RunEnded {
         /// `YYYY-MM-DD`, UTC, inclusive.
         from: String,

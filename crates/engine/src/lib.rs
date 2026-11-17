@@ -286,7 +286,9 @@ pub struct WorkSuggestion {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuggestionSource {
-    Library { book_id: i64 },
+    Library {
+        book_id: i64,
+    },
     WellKnown {
         wikidata: String,
         ol_works: Vec<String>,

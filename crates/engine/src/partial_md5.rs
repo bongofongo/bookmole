@@ -13,7 +13,7 @@ const SAMPLE_LEN: usize = 1024;
 
 /// The twelve window offsets, written out so the wrap-around at `i = -1` (offset 0) is visible.
 pub const SAMPLE_OFFSETS: [u64; 12] = [
-    0,       // i = -1: lshift(1024, -2) == lshift(1024, 30) == 0 (mod 2^32)
+    0, // i = -1: lshift(1024, -2) == lshift(1024, 30) == 0 (mod 2^32)
     1 << 10,
     1 << 12,
     1 << 14,
