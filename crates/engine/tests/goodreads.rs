@@ -795,3 +795,23 @@ async fn a_later_export_with_a_start_fills_the_read_already_imported() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].started_at, Some(unix("2024-01-05")));
 }
+
+#[tokio::test]
+async fn an_undated_finished_row_is_not_being_read() {
+    let (tmp, engine) = common::engine().await;
+    let path = tmp_csv(
+        tmp.path(),
+        "undated-read.csv",
+        "Title,Author,Exclusive Shelf\nMiddlemarch,George Eliot,read\n",
+    );
+    engine.import_goodreads(&path, creating()).await.unwrap();
+    let id = book(&engine, "Middlemarch").await.id.unwrap();
+
+    let r = engine.list_readings(id).await.unwrap();
+    assert_eq!(r.len(), 1, "the read is kept, as imported");
+    assert_eq!((r[0].status.as_str(), r[0].finished_at), ("finished", None));
+
+    assert!(engine.currently_reading(20).await.unwrap().is_empty());
+    assert!(engine.history_reading_now().await.unwrap().is_empty());
+    assert!(!on_timeline(&engine, id).await);
+}

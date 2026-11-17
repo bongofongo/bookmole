@@ -602,8 +602,8 @@ fn day_mix(day: i64) -> u64 {
 }
 
 impl Storage {
-    /// Qualifies if last kept before `today - RESURFACE_REST_DAYS`; notes tied to an open reading
-    /// win; the pick is `day_mix(julian day) % len` over `id` order, stable all day.
+    /// Qualifies if last kept before `today - RESURFACE_REST_DAYS`; notes tied to a book being read
+    /// (open and `reading`) win; the pick is `day_mix(julian day) % len` over `id` order, stable all day.
     pub async fn resurface_note(&self, today: time::Date) -> Result<Option<Resurfaced>> {
         let rest_start = today
             .checked_sub(time::Duration::days(RESURFACE_REST_DAYS))
@@ -614,7 +614,7 @@ impl Storage {
         let columns = qualified(NOTE_COLUMNS, "n");
         let sql = format!(
             "WITH open_books AS (
-                 SELECT book_id FROM readings WHERE finished_at IS NULL
+                 SELECT book_id FROM readings WHERE finished_at IS NULL AND status = 'reading'
              ),
              near AS (
                  SELECT id FROM notes WHERE book_id IN (SELECT book_id FROM open_books)
@@ -670,7 +670,8 @@ impl Storage {
         let columns = qualified(HIGHLIGHT_COLUMNS, "h");
         let sql = format!(
             "SELECT {columns},
-                    (h.book_id IN (SELECT book_id FROM readings WHERE finished_at IS NULL))
+                    (h.book_id IN (SELECT book_id FROM readings
+                                  WHERE finished_at IS NULL AND status = 'reading'))
                         AS connected
              FROM highlights h
              WHERE h.created_at < ? AND trim(h.text) <> ''
