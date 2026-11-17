@@ -50,43 +50,43 @@ fn text(s: &Option<String>) -> Option<&str> {
 }
 
 fn row_to_copy(row: &SqliteRow) -> Result<Copy> {
-    let form: Option<String> = row.get("form");
-    let tenure: String = row.get("tenure");
-    let learned: String = row.get("learned_from");
-    let have: Option<i64> = row.get("have_now");
+    let form: Option<String> = row.try_get("form")?;
+    let tenure: String = row.try_get("tenure")?;
+    let learned: String = row.try_get("learned_from")?;
+    let have: Option<i64> = row.try_get("have_now")?;
     Ok(Copy {
-        id: row.get("id"),
-        book_id: row.get("book_id"),
+        id: row.try_get("id")?,
+        book_id: row.try_get("book_id")?,
         form: form.map(|f| f.parse::<CopyForm>()).transpose()?,
         tenure: tenure.parse()?,
         have_now: have.map(|h| h != 0),
-        from_whom: row.get("from_whom"),
-        app: row.get("app"),
-        location: row.get("location"),
-        started_at: row.get("started_at"),
-        due_at: row.get("due_at"),
-        ended_at: row.get("ended_at"),
-        lent_to: row.get("lent_to"),
-        unreadable: row.get::<i64, _>("unreadable") != 0,
-        note: row.get("note"),
+        from_whom: row.try_get("from_whom")?,
+        app: row.try_get("app")?,
+        location: row.try_get("location")?,
+        started_at: row.try_get("started_at")?,
+        due_at: row.try_get("due_at")?,
+        ended_at: row.try_get("ended_at")?,
+        lent_to: row.try_get("lent_to")?,
+        unreadable: row.try_get::<i64, _>("unreadable")? != 0,
+        note: row.try_get("note")?,
         learned_from: learned.parse()?,
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
         places: Vec::new(),
     })
 }
 
 fn row_to_place(row: &SqliteRow) -> Result<CopyPlace> {
-    let kind: String = row.get("kind");
+    let kind: String = row.try_get("kind")?;
     Ok(CopyPlace {
-        copy_id: row.get("copy_id"),
+        copy_id: row.try_get("copy_id")?,
         kind: kind.parse()?,
-        reference: row.get("ref"),
-        detail: row.get("detail"),
-        last_hash: row.get("last_hash"),
-        last_seen_at: row.get("last_seen_at"),
-        last_mtime: row.get("last_mtime"),
-        missing_since: row.get("missing_since"),
+        reference: row.try_get("ref")?,
+        detail: row.try_get("detail")?,
+        last_hash: row.try_get("last_hash")?,
+        last_seen_at: row.try_get("last_seen_at")?,
+        last_mtime: row.try_get("last_mtime")?,
+        missing_since: row.try_get("missing_since")?,
     })
 }
 
@@ -644,9 +644,9 @@ impl Storage {
         .await?;
         let mut out: Vec<CopyStanding> = Vec::new();
         for row in &rows {
-            let book_id: i64 = row.get("book_id");
-            let tenure: Tenure = row.get::<String, _>("tenure").parse()?;
-            let held = row.get::<Option<i64>, _>("have_now") != Some(0);
+            let book_id: i64 = row.try_get("book_id")?;
+            let tenure: Tenure = row.try_get::<String, _>("tenure")?.parse()?;
+            let held = row.try_get::<Option<i64>, _>("have_now")? != Some(0);
             if out.last().is_none_or(|s| s.book_id != book_id) {
                 out.push(CopyStanding {
                     book_id,

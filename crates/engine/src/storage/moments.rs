@@ -233,9 +233,9 @@ impl Storage {
             .map(|r| {
                 Moment::new(
                     MomentKind::ReadingClosed,
-                    Some(r.get("book_id")),
-                    Some(r.get("reading_id")),
-                    r.get("at"),
+                    Some(r.try_get("book_id")?),
+                    Some(r.try_get("reading_id")?),
+                    r.try_get("at")?,
                 )
             })
             .collect()
@@ -276,9 +276,9 @@ impl Storage {
             .map(|r| {
                 Moment::new(
                     MomentKind::FirstAnnotation,
-                    Some(r.get("book_id")),
-                    r.get("reading_id"),
-                    r.get("at"),
+                    Some(r.try_get("book_id")?),
+                    r.try_get("reading_id")?,
+                    r.try_get("at")?,
                 )
             })
             .collect()
@@ -310,12 +310,12 @@ impl Storage {
             .map(|r| {
                 Moment::new(
                     MomentKind::ReflectionReached {
-                        note_id: r.get("note_id"),
-                        reached_book_id: r.get("reached_book_id"),
+                        note_id: r.try_get("note_id")?,
+                        reached_book_id: r.try_get("reached_book_id")?,
                     },
-                    r.get("book_id"),
-                    r.get("reading_id"),
-                    r.get("at"),
+                    r.try_get("book_id")?,
+                    r.try_get("reading_id")?,
+                    r.try_get("at")?,
                 )
             })
             .collect()

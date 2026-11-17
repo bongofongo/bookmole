@@ -307,10 +307,10 @@ impl WellKnown {
             .await?;
         let mut order: Vec<(u64, Option<String>)> = Vec::new();
         for r in rows {
-            let work: i64 = r.get(0);
+            let work: i64 = r.try_get(0)?;
             let work = work as u64;
             if !order.iter().any(|(w, _)| *w == work) {
-                order.push((work, Some(r.get::<String, _>(1))));
+                order.push((work, Some(r.try_get::<String, _>(1)?)));
             }
         }
         if order.len() < limit && !p.contains(' ') && p.chars().count() >= 3 {
@@ -325,7 +325,7 @@ impl WellKnown {
             .fetch_all(&self.pool)
             .await?;
             for r in rows {
-                let work = r.get::<i64, _>(0) as u64;
+                let work = r.try_get::<i64, _>(0)? as u64;
                 if !order.iter().any(|(w, _)| *w == work) {
                     order.push((work, None));
                 }
@@ -390,8 +390,8 @@ impl WellKnown {
         .await?;
         let work_of: HashMap<i64, u64> = rows
             .iter()
-            .map(|r| (r.get::<i64, _>(0), r.get::<i64, _>(1) as u64))
-            .collect();
+            .map(|r| Ok((r.try_get::<i64, _>(0)?, r.try_get::<i64, _>(1)? as u64)))
+            .collect::<Result<_>>()?;
         let mut order: Vec<(u64, Option<String>)> = Vec::new();
         for id in ids {
             if let Some(w) = work_of.get(&id)
@@ -440,13 +440,15 @@ impl WellKnown {
         .bind(serde_json::to_string(&probes).unwrap_or_default())
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .iter()
+        rows.iter()
             .map(|r| {
-                let sl: i64 = r.get(1);
-                (r.get::<String, _>(0), u32::try_from(sl).unwrap_or(u32::MAX))
+                let sl: i64 = r.try_get(1)?;
+                Ok((
+                    r.try_get::<String, _>(0)?,
+                    u32::try_from(sl).unwrap_or(u32::MAX),
+                ))
             })
-            .collect())
+            .collect()
     }
 
     pub async fn authors_named(&self, words: &[String]) -> Result<Vec<String>> {
@@ -491,9 +493,9 @@ impl WellKnown {
         .await?;
         let mut titles_of: HashMap<i64, (Vec<String>, Option<String>)> = HashMap::new();
         for t in titles {
-            let e = titles_of.entry(t.get(0)).or_default();
-            let text: String = t.get(1);
-            if t.get::<i64, _>(2) == 1 && e.1.is_none() {
+            let e = titles_of.entry(t.try_get(0)?).or_default();
+            let text: String = t.try_get(1)?;
+            if t.try_get::<i64, _>(2)? == 1 && e.1.is_none() {
                 e.1 = Some(text.clone());
             }
             if !e.0.contains(&text) {
@@ -502,9 +504,9 @@ impl WellKnown {
         }
         let mut by_id: HashMap<i64, WellKnownHit> = HashMap::new();
         for r in works {
-            let id: i64 = r.get(0);
+            let id: i64 = r.try_get(0)?;
             let (titles, display) = titles_of.remove(&id).unwrap_or_default();
-            let ol: Option<String> = r.get(3);
+            let ol: Option<String> = r.try_get(3)?;
             by_id.insert(
                 id,
                 WellKnownHit {
@@ -513,14 +515,14 @@ impl WellKnown {
                         .or_else(|| titles.first().cloned())
                         .unwrap_or_default(),
                     titles,
-                    author: r.get(4),
-                    year: r.get::<Option<i64>, _>(2).map(|y| y as i32),
+                    author: r.try_get(4)?,
+                    year: r.try_get::<Option<i64>, _>(2)?.map(|y| y as i32),
                     ol_works: ol
                         .map(|s| s.split(',').map(str::to_string).collect())
                         .unwrap_or_default(),
-                    series: r.get(5),
-                    series_position: r.get(6),
-                    sitelinks: u32::try_from(r.get::<i64, _>(1)).unwrap_or(0),
+                    series: r.try_get(5)?,
+                    series_position: r.try_get(6)?,
+                    sitelinks: u32::try_from(r.try_get::<i64, _>(1)?).unwrap_or(0),
                 },
             );
         }

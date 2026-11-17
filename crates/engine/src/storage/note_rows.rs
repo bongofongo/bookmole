@@ -124,17 +124,18 @@ impl Storage {
             q = q.bind(at).bind(id);
         }
         let rows = q.bind(f.limit).fetch_all(self.pool()).await?;
-        Ok(rows
-            .iter()
-            .map(|r| NoteRowFacts {
-                note: row_to_note(r),
-                parts: r.get("parts"),
-                latest_part_at: r.get("latest"),
-                body: r.get::<Option<String>, _>("body").unwrap_or_default(),
-                links_out: r.get("links_out"),
-                links_in: r.get("links_in"),
+        rows.iter()
+            .map(|r| {
+                Ok(NoteRowFacts {
+                    note: row_to_note(r)?,
+                    parts: r.try_get("parts")?,
+                    latest_part_at: r.try_get("latest")?,
+                    body: r.try_get::<Option<String>, _>("body")?.unwrap_or_default(),
+                    links_out: r.try_get("links_out")?,
+                    links_in: r.try_get("links_in")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// `(year, month)` in UTC, newest first; the engine has no zone.
@@ -153,10 +154,14 @@ impl Storage {
         .bind(offset_seconds)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get::<i64, _>("y") as i32, r.get::<i64, _>("m") as u8))
-            .collect())
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get::<i64, _>("y")? as i32,
+                    r.try_get::<i64, _>("m")? as u8,
+                ))
+            })
+            .collect()
     }
 
     /// In body order within each source (`note_links.rowid`).
@@ -166,28 +171,30 @@ impl Storage {
         )
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| LinkEdge {
-                from: r.get("from_note"),
-                to: r.get("to_note"),
-                target_title: r.get("target_title"),
+        rows.iter()
+            .map(|r| {
+                Ok(LinkEdge {
+                    from: r.try_get("from_note")?,
+                    to: r.try_get("to_note")?,
+                    target_title: r.try_get("target_title")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     pub async fn note_stamps(&self) -> Result<Vec<NoteStamp>> {
         let sql =
             format!("SELECT n.id AS id, {LATEST} AS latest, n.book_id AS book_id FROM notes n");
         let rows = sqlx::query(&sql).fetch_all(self.pool()).await?;
-        Ok(rows
-            .iter()
-            .map(|r| NoteStamp {
-                id: r.get("id"),
-                latest_part_at: r.get("latest"),
-                book_id: r.get("book_id"),
+        rows.iter()
+            .map(|r| {
+                Ok(NoteStamp {
+                    id: r.try_get("id")?,
+                    latest_part_at: r.try_get("latest")?,
+                    book_id: r.try_get("book_id")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Grouped by source, body order within one; the engine orders the sources.
@@ -206,26 +213,28 @@ impl Storage {
             .bind(json_ids(note_ids))
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
+        rows.iter()
             .map(|r| {
-                (
-                    r.get("from_id"),
-                    r.get("target_title"),
-                    r.get::<Option<i64>, _>("id").map(|_| row_to_note(r)),
-                )
+                Ok((
+                    r.try_get("from_id")?,
+                    r.try_get("target_title")?,
+                    r.try_get::<Option<i64>, _>("id")?
+                        .map(|_| row_to_note(r))
+                        .transpose()?,
+                ))
             })
-            .collect())
+            .collect()
     }
 
     pub async fn resolve_title(&self, title: &str) -> Result<Option<NoteRecord>> {
         let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE {RESOLVE_TITLE}");
-        Ok(sqlx::query(&sql)
+        sqlx::query(&sql)
             .bind(title.trim())
             .fetch_optional(self.pool())
             .await?
             .as_ref()
-            .map(row_to_note))
+            .map(row_to_note)
+            .transpose()
     }
 
     /// Only dangling edges (`to_note IS NULL`): exactly the ones a note with this title would resolve.
@@ -241,10 +250,9 @@ impl Storage {
             .bind(title.trim())
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("target_title"), row_to_note(r)))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((r.try_get("target_title")?, row_to_note(r)?)))
+            .collect()
     }
 
     /// The body comes back because fts tokenisation ignores punctuation and `[[…]]`; the engine then
@@ -266,10 +274,9 @@ impl Storage {
             .bind(quoted)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (row_to_note(r), r.get("body"), r.get("snip")))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((row_to_note(r)?, r.try_get("body")?, r.try_get("snip")?)))
+            .collect()
     }
 
     pub async fn linked_note_ids(&self, note_id: i64) -> Result<Vec<i64>> {
@@ -280,7 +287,7 @@ impl Storage {
         .bind(note_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows.iter().map(|r| r.get("id")).collect())
+        rows.iter().map(|r| Ok(r.try_get("id")?)).collect()
     }
 
     pub async fn latest_parts(&self, ids: &[i64]) -> Result<HashMap<i64, i64>> {
@@ -292,9 +299,8 @@ impl Storage {
             .bind(json_ids(ids))
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("id"), r.get("latest")))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((r.try_get("id")?, r.try_get("latest")?)))
+            .collect()
     }
 }

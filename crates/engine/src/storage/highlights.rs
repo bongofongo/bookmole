@@ -141,30 +141,31 @@ pub struct Highlight {
 pub(super) const HIGHLIGHT_COLUMNS: &str = "id, book_id, text, chapter, page, origin_note, annotation, ko_datetime, reading_id, \
      source, origin, copy_id, origin_id, pos_kind, text_unavailable, created_at";
 
-pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
-    Highlight {
-        id: r.get("id"),
-        book_id: r.get("book_id"),
-        text: r.get("text"),
-        chapter: r.get("chapter"),
-        page: r.get("page"),
-        origin_note: r.get("origin_note"),
-        annotation: r.get("annotation"),
-        ko_datetime: r.get("ko_datetime"),
-        reading_id: r.get("reading_id"),
+pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Result<Highlight> {
+    let source: String = r.try_get("source")?;
+    Ok(Highlight {
+        id: r.try_get("id")?,
+        book_id: r.try_get("book_id")?,
+        text: r.try_get("text")?,
+        chapter: r.try_get("chapter")?,
+        page: r.try_get("page")?,
+        origin_note: r.try_get("origin_note")?,
+        annotation: r.try_get("annotation")?,
+        ko_datetime: r.try_get("ko_datetime")?,
+        reading_id: r.try_get("reading_id")?,
         origin: r
-            .get::<Option<String>, _>("origin")
+            .try_get::<Option<String>, _>("origin")?
             .and_then(|o| o.parse().ok())
-            .unwrap_or_else(|| HighlightOrigin::from_source(&r.get::<String, _>("source"))),
-        source: r.get("source"),
-        copy_id: r.get("copy_id"),
-        origin_id: r.get("origin_id"),
+            .unwrap_or_else(|| HighlightOrigin::from_source(&source)),
+        source,
+        copy_id: r.try_get("copy_id")?,
+        origin_id: r.try_get("origin_id")?,
         pos_kind: r
-            .get::<Option<String>, _>("pos_kind")
+            .try_get::<Option<String>, _>("pos_kind")?
             .and_then(|k| k.parse().ok()),
-        text_unavailable: r.get::<i64, _>("text_unavailable") != 0,
-        created_at: r.get("created_at"),
-    }
+        text_unavailable: r.try_get::<i64, _>("text_unavailable")? != 0,
+        created_at: r.try_get("created_at")?,
+    })
 }
 
 /// Device-owned columns, shared by the UPDATE and the dry-run SELECT so they agree.
@@ -216,7 +217,7 @@ impl Storage {
         .bind(pos_kind.map(|k| k.as_str()))
         .fetch_optional(self.pool())
         .await?;
-        Ok(row.map(|r| r.get("id")))
+        Ok(row.map(|r| r.try_get("id")).transpose()?)
     }
 
     /// Never overwrites a copy already recorded.
@@ -302,12 +303,12 @@ impl Storage {
         let mut digest = DeviceDigest::new();
         for r in &rows {
             let (ko_datetime, pos0, text, origin_note, color, chapter) = (
-                r.get::<Option<String>, _>("ko_datetime"),
-                r.get::<Option<String>, _>("pos0"),
-                r.get::<String, _>("text"),
-                r.get::<Option<String>, _>("origin_note"),
-                r.get::<Option<String>, _>("color"),
-                r.get::<Option<String>, _>("chapter"),
+                r.try_get::<Option<String>, _>("ko_datetime")?,
+                r.try_get::<Option<String>, _>("pos0")?,
+                r.try_get::<String, _>("text")?,
+                r.try_get::<Option<String>, _>("origin_note")?,
+                r.try_get::<Option<String>, _>("color")?,
+                r.try_get::<Option<String>, _>("chapter")?,
             );
             digest.add(DeviceEntry {
                 ko_datetime: ko_datetime.as_deref(),
@@ -316,7 +317,7 @@ impl Storage {
                 origin_note: origin_note.as_deref(),
                 color: color.as_deref(),
                 chapter: chapter.as_deref(),
-                page: r.get::<Option<i64>, _>("page"),
+                page: r.try_get::<Option<i64>, _>("page")?,
             });
         }
         Ok(digest.finish())
@@ -352,7 +353,7 @@ impl Storage {
             .bind(book_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_highlight).collect())
+        rows.iter().map(row_to_highlight).collect()
     }
 
     /// Cannot ask for unattributed highlights (`reading_id IS NULL`); filter `list_highlights`.
@@ -365,7 +366,7 @@ impl Storage {
             .bind(reading_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_highlight).collect())
+        rows.iter().map(row_to_highlight).collect()
     }
 
     /// The passage the reader chose for the reading's card; `None` means not chosen.
@@ -378,7 +379,7 @@ impl Storage {
             .bind(reading_id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_highlight))
+        row.as_ref().map(row_to_highlight).transpose()
     }
 
     /// The highlight must be of the reading's book, and of this reading when attributed at all;
@@ -427,7 +428,7 @@ impl Storage {
             .bind(reading_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_highlight).collect())
+        rows.iter().map(row_to_highlight).collect()
     }
 
     pub async fn get_highlight(&self, id: i64) -> Result<Option<Highlight>> {
@@ -436,7 +437,7 @@ impl Storage {
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_highlight))
+        row.as_ref().map(row_to_highlight).transpose()
     }
 
     /// Fetches a page of passages in one statement, avoiding an N+1 across a page of cards.
@@ -452,7 +453,9 @@ impl Storage {
             for id in chunk {
                 q = q.bind(*id);
             }
-            out.extend(q.fetch_all(self.pool()).await?.iter().map(row_to_highlight));
+            for r in q.fetch_all(self.pool()).await? {
+                out.push(row_to_highlight(&r)?);
+            }
         }
         Ok(out)
     }
@@ -518,6 +521,36 @@ mod tests {
             assert_ne!(base.identity_hash(1), changed.identity_hash(1));
         }
         assert_ne!(base.identity_hash(1), base.identity_hash(2));
+    }
+
+    #[tokio::test]
+    async fn a_row_of_the_wrong_shape_is_an_error_not_a_panic() {
+        use crate::error::EngineError;
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let read = |sql: &'static str| {
+            let pool = s.pool().clone();
+            async move {
+                let row = sqlx::query(sql).fetch_one(&pool).await.unwrap();
+                row_to_highlight(&row)
+            }
+        };
+
+        let missing = read("SELECT 1 AS id").await;
+        assert!(
+            matches!(
+                missing,
+                Err(EngineError::Db(sqlx::Error::ColumnNotFound(_)))
+            ),
+            "{missing:?}"
+        );
+        let mistyped = read("SELECT 'koreader' AS source, 'seven' AS id").await;
+        assert!(
+            matches!(
+                mistyped,
+                Err(EngineError::Db(sqlx::Error::ColumnDecode { .. }))
+            ),
+            "{mistyped:?}"
+        );
     }
 
     #[tokio::test]

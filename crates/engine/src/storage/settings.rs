@@ -76,13 +76,14 @@ impl Storage {
         .bind(prefix)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| Setting {
-                key: r.get("key"),
-                value: r.get("value"),
+        rows.iter()
+            .map(|r| {
+                Ok(Setting {
+                    key: r.try_get("key")?,
+                    value: r.try_get("value")?,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 

@@ -151,14 +151,15 @@ impl Storage {
         .bind(book_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| FieldSource {
-                field: r.get("field"),
-                source: r.get("source"),
-                fetched_at: r.get("fetched_at"),
+        rows.iter()
+            .map(|r| {
+                Ok(FieldSource {
+                    field: r.try_get("field")?,
+                    source: r.try_get("source")?,
+                    fetched_at: r.try_get("fetched_at")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     pub async fn field_source(&self, book_id: i64, field: &str) -> Result<Option<String>> {

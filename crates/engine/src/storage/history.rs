@@ -85,10 +85,9 @@ impl Storage {
                     reading: row_to_reading_prefixed(r, "r_")?,
                     put_down_at: r.try_get("put_down_at")?,
                     count: ReadCount::new(r.try_get("read_number")?, r.try_get("of_reads")?),
-                    rating: value.map(|value| Rating {
-                        scale: row_to_scale(r),
-                        value,
-                    }),
+                    rating: value
+                        .map(|value| row_to_scale(r).map(|scale| Rating { scale, value }))
+                        .transpose()?,
                 })
             })
             .collect()
@@ -109,16 +108,17 @@ impl Storage {
         .bind(to)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| DayFact {
-                book_id: r.get("book_id"),
-                day: r.get("day"),
-                minutes: r.get("minutes"),
-                pages: r.get("pages"),
-                source: r.get("source"),
+        rows.iter()
+            .map(|r| {
+                Ok(DayFact {
+                    book_id: r.try_get("book_id")?,
+                    day: r.try_get("day")?,
+                    minutes: r.try_get("minutes")?,
+                    pages: r.try_get("pages")?,
+                    source: r.try_get("source")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// A `ko_datetime` that cannot be read falls back to when the row was stored.
@@ -130,17 +130,18 @@ impl Storage {
         )
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| MarkStamp {
-                id: r.get("id"),
-                book_id: Some(r.get("book_id")),
-                reading_id: r.get("reading_id"),
-                at: r.get("at"),
-                source: r.get("source"),
-                kind: "passage".into(),
+        rows.iter()
+            .map(|r| {
+                Ok(MarkStamp {
+                    id: r.try_get("id")?,
+                    book_id: Some(r.try_get("book_id")?),
+                    reading_id: r.try_get("reading_id")?,
+                    at: r.try_get("at")?,
+                    source: r.try_get("source")?,
+                    kind: "passage".into(),
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Dated by `created_at`, not by when its latest part was written.
@@ -149,17 +150,18 @@ impl Storage {
             sqlx::query("SELECT id, book_id, reading_id, kind, created_at FROM notes ORDER BY id")
                 .fetch_all(self.pool())
                 .await?;
-        Ok(rows
-            .iter()
-            .map(|r| MarkStamp {
-                id: r.get("id"),
-                book_id: r.get("book_id"),
-                reading_id: r.get("reading_id"),
-                at: r.get("created_at"),
-                source: "vault".into(),
-                kind: r.get("kind"),
+        rows.iter()
+            .map(|r| {
+                Ok(MarkStamp {
+                    id: r.try_get("id")?,
+                    book_id: r.try_get("book_id")?,
+                    reading_id: r.try_get("reading_id")?,
+                    at: r.try_get("created_at")?,
+                    source: "vault".into(),
+                    kind: r.try_get("kind")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Ids that name no reading are absent from the map.
@@ -181,29 +183,29 @@ impl Storage {
         );
         let ids = serde_json::to_string(reading_ids).unwrap_or_else(|_| "[]".into());
         let rows = sqlx::query(&sql).bind(ids).fetch_all(self.pool()).await?;
-        Ok(rows
-            .iter()
+        rows.iter()
             .map(|r| {
-                (
-                    r.get("id"),
-                    ReadCount::new(r.get("read_number"), r.get("of_reads")),
-                )
+                Ok((
+                    r.try_get("id")?,
+                    ReadCount::new(r.try_get("read_number")?, r.try_get("of_reads")?),
+                ))
             })
-            .collect())
+            .collect()
     }
 
     pub async fn read_windows(&self) -> Result<Vec<ReadWindow>> {
         let rows = sqlx::query(ALL_READING_WINDOWS)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| ReadWindow {
-                reading_id: r.get("reading_id"),
-                book_id: r.get("book_id"),
-                start: r.get("win_start"),
-                end: r.get("win_end"),
+        rows.iter()
+            .map(|r| {
+                Ok(ReadWindow {
+                    reading_id: r.try_get("reading_id")?,
+                    book_id: r.try_get("book_id")?,
+                    start: r.try_get("win_start")?,
+                    end: r.try_get("win_end")?,
+                })
             })
-            .collect())
+            .collect()
     }
 }

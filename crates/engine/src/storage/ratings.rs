@@ -37,14 +37,14 @@ pub struct Rating {
     pub value: f64,
 }
 
-pub(super) fn row_to_scale(r: &SqliteRow) -> RatingScale {
-    RatingScale {
-        id: r.get("id"),
-        name: r.get("name"),
-        min: r.get("min"),
-        max: r.get("max"),
-        step: r.get("step"),
-    }
+pub(super) fn row_to_scale(r: &SqliteRow) -> Result<RatingScale> {
+    Ok(RatingScale {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        min: r.try_get("min")?,
+        max: r.try_get("max")?,
+        step: r.try_get("step")?,
+    })
 }
 
 impl RatingScale {
@@ -148,7 +148,7 @@ impl Storage {
                 .await?
             }
         };
-        let scale = row_to_scale(&row);
+        let scale = row_to_scale(&row)?;
         tx.commit().await?;
         Ok(scale)
     }
@@ -161,7 +161,7 @@ impl Storage {
         )
         .fetch_optional(self.pool())
         .await?;
-        Ok(row.as_ref().map(row_to_scale))
+        row.as_ref().map(row_to_scale).transpose()
     }
 
     pub async fn rating_scale_by_name(&self, name: &str) -> Result<Option<RatingScale>> {
@@ -169,7 +169,7 @@ impl Storage {
             .bind(name)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_scale))
+        row.as_ref().map(row_to_scale).transpose()
     }
 
     pub async fn list_rating_scales(&self) -> Result<Vec<RatingScale>> {
@@ -177,7 +177,7 @@ impl Storage {
             sqlx::query("SELECT id, name, min, max, step FROM rating_scales ORDER BY id ASC")
                 .fetch_all(self.pool())
                 .await?;
-        Ok(rows.iter().map(row_to_scale).collect())
+        rows.iter().map(row_to_scale).collect()
     }
 
     pub async fn set_review_rating(
@@ -217,10 +217,13 @@ impl Storage {
         .bind(note_id)
         .fetch_optional(self.pool())
         .await?;
-        Ok(row.map(|r| Rating {
-            value: r.get("value"),
-            scale: row_to_scale(&r),
-        }))
+        row.map(|r| {
+            Ok(Rating {
+                value: r.try_get("value")?,
+                scale: row_to_scale(&r)?,
+            })
+        })
+        .transpose()
     }
 
     pub async fn map_rating(&self, scale: &RatingScale, value: f64, goodreads: f64) -> Result<()> {
@@ -249,10 +252,14 @@ impl Storage {
         .bind(scale_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get::<f64, _>("value"), r.get::<f64, _>("goodreads")))
-            .collect())
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get::<f64, _>("value")?,
+                    r.try_get::<f64, _>("goodreads")?,
+                ))
+            })
+            .collect()
     }
 
     /// `None` is an answer, not a failure: the caller reports it rather than rounding.

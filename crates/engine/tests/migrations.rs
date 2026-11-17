@@ -62,7 +62,8 @@ async fn old_book(
     .fetch_one(&mut *conn)
     .await
     .expect("insert old book")
-    .get("id")
+    .try_get("id")
+    .unwrap()
 }
 
 /// Versions must be contiguous from one: a duplicate is not a git conflict, and a gap means an
@@ -109,23 +110,44 @@ async fn the_backfill_round_trips_every_shape_of_progress() {
     .expect("select readings");
 
     assert_eq!(rows.len(), 3, "a book with no progress gets no reading");
-    let by_book: Vec<i64> = rows.iter().map(|r| r.get("book_id")).collect();
+    let by_book: Vec<i64> = rows.iter().map(|r| r.try_get("book_id").unwrap()).collect();
     assert_eq!(by_book, vec![part, done, dateless]);
     assert!(!by_book.contains(&untouched));
 
-    assert_eq!(rows[0].get::<Option<i64>, _>("current_page"), Some(120));
-    assert_eq!(rows[0].get::<Option<i64>, _>("started_at"), Some(1_000));
-    assert_eq!(rows[0].get::<Option<i64>, _>("finished_at"), None);
-    assert_eq!(rows[0].get::<String, _>("status"), "reading");
-    assert_eq!(rows[0].get::<String, _>("source"), "migrated");
+    assert_eq!(
+        rows[0].try_get::<Option<i64>, _>("current_page").unwrap(),
+        Some(120)
+    );
+    assert_eq!(
+        rows[0].try_get::<Option<i64>, _>("started_at").unwrap(),
+        Some(1_000)
+    );
+    assert_eq!(
+        rows[0].try_get::<Option<i64>, _>("finished_at").unwrap(),
+        None
+    );
+    assert_eq!(rows[0].try_get::<String, _>("status").unwrap(), "reading");
+    assert_eq!(rows[0].try_get::<String, _>("source").unwrap(), "migrated");
 
-    assert_eq!(rows[1].get::<Option<i64>, _>("current_page"), Some(490));
-    assert_eq!(rows[1].get::<Option<i64>, _>("started_at"), Some(1));
-    assert_eq!(rows[1].get::<Option<i64>, _>("finished_at"), Some(2));
-    assert_eq!(rows[1].get::<String, _>("status"), "finished");
+    assert_eq!(
+        rows[1].try_get::<Option<i64>, _>("current_page").unwrap(),
+        Some(490)
+    );
+    assert_eq!(
+        rows[1].try_get::<Option<i64>, _>("started_at").unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        rows[1].try_get::<Option<i64>, _>("finished_at").unwrap(),
+        Some(2)
+    );
+    assert_eq!(rows[1].try_get::<String, _>("status").unwrap(), "finished");
 
-    assert_eq!(rows[2].get::<String, _>("status"), "finished");
-    assert_eq!(rows[2].get::<Option<i64>, _>("finished_at"), None);
+    assert_eq!(rows[2].try_get::<String, _>("status").unwrap(), "finished");
+    assert_eq!(
+        rows[2].try_get::<Option<i64>, _>("finished_at").unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -138,7 +160,7 @@ async fn the_progress_columns_leave_books() {
         .await
         .expect("pragma")
         .into_iter()
-        .map(|r| r.get("name"))
+        .map(|r| r.try_get("name").unwrap())
         .collect();
     for gone in ["current_page", "finished", "date_started", "date_finished"] {
         assert!(!names.contains(&gone.to_string()), "books still has {gone}");
@@ -192,11 +214,17 @@ async fn old_final_notes_become_reflections_and_keep_their_files() {
         .fetch_all(&mut conn)
         .await
         .expect("select notes");
-    assert_eq!(rows[0].get::<String, _>("kind"), "reflection");
-    assert_eq!(rows[0].get::<String, _>("file_path"), "unsorted/a.md");
-    assert_eq!(rows[0].get::<Option<i64>, _>("reading_id"), None);
-    assert_eq!(rows[1].get::<String, _>("kind"), "note");
-    assert_eq!(rows[2].get::<String, _>("kind"), "session");
+    assert_eq!(rows[0].try_get::<String, _>("kind").unwrap(), "reflection");
+    assert_eq!(
+        rows[0].try_get::<String, _>("file_path").unwrap(),
+        "unsorted/a.md"
+    );
+    assert_eq!(
+        rows[0].try_get::<Option<i64>, _>("reading_id").unwrap(),
+        None
+    );
+    assert_eq!(rows[1].try_get::<String, _>("kind").unwrap(), "note");
+    assert_eq!(rows[2].try_get::<String, _>("kind").unwrap(), "session");
 }
 
 #[tokio::test]
@@ -288,7 +316,7 @@ async fn plan(conn: &mut SqliteConnection, sql: &str) -> String {
         .await
         .expect("query plan")
         .iter()
-        .map(|r| r.get::<String, _>("detail"))
+        .map(|r| r.try_get::<String, _>("detail").unwrap())
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -499,11 +527,11 @@ mod props {
                     return Ok(());
                 }
                 prop_assert_eq!(rows.len(), 1, "exactly one reading per book");
-                prop_assert_eq!(rows[0].get::<Option<i64>, _>("current_page"), page);
-                prop_assert_eq!(rows[0].get::<Option<i64>, _>("started_at"), started);
-                prop_assert_eq!(rows[0].get::<Option<i64>, _>("finished_at"), ended);
+                prop_assert_eq!(rows[0].try_get::<Option<i64>, _>("current_page").unwrap(), page);
+                prop_assert_eq!(rows[0].try_get::<Option<i64>, _>("started_at").unwrap(), started);
+                prop_assert_eq!(rows[0].try_get::<Option<i64>, _>("finished_at").unwrap(), ended);
                 prop_assert_eq!(
-                    rows[0].get::<String, _>("status"),
+                    rows[0].try_get::<String, _>("status").unwrap(),
                     if finished == 1 { "finished" } else { "reading" }
                 );
                 Ok(())
@@ -544,7 +572,7 @@ async fn note_parts_back_fill_and_the_list_order_is_indexed() {
     .await
     .unwrap()
     .iter()
-    .map(|r| r.get::<String, _>("detail"))
+    .map(|r| r.try_get::<String, _>("detail").unwrap())
     .collect();
     let plan = plan.join(" | ");
     assert!(plan.contains("idx_notes_latest_part"), "{plan}");
@@ -708,7 +736,8 @@ async fn plain_book(conn: &mut SqliteConnection, title: &str) -> i64 {
     .fetch_one(&mut *conn)
     .await
     .unwrap()
-    .get("id")
+    .try_get("id")
+    .unwrap()
 }
 
 type CopyShape = (Option<String>, String, String, Vec<String>);
@@ -727,7 +756,7 @@ async fn copy_shape(conn: &mut SqliteConnection, book_id: i64) -> CopyShape {
         "book {book_id}: exactly one back-filled copy"
     );
     let c = &copies[0];
-    let have_now: Option<i64> = c.get("have_now");
+    let have_now: Option<i64> = c.try_get("have_now").unwrap();
     assert_eq!(
         have_now, None,
         "the migration says nothing the user must say"
@@ -735,14 +764,14 @@ async fn copy_shape(conn: &mut SqliteConnection, book_id: i64) -> CopyShape {
     let places: Vec<String> = sqlx::query_scalar(
         "SELECT kind || ':' || ref FROM copy_places WHERE copy_id = ? ORDER BY kind, ref",
     )
-    .bind(c.get::<i64, _>("id"))
+    .bind(c.try_get::<i64, _>("id").unwrap())
     .fetch_all(&mut *conn)
     .await
     .unwrap();
     (
-        c.get("form"),
-        c.get("tenure"),
-        c.get("learned_from"),
+        c.try_get("form").unwrap(),
+        c.try_get("tenure").unwrap(),
+        c.try_get("learned_from").unwrap(),
         places,
     )
 }
@@ -891,7 +920,8 @@ async fn old_highlight(
     .fetch_one(&mut *conn)
     .await
     .unwrap()
-    .get("id")
+    .try_get("id")
+    .unwrap()
 }
 
 async fn reader_copy_of(conn: &mut SqliteConnection, book_id: i64, md5: &str) -> i64 {
@@ -903,7 +933,8 @@ async fn reader_copy_of(conn: &mut SqliteConnection, book_id: i64, md5: &str) ->
     .fetch_one(&mut *conn)
     .await
     .unwrap()
-    .get("id");
+    .try_get("id")
+    .unwrap();
     sqlx::query("INSERT INTO copy_places (copy_id, kind, ref) VALUES (?, 'reader', ?)")
         .bind(id)
         .bind(md5)
