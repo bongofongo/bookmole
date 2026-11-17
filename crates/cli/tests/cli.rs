@@ -6,16 +6,15 @@
 //! the confirmation prompts and the "this command must not open the engine"
 //! rules were all enforced by the code alone.
 //!
-//! **Zero new dependencies**: `env!("CARGO_BIN_EXE_bookmole")` is set by
-//! cargo for integration tests, and `std::process::Command` does the rest.
+//! Every child is started through `sandbox::command`, under a throwaway `HOME`.
 //!
 //! Offline throughout — nothing here searches, and the one import path used
 //! (`ko pull`) reads a committed fixture.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+mod sandbox;
 
-const BIN: &str = env!("CARGO_BIN_EXE_bookmole");
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 const SYNTHETIC: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -35,11 +34,14 @@ struct Out {
 
 impl Cli {
     fn new() -> Cli {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(root.path().join("home")).unwrap();
-        std::fs::create_dir_all(root.path().join("config")).unwrap();
-        std::fs::create_dir_all(root.path().join("data")).unwrap();
-        Cli { root }
+        Cli {
+            root: tempfile::tempdir().expect("tempdir"),
+        }
+    }
+
+    /// The binary, sandboxed under this test's root.
+    fn command(&self) -> Command {
+        sandbox::command(self.root.path())
     }
 
     fn data_dir(&self) -> PathBuf {
@@ -50,8 +52,7 @@ impl Cli {
         self.try_run_in(&self.data_dir(), args)
     }
 
-    /// Every environment pin here is load-bearing, and one of them is a safety
-    /// issue rather than hygiene.
+    /// The same, started from `cwd`.
     fn try_run_in(&self, cwd: &Path, args: &[&str]) -> Out {
         self.try_run_with_path(cwd, None, args)
     }
@@ -72,36 +73,12 @@ impl Cli {
             }
             None => std::env::var("PATH").unwrap_or_default(),
         };
-        let out: Output = Command::new(BIN)
+        let out: Output = self
+            .command()
             .env("PATH", path)
             .args(["--data-dir", self.data_dir().to_str().unwrap()])
             .args(args)
             .current_dir(cwd)
-            // An ambient BOOKMOLE_DATA_DIR would silently redirect the whole
-            // suite at the developer's own library.
-            .env_remove("BOOKMOLE_DATA_DIR")
-            // XDG_CONFIG_HOME *and* HOME, because `config_file::config_path`
-            // falls back to `home_dir()/.config` when XDG is unset. With only
-            // one of them pinned, `config set google-api-key` would write the
-            // developer's real key file. A test that can damage the machine it
-            // runs on is not a test.
-            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
-            .env("HOME", self.root.path().join("home"))
-            // clap merges this from the environment, so a developer with a key
-            // exported would make `search` reach the network — and this suite
-            // makes no network calls, ever.
-            .env_remove("GOOGLE_BOOKS_API_KEY")
-            // A developer's RUST_LOG=debug changes stderr out from under the
-            // assertions.
-            .env_remove("RUST_LOG")
-            // Belt and braces: if a regression ever routes one of these through
-            // an editor, `true` exits immediately instead of hanging CI on a vi
-            // that cannot read its terminal.
-            .env("EDITOR", "true")
-            .env("VISUAL", "true")
-            // EOF on stdin. This is also an assertion in its own right — see
-            // `a_destructive_command_declines_when_it_cannot_ask`.
-            .stdin(Stdio::null())
             .output()
             .expect("the binary runs");
         Out {
@@ -284,26 +261,14 @@ fn an_empty_library_says_so_and_writes_only_where_told() {
 }
 
 /// Run the binary with **no** `--data-dir` and no `BOOKMOLE_DATA_DIR`, from
-/// `cwd`, under the sandbox's own `HOME`.
-///
-/// The one invocation in this file that exercises the default location, so it
-/// is the one where the environment pins matter most: without `HOME` set, the
-/// binary would write the developer's real library. `XDG_DATA_HOME` and
-/// `APPDATA` go too, since either would move the default off the sandbox home.
+/// `cwd`, so the library lands at the default location under the sandbox's
+/// `HOME`.
 fn run_without_data_dir(cli: &Cli, cwd: &Path, args: &[&str]) -> Out {
-    let out = Command::new(BIN)
+    let out = cli
+        .command()
         .args(args)
         .current_dir(cwd)
         .env_remove("BOOKMOLE_DATA_DIR")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("APPDATA")
-        .env("HOME", cli.root.path().join("home"))
-        .env("XDG_CONFIG_HOME", cli.root.path().join("config"))
-        .env_remove("GOOGLE_BOOKS_API_KEY")
-        .env_remove("RUST_LOG")
-        .env("EDITOR", "true")
-        .env("VISUAL", "true")
-        .stdin(Stdio::null())
         .output()
         .expect("the binary runs");
     let out = Out {
@@ -378,16 +343,14 @@ fn no_home_is_an_error_not_a_library_in_the_cwd() {
     let cli = Cli::new();
     let cwd = cli.root.path().join("homeless");
     std::fs::create_dir_all(&cwd).unwrap();
-    let out = Command::new(BIN)
+    let out = cli
+        .command()
         .arg("list")
         .current_dir(&cwd)
         .env_remove("BOOKMOLE_DATA_DIR")
         .env_remove("XDG_DATA_HOME")
         .env_remove("APPDATA")
         .env_remove("HOME")
-        .env("XDG_CONFIG_HOME", cli.root.path().join("config"))
-        .env_remove("GOOGLE_BOOKS_API_KEY")
-        .stdin(Stdio::null())
         .output()
         .expect("the binary runs");
     assert!(!out.status.success(), "ran with no home and no data dir");
@@ -889,17 +852,11 @@ fn cards_export_writes_anki_headers_and_a_stable_guid() {
 /// flags first. For the cloud-folder line, whose answer depends on where the
 /// data dir sits relative to `HOME`.
 fn run_at(cli: &Cli, data: &Path, extra: &[&str], args: &[&str]) -> Out {
-    let out = Command::new(BIN)
+    let out = cli
+        .command()
         .args(extra)
         .args(["--data-dir", data.to_str().unwrap()])
         .args(args)
-        .current_dir(cli.root.path())
-        .env_remove("BOOKMOLE_DATA_DIR")
-        .env("HOME", cli.root.path().join("home"))
-        .env("XDG_CONFIG_HOME", cli.root.path().join("config"))
-        .env_remove("GOOGLE_BOOKS_API_KEY")
-        .env_remove("RUST_LOG")
-        .stdin(Stdio::null())
         .output()
         .expect("the binary runs");
     let out = Out {
