@@ -248,10 +248,11 @@ async fn main() -> Result<()> {
     // platform data dir. Never the cwd (`crates/engine/src/data_dir.rs`).
     let data_root = bookmole::data_dir::resolve(cli.data_dir.as_deref())?;
     let mut engine_config = EngineConfig::rooted_at(data_root);
+    let config_dir = config::default_dir();
     // Env wins (matching the CLI's precedence); otherwise fall back to the
     // shared config file, so a key set in either frontend is picked up here.
     if engine_config.google_api_key.is_none() {
-        engine_config.google_api_key = config::load_google_key();
+        engine_config.google_api_key = config_dir.as_deref().and_then(config::load_google_key);
     }
     // Held for the whole run: dropping the guard flushes, and dropping it early
     // truncates the tail of the log — the part that matters after a crash.
@@ -309,7 +310,11 @@ async fn main() -> Result<()> {
     // a warning, never fatal — it must not brick the TUI.
     let mut motif = ambient::Motif::default();
     let mut library_sort = ui::library::Sort::default();
-    match config::load() {
+    let loaded = config_dir
+        .as_deref()
+        .context("cannot locate home directory")
+        .and_then(config::load);
+    match loaded {
         Ok(cfg) => {
             if let Some(rgb) = cfg.accent.as_deref().and_then(theme::parse_hex) {
                 theme::set_accent(rgb);
@@ -332,7 +337,7 @@ async fn main() -> Result<()> {
         Err(e) => eprintln!("warning: {e:#}"),
     }
 
-    let mut app = app::App::new(engine).await?;
+    let mut app = app::App::new(engine, config_dir).await?;
     app.ambient = ambient::Ambient::new(motif);
     app.set_library_sort(library_sort);
     app.params.glyphs = cli.glyphs.into();
@@ -568,7 +573,8 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     let cover_px = cover_width(&book);
 
     let meter = perf::Meter::new();
-    let mut app = app::App::new(engine).await?;
+    // A bench changes no setting, so it has nowhere to save one.
+    let mut app = app::App::new(engine, None).await?;
     app.params.glyphs = cli.glyphs.into();
     app.open_book(book.clone()).await?;
     if let Some(path) = &cli.perf_log {

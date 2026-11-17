@@ -840,10 +840,12 @@ pub struct App {
     phase: f32,
     /// Index into `theme::PRESETS` the settings ←/→ cycle last landed on.
     pub accent_idx: usize,
+    /// Where settings and the API key are saved; `None` when there is no home.
+    config_dir: Option<PathBuf>,
 }
 
 impl App {
-    pub async fn new(engine: Engine) -> Result<App> {
+    pub async fn new(engine: Engine, config_dir: Option<PathBuf>) -> Result<App> {
         let scene = Scene::new(engine.images_dir().to_path_buf());
         let mut app = App {
             engine,
@@ -918,6 +920,7 @@ impl App {
                 .iter()
                 .position(|(_, rgb)| *rgb == theme::accent_rgb())
                 .unwrap_or(0),
+            config_dir,
         };
         app.refresh_library().await?;
         Ok(app)
@@ -3314,11 +3317,6 @@ impl App {
 
     /// The order change itself, without the write.
     ///
-    /// Split from [`App::cycle_library_sort`] for the same reason
-    /// `config_snapshot` is split from `persist_config`: that writes the user's
-    /// real `~/.config/bookmole/tui.toml`, and a test has no business
-    /// touching it. This half is where everything worth asserting happens.
-    ///
     /// **The selection follows the book, not the index.** Re-sorting under a
     /// fixed index moves the cursor to whatever row happens to land there, which
     /// looks like the app choosing a different book — and the next keypress
@@ -3358,14 +3356,16 @@ impl App {
     /// A failure is a status warning, never fatal.
     fn persist_config(&mut self) {
         let cfg = self.config_snapshot();
-        if let Err(e) = config::save(&cfg) {
+        let saved = match &self.config_dir {
+            Some(dir) => config::save(dir, &cfg).map(drop),
+            None => Err(anyhow::anyhow!("cannot locate home directory")),
+        };
+        if let Err(e) = saved {
             self.status = Some(format!("could not save settings: {e:#}"));
         }
     }
 
-    /// Every persisted TUI setting, read from live state. Split out from
-    /// [`App::persist_config`] so the "no field gets blanked" invariant is
-    /// testable without writing to the real config file.
+    /// Every persisted TUI setting, read from live state.
     fn config_snapshot(&self) -> TuiConfig {
         TuiConfig {
             accent: Some(theme::to_hex(theme::accent_rgb())),
@@ -3457,7 +3457,11 @@ impl App {
         let stage = match bookmole::verify_google_key(&key).await {
             Ok(()) => {
                 self.engine.set_google_api_key(Some(key.clone()));
-                match config::save_google_key(&key) {
+                let saved = match &self.config_dir {
+                    Some(dir) => config::save_google_key(dir, &key),
+                    None => Err(anyhow::anyhow!("cannot locate home directory")),
+                };
+                match saved {
                     Ok(_) => ApiKeyStage::Result {
                         ok: true,
                         message: "verified and saved.".into(),
@@ -4183,7 +4187,13 @@ mod tests {
             })
             .await
             .expect("note");
-        let mut app = App::new(engine).await.expect("app");
+        let mut app = App::new(engine, Some(tmp.join("config")))
+            .await
+            .expect("app");
+        // Never calibre's default library: that is the developer's own.
+        let calibre_library = tmp.join("calibre-library");
+        std::fs::create_dir_all(&calibre_library).expect("calibre library dir");
+        app.calibre_library = Some(calibre_library);
         // The device screen is seeded from a real fixture tree, scanned through
         // the real engine: every state below is one the scan actually reached,
         // so a change to the four-state logic shows up here rather than in a
@@ -4685,10 +4695,6 @@ mod tests {
     /// one setting from a struct literal silently blanks every other one —
     /// change the accent and the ambient motif is gone. Asserted on
     /// `config_snapshot`, which is what every persist path writes.
-    ///
-    /// Deliberately does *not* call `persist_config`: that writes to the user's
-    /// real `~/.config/bookmole/tui.toml`, and a test has no business
-    /// touching it.
     #[tokio::test]
     async fn persisting_carries_every_setting_not_just_the_changed_one() {
         let mut app = test_app().await;
@@ -7904,16 +7910,19 @@ mod tests {
         app.refresh_library().await.expect("refresh");
         assert_eq!(app.library_sort, Sort::Recent);
 
-        // `advance_library_sort`, not `handle(Action::CycleSort)`: the key path
-        // persists, and that writes the user's real `tui.toml`. The key itself
-        // is covered in `event.rs`.
+        let saved = app.config_dir.clone().expect("test config dir");
         for want in [Sort::Title, Sort::Author, Sort::Year, Sort::Recent] {
-            app.advance_library_sort().await.expect("sort");
+            app.handle(Action::CycleSort).await.expect("sort");
             assert_eq!(app.library_sort, want);
             let text = screen_text(&mut app, 90, 20);
             assert!(
                 text.contains(&format!("by {}", want.label())),
                 "the border does not name {want:?}:\n{text}"
+            );
+            assert_eq!(
+                config::load(&saved).expect("saved").library_sort.as_deref(),
+                Some(want.label()),
+                "the order was not saved to the app's own config dir"
             );
         }
 

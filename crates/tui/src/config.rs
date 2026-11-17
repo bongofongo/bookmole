@@ -8,8 +8,11 @@
 //! - `config.toml` — the **shared secret** file (mode 600) that also backs the
 //!   CLI's `config set google-api-key`. Read/written here so a key entered in
 //!   the TUI is visible to the CLI and vice versa.
+//!
+//! Every reader and writer takes the directory; only [`default_dir`] looks at
+//! the environment, so a caller decides once which directory is written.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -34,26 +37,26 @@ struct SecretConfig {
     google_api_key: Option<String>,
 }
 
-fn config_dir() -> Result<PathBuf> {
+/// The user's config directory, `$XDG_CONFIG_HOME/bookmole`, else
+/// `~/.config/bookmole`. `None` when there is no home to put it in.
+pub fn default_dir() -> Option<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => std::env::home_dir()
-            .context("cannot locate home directory")?
-            .join(".config"),
+        _ => std::env::home_dir()?.join(".config"),
     };
-    Ok(base.join("bookmole"))
+    Some(base.join("bookmole"))
 }
 
-fn tui_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("tui.toml"))
+fn tui_path(dir: &Path) -> PathBuf {
+    dir.join("tui.toml")
 }
 
-fn secret_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("config.toml"))
+fn secret_path(dir: &Path) -> PathBuf {
+    dir.join("config.toml")
 }
 
-pub fn load() -> Result<TuiConfig> {
-    let path = tui_path()?;
+pub fn load(dir: &Path) -> Result<TuiConfig> {
+    let path = tui_path(dir);
     if !path.exists() {
         return Ok(TuiConfig::default());
     }
@@ -62,8 +65,8 @@ pub fn load() -> Result<TuiConfig> {
     toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-pub fn save(config: &TuiConfig) -> Result<PathBuf> {
-    let path = tui_path()?;
+pub fn save(dir: &Path, config: &TuiConfig) -> Result<PathBuf> {
+    let path = tui_path(dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -74,15 +77,15 @@ pub fn save(config: &TuiConfig) -> Result<PathBuf> {
 
 /// The persisted Google Books API key, if the shared config file holds one.
 /// A missing/unreadable file is simply "no key", never an error.
-pub fn load_google_key() -> Option<String> {
-    let raw = std::fs::read_to_string(secret_path().ok()?).ok()?;
+pub fn load_google_key(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(secret_path(dir)).ok()?;
     toml::from_str::<SecretConfig>(&raw).ok()?.google_api_key
 }
 
 /// Write the Google Books API key to the shared config file (mode 600),
 /// preserving the file's other keys.
-pub fn save_google_key(key: &str) -> Result<PathBuf> {
-    let path = secret_path()?;
+pub fn save_google_key(dir: &Path, key: &str) -> Result<PathBuf> {
+    let path = secret_path(dir);
     let mut cfg: SecretConfig = if path.exists() {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;

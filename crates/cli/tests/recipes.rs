@@ -26,6 +26,7 @@
 #[path = "../../corpus/src/recipe.rs"]
 #[allow(dead_code)]
 mod recipe;
+mod sandbox;
 
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -33,9 +34,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use recipe::{Invocation, Recipe, json};
+use sandbox::BIN;
 use serde::{Deserialize, Serialize};
-
-const BIN: &str = env!("CARGO_BIN_EXE_bookmole");
 
 struct Built {
     recipe: Recipe,
@@ -503,6 +503,7 @@ fn search_word(body: &str) -> Option<String> {
 #[test]
 fn every_note_is_found_by_a_word_of_its_own_body() {
     let Some(b) = built() else { return };
+    let root = tempfile::tempdir().unwrap();
     let notes = rows(
         b,
         "SELECT hex(n.id), hex(f.body) FROM notes n JOIN notes_fts f ON f.rowid = n.id ORDER BY n.id",
@@ -520,11 +521,10 @@ fn every_note_is_found_by_a_word_of_its_own_body() {
             unsearchable += 1;
             continue;
         };
-        let o = std::process::Command::new(BIN)
+        let o = sandbox::command(root.path())
             .arg("--data-dir")
             .arg(&b.dir)
             .args(["find", "--notes", "--limit", "10000", "--", &word])
-            .env("HOME", b.dir.join(".home"))
             .output()
             .unwrap();
         let out = String::from_utf8_lossy(&o.stdout);

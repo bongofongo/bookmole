@@ -7,15 +7,13 @@
 //! working directories to show it.
 //!
 //! `--dump-frame` is the one TUI path that needs no terminal: it opens the
-//! engine, renders the book once to stdout and exits. **`HOME` is always a temp
-//! dir here** — without it the binary would open the developer's real library.
+//! engine, renders the book once to stdout and exits.
+
+mod sandbox;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use bookmole::{Book, Engine, EngineConfig};
-
-const BIN: &str = env!("CARGO_BIN_EXE_bookmole-tui");
 
 /// Spelled out per platform rather than asked of the resolver under test.
 fn default_library_under(home: &Path) -> PathBuf {
@@ -27,18 +25,11 @@ fn default_library_under(home: &Path) -> PathBuf {
 }
 
 /// The first line `--dump-frame` prints is the title of the book it drew.
-fn dumped_title(home: &Path, cwd: &Path, book_id: i64) -> String {
-    let out = Command::new(BIN)
+fn dumped_title(root: &Path, cwd: &Path, book_id: i64) -> String {
+    let out = sandbox::command(root)
         .args(["--dump-frame", "8x4", "--book", &book_id.to_string()])
         .current_dir(cwd)
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
         .env_remove("BOOKMOLE_DATA_DIR")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("APPDATA")
-        .env_remove("GOOGLE_BOOKS_API_KEY")
-        .env_remove("RUST_LOG")
-        .stdin(Stdio::null())
         .output()
         .expect("the binary runs");
     assert!(
@@ -77,8 +68,8 @@ async fn two_working_directories_see_one_library_at_the_default_location() {
         engine.save_book(&book).await.unwrap().id.unwrap()
     };
 
-    assert_eq!(dumped_title(&home, &a, id), "Two Rooms, One Shelf");
-    assert_eq!(dumped_title(&home, &b, id), "Two Rooms, One Shelf");
+    assert_eq!(dumped_title(root.path(), &a, id), "Two Rooms, One Shelf");
+    assert_eq!(dumped_title(root.path(), &b, id), "Two Rooms, One Shelf");
     for cwd in [&a, &b] {
         assert!(
             !cwd.join("database").exists(),
