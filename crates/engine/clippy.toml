@@ -1,0 +1,6 @@
+disallowed-methods = [
+    { path = "tracing::subscriber::set_global_default", reason = "the engine emits; a frontend installs the subscriber" },
+    { path = "tracing::subscriber::set_default", reason = "the engine emits; a frontend installs the subscriber" },
+    { path = "tracing::dispatcher::set_global_default", reason = "the engine emits; a frontend installs the subscriber" },
+    { path = "tracing::dispatcher::set_default", reason = "the engine emits; a frontend installs the subscriber" },
+]
