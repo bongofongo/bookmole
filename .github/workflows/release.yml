@@ -32,6 +32,7 @@ env:
   # this only binds the Intel slice, and it binds the vendored C (lua54,
   # libsqlite3) as well as the Rust.
   MACOSX_DEPLOYMENT_TARGET: "11.0"
+  BOOKMOLE_REQUIRE_TOOLS: "1"
 
 jobs:
   # The gate. CI already ran on the commit this tag points at — but "the tag
@@ -79,7 +80,7 @@ jobs:
             echo "version=v${crate}-dev" >> "$GITHUB_OUTPUT"
           fi
 
-      - run: cargo nextest run --workspace --locked
+      - run: make test
 
   build:
     name: ${{ matrix.target }}
@@ -123,30 +124,18 @@ jobs:
       # than fighting the pin.
       - run: rustup target add ${{ matrix.target }}
 
-      # Only the two terminal frontends. `bookmoled` is deliberately
-      # absent: it exists to serve GUI clients, and a daemon with nothing to
-      # talk to in the tarball is a thing users have to ask about.
-      # `--profile dist`, not `--release`: same optimisation, without the 90 MB
-      # of line tables. See the profile's comment in Cargo.toml — the symbol
-      # table stays, so a crash log still names functions.
-      - run: cargo build --profile dist --locked --target ${{ matrix.target }}
-             -p bookmole-tui -p bookmole-cli
-
-      # Stage a directory rather than tarring the target dir in place: an
-      # archive that explodes N files into the user's cwd is rude. LICENSE
-      # travels with it: MPL-2.0 asks that a binary say where its source is,
-      # and the README does.
-      - name: stage the archive
+      # Only the two terminal frontends: `bookmoled` serves GUI clients, and
+      # there are none in the tarball. `--profile dist` keeps the symbol table
+      # and drops the line tables (Cargo.toml).
+      - name: build and stage the archive
         shell: bash
+        env:
+          DIST_TARGET: ${{ matrix.target }}
+          DIST_VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          name="bookmole-${{ needs.verify.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "dist/${name}"
-          cp "target/${{ matrix.target }}/dist/bookmole-tui" "dist/${name}/"
-          cp "target/${{ matrix.target }}/dist/bookmole"     "dist/${name}/"
-          cp LICENSE README.md "dist/${name}/"
-          tar -C dist -czf "${name}.tar.gz" "${name}"
-          echo "asset=${name}.tar.gz" >> "$GITHUB_ENV"
+          make dist
+          echo "asset=dist/bookmole-${DIST_VERSION}-${DIST_TARGET}.tar.gz" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
