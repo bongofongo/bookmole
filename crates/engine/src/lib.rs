@@ -266,10 +266,13 @@ fn flatten(done: SearchSnapshot) -> SearchOutcome {
 fn claimed_columns(claims: &[FieldClaim]) -> Result<Vec<(&'static str, storage::Source)>> {
     let mut out: Vec<(&'static str, storage::Source)> = Vec::with_capacity(claims.len());
     for claim in claims {
-        let field = storage::merge_columns()
+        let field = storage::provider_columns()
             .find(|c| *c == claim.field)
             .ok_or_else(|| {
-                EngineError::InvalidInput(format!("{:?} is not a book field", claim.field))
+                EngineError::InvalidInput(format!(
+                    "{:?} is not a book field a provider supplies",
+                    claim.field
+                ))
             })?;
         if out.iter().any(|(f, _)| *f == field) {
             return Err(EngineError::InvalidInput(format!(
@@ -895,7 +898,7 @@ impl Engine {
 
     /// [`Engine::save_book`] for a search result: each field the result's `claims` name is stamped
     /// with its provider. A field the user owns keeps its value and its `user` stamp. A claim naming
-    /// no book column, or a column twice, is refused.
+    /// no column a provider supplies, or a column twice, is refused.
     pub async fn save_search_result(&self, book: &Book, claims: &[FieldClaim]) -> Result<Book> {
         let claims = claimed_columns(claims)?;
         self.save_book_claimed(book, &claims).await
@@ -1260,13 +1263,14 @@ impl Engine {
     }
 
     /// The reader puts the book's open reading down. It stays open, so picking it up is not a reread,
-    /// but it leaves the currently-reading list, reading-now and the timeline. Refused when there
-    /// is no open reading or it is already put down.
+    /// but it leaves the currently-reading list, reading-now and the timeline. Refused unless the open
+    /// reading is in state `reading`.
     pub async fn put_down(&self, book_id: i64) -> Result<(Reading, Progress)> {
         let open = self.open_reading_of(book_id, "put down").await?;
-        if ReadingState::from(open.status.as_str()) == ReadingState::Abandoned {
+        if ReadingState::from(open.status.as_str()) != ReadingState::Reading {
             return Err(EngineError::InvalidInput(format!(
-                "book id {book_id}'s open reading is already put down"
+                "book id {book_id}'s open reading is {}, not being read",
+                open.status
             )));
         }
         self.storage.abandon_reading(book_id).await?;

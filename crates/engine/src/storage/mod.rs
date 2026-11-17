@@ -31,7 +31,7 @@ pub(crate) use book_search::{HeldFacts, LibraryIdentities};
 pub use books::{BookSort, MergeReport};
 /// Lets enrichment name columns the merge table knows rather than column-like strings.
 pub(crate) use books::{
-    field_pair, field_value, fields_said, merge_columns, merge_provider_record,
+    field_pair, field_value, fields_said, merge_columns, merge_provider_record, provider_columns,
 };
 pub use copies::{in_library_sql, touched_sql};
 pub use device_books::LinkedBy;

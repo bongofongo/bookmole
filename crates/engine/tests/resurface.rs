@@ -269,3 +269,41 @@ async fn a_blank_passage_is_never_offered() {
         assert_eq!(r.highlight.id, kept);
     }
 }
+
+#[tokio::test]
+async fn a_put_down_book_is_not_favoured_until_it_is_picked_up() {
+    let (_tmp, engine) = engine().await;
+    let book = seed_book(&engine, "Middlemarch").await;
+    let shelved = seed_book(&engine, "Kokoro").await;
+    engine.update_progress(book, Some(40), None).await.unwrap();
+    for i in 0..8 {
+        note(&engine, Some(shelved), &format!("Kokoro note {i}.")).await;
+        passage(&engine, shelved, &format!("Kokoro passage {i}.")).await;
+    }
+    let near = note(&engine, Some(book), "Dorothea on the ferry.").await;
+    let line = passage(&engine, book, "Miss Brooke had that kind of beauty.").await;
+
+    assert_eq!(favoured(&engine, near, line).await, (true, true));
+    engine.put_down(book).await.unwrap();
+    assert_eq!(
+        favoured(&engine, near, line).await,
+        (false, false),
+        "put down"
+    );
+    engine.pick_up(book).await.unwrap();
+    assert_eq!(
+        favoured(&engine, near, line).await,
+        (true, true),
+        "picked up again"
+    );
+}
+
+/// Whether today's note and passage are the open book's, chosen for being open.
+async fn favoured(engine: &bookmole::Engine, note_id: i64, highlight_id: i64) -> (bool, bool) {
+    let n = engine.resurface_note(later()).await.unwrap().unwrap();
+    let p = engine.resurface_passage(later()).await.unwrap().unwrap();
+    (
+        n.reason == ResurfaceReason::OpenBook && n.note.id == note_id,
+        p.reason == ResurfaceReason::OpenBook && p.highlight.id == highlight_id,
+    )
+}

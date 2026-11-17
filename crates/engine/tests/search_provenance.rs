@@ -227,3 +227,27 @@ async fn a_claim_naming_no_book_field_is_refused() {
         "a refused save writes nothing"
     );
 }
+
+#[tokio::test]
+async fn a_claim_on_a_column_no_provider_supplies_is_refused() {
+    let (_tmp, engine) = engine().await;
+    let book = Book {
+        cover_path: Some("database/images/middlemarch.jpg".into()),
+        ..common::book("Middlemarch")
+    };
+    let claims = [FieldClaim {
+        field: "cover_path".into(),
+        provider: ProviderId::OpenLibrary,
+    }];
+    assert!(matches!(
+        engine.save_search_result(&book, &claims).await,
+        Err(EngineError::InvalidInput(_))
+    ));
+    let list = engine.create_list("Victorians", None).await.unwrap();
+    assert!(matches!(
+        engine
+            .add_search_result_to_list(list.id, &book, &claims, None)
+            .await,
+        Err(EngineError::InvalidInput(_))
+    ));
+}

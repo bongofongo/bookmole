@@ -279,3 +279,29 @@ async fn what_the_other_reading_verbs_do_to_a_put_down_read() {
     );
     assert_eq!(finished.put_down_at, None);
 }
+
+#[tokio::test]
+async fn only_a_read_being_read_can_be_put_down() {
+    let (_tmp, engine) = engine().await;
+    let book = seed_book(&engine, "Middlemarch").await;
+    let undated = engine
+        .storage()
+        .record_reading(book, None, None, "finished", "goodreads")
+        .await
+        .unwrap();
+    assert!(matches!(
+        engine.put_down(book).await,
+        Err(EngineError::InvalidInput(_))
+    ));
+    let r = engine.list_readings(book).await.unwrap().remove(0);
+    assert_eq!(
+        (r.id, r.status.as_str()),
+        (undated, "finished"),
+        "unchanged"
+    );
+    assert!(matches!(
+        engine.pick_up(book).await,
+        Err(EngineError::InvalidInput(_))
+    ));
+    assert!(engine.currently_reading(20).await.unwrap().is_empty());
+}
