@@ -1,6 +1,8 @@
 //! Wire types: serializable mirrors of the domain types; the domain types stay free of `serde`.
 //! Paths cross as lossy UTF-8 strings, so a non-UTF-8 path does not round-trip.
 //! Nullable or repeated fields take `#[serde(default)]` and never `skip_serializing_if`.
+//! A conversion from a domain type destructures it without `..`, binding a field it leaves off
+//! the wire as `field: _`, so a new domain field does not compile until it is placed or refused.
 
 use std::path::{Path, PathBuf};
 
@@ -146,42 +148,77 @@ impl From<Book> for BookDto {
         let cover_accent = b.cover_accent_rgb().map(AccentDto::from);
         let shape =
             EditionShapeDto::from(EditionShape::of_book(&b, cover_aspect.map(|a| a as f32)));
+        let Book {
+            id,
+            title,
+            sort_title,
+            authors,
+            translators,
+            publisher,
+            publish_year,
+            first_published: _,
+            language,
+            isbn_10,
+            isbn_13,
+            openlibrary_key,
+            googlebooks_id,
+            cover_url,
+            cover_path,
+            page_count,
+            description,
+            first_sentence,
+            subjects,
+            series,
+            series_index,
+            cover_width: _,
+            cover_height: _,
+            cover_accent: _,
+            cover_thumb_path: _,
+            current_page,
+            finished,
+            reading_status: _,
+            ko_percent: _,
+            date_started,
+            date_finished,
+            created_at,
+            last_modified,
+        } = b;
         BookDto {
-            id: b.id,
-            title: b.title,
-            sort_title: b.sort_title,
-            authors: b.authors,
-            translators: b.translators,
-            publisher: b.publisher,
-            publish_year: b.publish_year,
-            language: b.language,
-            isbn_10: b.isbn_10,
-            isbn_13: b.isbn_13,
-            openlibrary_key: b.openlibrary_key,
-            googlebooks_id: b.googlebooks_id,
-            cover_url: b.cover_url,
-            cover_path: b.cover_path,
-            page_count: b.page_count,
-            description: b.description,
-            first_sentence: b.first_sentence,
-            subjects: b.subjects,
-            series: b.series,
-            series_index: b.series_index,
+            id,
+            title,
+            sort_title,
+            authors,
+            translators,
+            publisher,
+            publish_year,
+            language,
+            isbn_10,
+            isbn_13,
+            openlibrary_key,
+            googlebooks_id,
+            cover_url,
+            cover_path,
+            page_count,
+            description,
+            first_sentence,
+            subjects,
+            series,
+            series_index,
             cover_shelf_path,
             cover_aspect,
             cover_accent,
-            current_page: b.current_page,
-            finished: b.finished,
+            current_page,
+            finished,
             reading_state,
-            date_started: b.date_started,
-            date_finished: b.date_finished,
+            date_started,
+            date_finished,
             progress,
             series_label,
             authors_display,
             sort_author,
             shape,
-            created_at: b.created_at.map(|t| t.unix_timestamp()),
-            last_modified: b.last_modified.map(|t| t.unix_timestamp()),
+            created_at: created_at.map(|t| t.unix_timestamp()),
+            last_modified: last_modified.map(|t| t.unix_timestamp()),
         }
     }
 }
@@ -340,13 +377,21 @@ impl From<Progress> for ProgressDto {
         match p {
             Progress::Untouched => ProgressDto::Untouched,
             Progress::Finished => ProgressDto::Finished,
-            Progress::Started { page, of, fraction } => ProgressDto::Started {
-                page,
-                of,
-                fraction: fraction.map(|f| f.value),
-                percent: p.percent(),
-                source: fraction.map(|f| f.source.into()),
-            },
+            Progress::Started { page, of, fraction } => {
+                let (fraction, source) = match fraction {
+                    Some(bookmole::Fraction { value, source }) => {
+                        (Some(value), Some(source.into()))
+                    }
+                    None => (None, None),
+                };
+                ProgressDto::Started {
+                    page,
+                    of,
+                    fraction,
+                    percent: p.percent(),
+                    source,
+                }
+            }
         }
     }
 }
@@ -491,11 +536,17 @@ pub struct BookSummaryDto {
 
 impl From<BookSummary> for BookSummaryDto {
     fn from(s: BookSummary) -> Self {
+        let BookSummary {
+            book_id,
+            highlights,
+            notes,
+            files,
+        } = s;
         BookSummaryDto {
-            book_id: s.book_id,
-            highlights: s.highlights,
-            notes: s.notes,
-            files: s.files,
+            book_id,
+            highlights,
+            notes,
+            files,
         }
     }
 }
@@ -544,11 +595,17 @@ impl Default for EditionShapeDto {
 
 impl From<EditionShape> for EditionShapeDto {
     fn from(s: EditionShape) -> Self {
+        let EditionShape {
+            width_over_height,
+            width_source,
+            thickness_over_height,
+            thickness_source,
+        } = s;
         EditionShapeDto {
-            width_over_height: s.width_over_height,
-            width_source: s.width_source.into(),
-            thickness_over_height: s.thickness_over_height,
-            thickness_source: s.thickness_source.into(),
+            width_over_height,
+            width_source: width_source.into(),
+            thickness_over_height,
+            thickness_source: thickness_source.into(),
         }
     }
 }
@@ -569,11 +626,8 @@ pub struct BookTagDto {
 
 impl From<BookTag> for BookTagDto {
     fn from(t: BookTag) -> Self {
-        BookTagDto {
-            tag: t.tag,
-            source: t.source,
-            raw: t.raw,
-        }
+        let BookTag { tag, source, raw } = t;
+        BookTagDto { tag, source, raw }
     }
 }
 
@@ -599,17 +653,29 @@ pub struct MergeReportDto {
 
 impl From<MergeReport> for MergeReportDto {
     fn from(r: MergeReport) -> Self {
+        let MergeReport {
+            src_existed,
+            highlights_moved,
+            highlights_dropped,
+            notes_moved,
+            readings_moved,
+            flashcards_moved,
+            flashcards_dropped,
+            device_links_moved,
+            files_moved,
+            orphaned_cover,
+        } = r;
         MergeReportDto {
-            src_existed: r.src_existed,
-            highlights_moved: r.highlights_moved,
-            highlights_dropped: r.highlights_dropped,
-            notes_moved: r.notes_moved,
-            readings_moved: r.readings_moved,
-            flashcards_moved: r.flashcards_moved,
-            flashcards_dropped: r.flashcards_dropped,
-            device_links_moved: r.device_links_moved,
-            files_moved: r.files_moved,
-            orphaned_cover: r.orphaned_cover,
+            src_existed,
+            highlights_moved,
+            highlights_dropped,
+            notes_moved,
+            readings_moved,
+            flashcards_moved,
+            flashcards_dropped,
+            device_links_moved,
+            files_moved,
+            orphaned_cover,
         }
     }
 }
@@ -657,20 +723,34 @@ impl ReadingDto {
     }
 
     fn bare(r: Reading) -> ReadingDto {
+        let Reading {
+            id,
+            book_id,
+            started_at,
+            finished_at,
+            status,
+            source,
+            current_page,
+            ko_status,
+            ko_percent,
+            ko_rating,
+            created_at,
+            last_modified,
+        } = r;
         ReadingDto {
             progress: ProgressDto::Untouched,
-            id: r.id,
-            book_id: r.book_id,
-            started_at: r.started_at,
-            finished_at: r.finished_at,
-            status: ReadingState::from(r.status.as_str()).into(),
-            source: r.source,
-            current_page: r.current_page,
-            ko_status: r.ko_status.map(|s| KoStatus::from(s.as_str()).into()),
-            ko_percent: r.ko_percent,
-            ko_rating: r.ko_rating,
-            created_at: r.created_at,
-            last_modified: r.last_modified,
+            id,
+            book_id,
+            started_at,
+            finished_at,
+            status: ReadingState::from(status.as_str()).into(),
+            source,
+            current_page,
+            ko_status: ko_status.map(|s| KoStatus::from(s.as_str()).into()),
+            ko_percent,
+            ko_rating,
+            created_at,
+            last_modified,
         }
     }
 }
@@ -706,18 +786,36 @@ pub struct HighlightDto {
 
 impl From<Highlight> for HighlightDto {
     fn from(h: Highlight) -> Self {
+        let Highlight {
+            id,
+            book_id,
+            text,
+            chapter,
+            page,
+            origin_note,
+            annotation,
+            ko_datetime,
+            reading_id,
+            source,
+            origin: _,
+            copy_id: _,
+            origin_id: _,
+            pos_kind: _,
+            text_unavailable: _,
+            created_at,
+        } = h;
         HighlightDto {
-            id: h.id,
-            book_id: h.book_id,
-            text: h.text,
-            chapter: h.chapter,
-            page: h.page,
-            ko_note: h.origin_note,
-            annotation: h.annotation,
-            ko_datetime: h.ko_datetime,
-            reading_id: h.reading_id,
-            source: h.source,
-            created_at: h.created_at,
+            id,
+            book_id,
+            text,
+            chapter,
+            page,
+            ko_note: origin_note,
+            annotation,
+            ko_datetime,
+            reading_id,
+            source,
+            created_at,
         }
     }
 }
@@ -812,9 +910,10 @@ pub struct ResurfacedDto {
 
 impl From<bookmole::Resurfaced> for ResurfacedDto {
     fn from(r: bookmole::Resurfaced) -> Self {
+        let bookmole::Resurfaced { note, reason } = r;
         ResurfacedDto {
-            note: r.note.into(),
-            reason: r.reason.into(),
+            note: note.into(),
+            reason: reason.into(),
         }
     }
 }
@@ -832,27 +931,41 @@ pub struct ResurfacedPassageDto {
 
 impl From<bookmole::ResurfacedPassage> for ResurfacedPassageDto {
     fn from(r: bookmole::ResurfacedPassage) -> Self {
+        let bookmole::ResurfacedPassage { highlight, reason } = r;
         ResurfacedPassageDto {
-            highlight: r.highlight.into(),
-            reason: r.reason.into(),
+            highlight: highlight.into(),
+            reason: reason.into(),
         }
     }
 }
 
 impl From<NoteRecord> for NoteDto {
     fn from(n: NoteRecord) -> Self {
+        let NoteRecord {
+            id,
+            book_id,
+            reading_id,
+            highlight_id,
+            page,
+            location,
+            file_path,
+            title,
+            kind,
+            created_at,
+            last_modified,
+        } = n;
         NoteDto {
-            id: n.id,
-            book_id: n.book_id,
-            reading_id: n.reading_id,
-            highlight_id: n.highlight_id,
-            page: n.page,
-            location: n.location,
-            file_path: n.file_path,
-            title: n.title,
-            kind: n.kind,
-            created_at: n.created_at.map(|t| t.unix_timestamp()),
-            last_modified: n.last_modified.map(|t| t.unix_timestamp()),
+            id,
+            book_id,
+            reading_id,
+            highlight_id,
+            page,
+            location,
+            file_path,
+            title,
+            kind,
+            created_at: created_at.map(|t| t.unix_timestamp()),
+            last_modified: last_modified.map(|t| t.unix_timestamp()),
         }
     }
 }
@@ -913,11 +1026,17 @@ pub struct CreatedNoteDto {
 
 impl From<CreatedNote> for CreatedNoteDto {
     fn from(n: CreatedNote) -> Self {
+        let CreatedNote {
+            id,
+            title,
+            file,
+            links,
+        } = n;
         CreatedNoteDto {
-            id: n.id,
-            title: n.title,
-            file: path_str(&n.file),
-            links: n.links,
+            id,
+            title,
+            file: path_str(&file),
+            links,
         }
     }
 }
@@ -994,9 +1113,10 @@ pub struct OutgoingLinkDto {
 
 impl From<OutgoingLink> for OutgoingLinkDto {
     fn from(l: OutgoingLink) -> Self {
+        let OutgoingLink { target_title, to } = l;
         OutgoingLinkDto {
-            target_title: l.target_title,
-            note: l.to.map(Into::into),
+            target_title,
+            note: to.map(Into::into),
         }
     }
 }
@@ -1041,10 +1161,45 @@ pub struct BookFaceDto {
 impl From<Book> for BookFaceDto {
     fn from(b: Book) -> Self {
         let cover_shelf_path = b.shelf_cover_path().map(str::to_string);
+        let Book {
+            id,
+            title,
+            cover_path,
+            sort_title: _,
+            authors: _,
+            translators: _,
+            publisher: _,
+            publish_year: _,
+            first_published: _,
+            language: _,
+            isbn_10: _,
+            isbn_13: _,
+            openlibrary_key: _,
+            googlebooks_id: _,
+            cover_url: _,
+            page_count: _,
+            description: _,
+            first_sentence: _,
+            subjects: _,
+            series: _,
+            series_index: _,
+            cover_width: _,
+            cover_height: _,
+            cover_accent: _,
+            cover_thumb_path: _,
+            current_page: _,
+            finished: _,
+            reading_status: _,
+            ko_percent: _,
+            date_started: _,
+            date_finished: _,
+            created_at: _,
+            last_modified: _,
+        } = b;
         BookFaceDto {
-            id: b.id.unwrap_or_default(),
-            title: b.title,
-            cover_path: b.cover_path,
+            id: id.unwrap_or_default(),
+            title,
+            cover_path,
             cover_shelf_path,
         }
     }
@@ -1086,20 +1241,27 @@ pub struct LinkContextDto {
 
 impl From<LinkContext> for LinkContextDto {
     fn from(l: LinkContext) -> Self {
-        let (paragraph, link_range, truncated, truncated_start) = match l.paragraph {
-            Some(p) => (
-                Some(p.text),
-                Some(p.link_range),
-                p.truncated,
-                p.truncated_start,
-            ),
+        let LinkContext {
+            paragraph,
+            direction,
+            target_title,
+            note,
+            book,
+        } = l;
+        let (paragraph, link_range, truncated, truncated_start) = match paragraph {
+            Some(bookmole::LinkParagraph {
+                text,
+                link_range,
+                truncated,
+                truncated_start,
+            }) => (Some(text), Some(link_range), truncated, truncated_start),
             None => (None, None, false, false),
         };
         LinkContextDto {
-            direction: l.direction.into(),
-            target_title: l.target_title,
-            note: l.note.map(Into::into),
-            book: l.book.map(Into::into),
+            direction: direction.into(),
+            target_title,
+            note: note.map(Into::into),
+            book: book.map(Into::into),
             paragraph,
             link_range,
             truncated,
@@ -1262,12 +1424,23 @@ pub struct ReadingRowDto {
 
 impl From<ReadingRow> for ReadingRowDto {
     fn from(r: ReadingRow) -> Self {
+        let ReadingRow {
+            book,
+            reading,
+            progress,
+            count,
+            passage,
+        } = r;
+        let bookmole::ReadCount {
+            number: read_number,
+            of: of_reads,
+        } = count;
         ReadingRowDto {
-            book: r.book.into(),
-            reading: ReadingDto::new(r.reading, r.progress),
-            read_number: r.count.number,
-            of_reads: r.count.of,
-            passage: r.passage.map(Into::into),
+            book: book.into(),
+            reading: ReadingDto::new(reading, progress),
+            read_number,
+            of_reads,
+            passage: passage.map(Into::into),
         }
     }
 }
@@ -1287,10 +1460,8 @@ pub struct ReadingYearsDto {
 
 impl From<ReadingYears> for ReadingYearsDto {
     fn from(y: ReadingYears) -> Self {
-        ReadingYearsDto {
-            years: y.years,
-            open: y.open,
-        }
+        let ReadingYears { years, open } = y;
+        ReadingYearsDto { years, open }
     }
 }
 
@@ -1337,19 +1508,36 @@ pub struct NoteRowDto {
 
 impl From<bookmole::NoteRow> for NoteRowDto {
     fn from(r: bookmole::NoteRow) -> Self {
+        let bookmole::NoteRow {
+            note,
+            book,
+            heading,
+            excerpt,
+            parts,
+            latest_part_at,
+            latest_part_page,
+            links_out,
+            links_in,
+            thread,
+            read,
+        } = r;
+        let (read_number, of_reads) = match read {
+            Some(bookmole::ReadCount { number, of }) => (Some(number), Some(of)),
+            None => (None, None),
+        };
         NoteRowDto {
-            note: r.note.into(),
-            book: r.book.map(Into::into),
-            heading: r.heading,
-            excerpt: r.excerpt,
-            parts: r.parts,
-            latest_part_at: r.latest_part_at,
-            latest_part_page: r.latest_part_page,
-            links_out: r.links_out,
-            links_in: r.links_in,
-            thread: r.thread,
-            read_number: r.read.map(|c| c.number),
-            of_reads: r.read.map(|c| c.of),
+            note: note.into(),
+            book: book.map(Into::into),
+            heading,
+            excerpt,
+            parts,
+            latest_part_at,
+            latest_part_page,
+            links_out,
+            links_in,
+            thread,
+            read_number,
+            of_reads,
         }
     }
 }
@@ -1386,12 +1574,19 @@ pub struct ThreadDto {
 
 impl From<bookmole::ThreadSummary> for ThreadDto {
     fn from(t: bookmole::ThreadSummary) -> Self {
+        let bookmole::ThreadSummary {
+            hub,
+            notes,
+            books,
+            joined,
+            members,
+        } = t;
         ThreadDto {
-            hub: t.hub.into(),
-            notes: t.notes,
-            books: map(t.books),
-            joined: t.joined,
-            members: t.members,
+            hub: hub.into(),
+            notes,
+            books: map(books),
+            joined,
+            members,
         }
     }
 }
@@ -1412,10 +1607,15 @@ pub struct NoteLinkDto {
 
 impl From<bookmole::NoteLink> for NoteLinkDto {
     fn from(l: bookmole::NoteLink) -> Self {
+        let bookmole::NoteLink {
+            from,
+            target_title,
+            to,
+        } = l;
         NoteLinkDto {
-            from: l.from.into(),
-            target_title: l.target_title,
-            to: l.to.map(Into::into),
+            from: from.into(),
+            target_title,
+            to: to.map(Into::into),
         }
     }
 }
@@ -1520,24 +1720,34 @@ pub struct NoteGraphDto {
 
 impl From<bookmole::NoteGraphView> for NoteGraphDto {
     fn from(g: bookmole::NoteGraphView) -> Self {
+        let bookmole::NoteGraphView { nodes, edges } = g;
         NoteGraphDto {
-            nodes: g
-                .nodes
+            nodes: nodes
                 .into_iter()
-                .map(|n| GraphNodeDto {
-                    key: n.key,
-                    row: n.row.map(Into::into),
-                    title: n.title,
-                    degree: n.degree,
+                .map(|n| {
+                    let bookmole::GraphNodeView {
+                        key,
+                        row,
+                        title,
+                        degree,
+                    } = n;
+                    GraphNodeDto {
+                        key,
+                        row: row.map(Into::into),
+                        title,
+                        degree,
+                    }
                 })
                 .collect(),
-            edges: g
-                .edges
+            edges: edges
                 .into_iter()
-                .map(|e| GraphEdgeDto {
-                    from: e.from,
-                    to: e.to,
-                    kind: e.kind.into(),
+                .map(|e| {
+                    let bookmole::GraphEdgeView { from, to, kind } = e;
+                    GraphEdgeDto {
+                        from,
+                        to,
+                        kind: kind.into(),
+                    }
                 })
                 .collect(),
         }
@@ -1563,12 +1773,8 @@ pub struct NotePartDto {
 
 impl From<bookmole::NotePart> for NotePartDto {
     fn from(p: bookmole::NotePart) -> Self {
-        NotePartDto {
-            n: p.n,
-            at: p.at,
-            page: p.page,
-            body: p.body,
-        }
+        let bookmole::NotePart { n, at, page, body } = p;
+        NotePartDto { n, at, page, body }
     }
 }
 
@@ -1585,9 +1791,10 @@ pub struct LinkPreviewDto {
 
 impl From<bookmole::LinkPreview> for LinkPreviewDto {
     fn from(p: bookmole::LinkPreview) -> Self {
+        let bookmole::LinkPreview { outgoing, incoming } = p;
         LinkPreviewDto {
-            outgoing: map(p.outgoing),
-            incoming: map(p.incoming),
+            outgoing: map(outgoing),
+            incoming: map(incoming),
         }
     }
 }
@@ -1612,12 +1819,19 @@ pub struct RatingScaleDto {
 
 impl From<RatingScale> for RatingScaleDto {
     fn from(s: RatingScale) -> Self {
+        let RatingScale {
+            id,
+            name,
+            min,
+            max,
+            step,
+        } = s;
         RatingScaleDto {
-            id: s.id,
-            name: s.name,
-            min: s.min,
-            max: s.max,
-            step: s.step,
+            id,
+            name,
+            min,
+            max,
+            step,
         }
     }
 }
@@ -1637,9 +1851,10 @@ pub struct RatingDto {
 
 impl From<Rating> for RatingDto {
     fn from(r: Rating) -> Self {
+        let Rating { scale, value } = r;
         RatingDto {
-            scale: r.scale.into(),
-            value: r.value,
+            scale: scale.into(),
+            value,
         }
     }
 }
@@ -1675,13 +1890,21 @@ pub struct BookFileDto {
 
 impl From<BookFile> for BookFileDto {
     fn from(f: BookFile) -> Self {
+        let BookFile {
+            sha256,
+            book_id,
+            format,
+            original_name,
+            size,
+            added_at,
+        } = f;
         BookFileDto {
-            sha256: f.sha256,
-            book_id: f.book_id,
-            format: f.format,
-            original_name: f.original_name,
-            size: f.size,
-            added_at: f.added_at,
+            sha256,
+            book_id,
+            format,
+            original_name,
+            size,
+            added_at,
         }
     }
 }
@@ -1763,17 +1986,28 @@ impl From<FileIdentity> for FileIdentityDto {
     // The domain's `(i64, FileMatch)` tuple becomes two named nullable fields so a later element
     // cannot shift positions.
     fn from(i: FileIdentity) -> Self {
+        let FileIdentity {
+            path,
+            sha256,
+            partial_md5,
+            format,
+            size,
+            title,
+            page_count,
+            matched,
+            candidates,
+        } = i;
         FileIdentityDto {
-            path: path_str(&i.path),
-            sha256: i.sha256,
-            partial_md5: i.partial_md5,
-            format: i.format,
-            size: i.size,
-            title: i.title,
-            page_count: i.page_count,
-            matched_book_id: i.matched.map(|(id, _)| id),
-            matched_by: i.matched.map(|(_, m)| m.into()),
-            candidates: i.candidates.into_iter().map(Into::into).collect(),
+            path: path_str(&path),
+            sha256,
+            partial_md5,
+            format,
+            size,
+            title,
+            page_count,
+            matched_book_id: matched.map(|(id, _)| id),
+            matched_by: matched.map(|(_, m)| m.into()),
+            candidates: candidates.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1800,14 +2034,23 @@ pub struct FileImportReportDto {
 
 impl From<FileImportReport> for FileImportReportDto {
     fn from(r: FileImportReport) -> Self {
+        let FileImportReport {
+            outcome,
+            book_id,
+            matched_by,
+            created_book,
+            sha256,
+            stored_path,
+            candidates,
+        } = r;
         FileImportReportDto {
-            outcome: r.outcome.into(),
-            book_id: r.book_id,
-            matched_by: r.matched_by.map(Into::into),
-            created_book: r.created_book,
-            sha256: r.sha256,
-            stored_path: opt_path(&r.stored_path),
-            candidates: r.candidates.into_iter().map(Into::into).collect(),
+            outcome: outcome.into(),
+            book_id,
+            matched_by: matched_by.map(Into::into),
+            created_book,
+            sha256,
+            stored_path: opt_path(&stored_path),
+            candidates: candidates.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1834,14 +2077,23 @@ pub struct FlashcardDto {
 
 impl From<FlashcardRow> for FlashcardDto {
     fn from(c: FlashcardRow) -> Self {
+        let FlashcardRow {
+            id,
+            book_id,
+            highlight_id,
+            word,
+            context,
+            book_title,
+            exported,
+        } = c;
         FlashcardDto {
-            id: c.id,
-            book_id: c.book_id,
-            highlight_id: c.highlight_id,
-            word: c.word,
-            context: c.context,
-            book_title: c.book_title,
-            exported: c.exported,
+            id,
+            book_id,
+            highlight_id,
+            word,
+            context,
+            book_title,
+            exported,
         }
     }
 }
@@ -1862,10 +2114,15 @@ pub struct AnkiExportDto {
 
 impl From<AnkiExport> for AnkiExportDto {
     fn from(e: AnkiExport) -> Self {
+        let AnkiExport {
+            text,
+            count,
+            filename,
+        } = e;
         AnkiExportDto {
-            text: e.text,
-            count: e.count,
-            filename: e.filename,
+            text,
+            count,
+            filename,
         }
     }
 }
@@ -1884,9 +2141,10 @@ pub struct SavedAnkiExportDto {
 
 impl From<SavedAnkiExport> for SavedAnkiExportDto {
     fn from(e: SavedAnkiExport) -> Self {
+        let SavedAnkiExport { path, count } = e;
         SavedAnkiExportDto {
-            path: opt_path(&e.path),
-            count: e.count,
+            path: opt_path(&path),
+            count,
         }
     }
 }
@@ -1906,9 +2164,13 @@ pub struct NoteCitationsDto {
 
 impl From<NoteCitations> for NoteCitationsDto {
     fn from(c: NoteCitations) -> Self {
+        let NoteCitations {
+            note_id,
+            highlight_ids,
+        } = c;
         NoteCitationsDto {
-            note_id: c.note_id,
-            highlight_ids: c.highlight_ids,
+            note_id,
+            highlight_ids,
         }
     }
 }
@@ -1995,11 +2257,17 @@ pub struct RankedResultDto {
 
 impl From<RankedResult> for RankedResultDto {
     fn from(r: RankedResult) -> Self {
+        let RankedResult {
+            book,
+            sources,
+            score,
+            shelf_id,
+        } = r;
         RankedResultDto {
-            book: r.book.into(),
-            sources: r.sources.into_iter().map(Into::into).collect(),
-            score: r.score,
-            shelf_id: r.shelf_id,
+            book: book.into(),
+            sources: sources.into_iter().map(Into::into).collect(),
+            score,
+            shelf_id,
         }
     }
 }
@@ -2017,9 +2285,10 @@ pub struct SearchOutcomeDto {
 
 impl From<SearchOutcome> for SearchOutcomeDto {
     fn from(o: SearchOutcome) -> Self {
+        let SearchOutcome { results, warnings } = o;
         SearchOutcomeDto {
-            results: o.results.into_iter().map(Into::into).collect(),
-            warnings: o.warnings.into_iter().map(Into::into).collect(),
+            results: results.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -2459,11 +2728,17 @@ pub struct DiagnosticDto {
 
 impl From<Diagnostic> for DiagnosticDto {
     fn from(d: Diagnostic) -> Self {
+        let display = d.to_string();
+        let Diagnostic {
+            kind,
+            severity,
+            detail,
+        } = d;
         DiagnosticDto {
-            display: d.to_string(),
-            kind: d.kind.into(),
-            severity: d.severity.into(),
-            detail: d.detail,
+            display,
+            kind: kind.into(),
+            severity: severity.into(),
+            detail,
         }
     }
 }
@@ -2489,12 +2764,19 @@ pub struct MatchCandidateDto {
 
 impl From<MatchCandidate> for MatchCandidateDto {
     fn from(c: MatchCandidate) -> Self {
+        let MatchCandidate {
+            book_id,
+            title,
+            authors_display,
+            publish_year,
+            score,
+        } = c;
         MatchCandidateDto {
-            book_id: c.book_id,
-            title: c.title,
-            authors_display: c.authors_display,
-            publish_year: c.publish_year,
-            score: c.score,
+            book_id,
+            title,
+            authors_display,
+            publish_year,
+            score,
         }
     }
 }
@@ -2576,17 +2858,29 @@ pub struct BookImportStatsDto {
 
 impl From<BookImportStats> for BookImportStatsDto {
     fn from(s: BookImportStats) -> Self {
+        let BookImportStats {
+            book_id,
+            book_title,
+            inserted,
+            updated,
+            skipped,
+            flashcards,
+            matched_by,
+            percent_finished,
+            status,
+            rating,
+        } = s;
         BookImportStatsDto {
-            book_id: s.book_id,
-            book_title: s.book_title,
-            inserted: s.inserted,
-            updated: s.updated,
-            skipped: s.skipped,
-            flashcards: s.flashcards,
-            matched_by: s.matched_by.into(),
-            percent_finished: s.percent_finished,
-            status: s.status.map(Into::into),
-            rating: s.rating,
+            book_id,
+            book_title,
+            inserted,
+            updated,
+            skipped,
+            flashcards,
+            matched_by: matched_by.into(),
+            percent_finished,
+            status: status.map(Into::into),
+            rating,
         }
     }
 }
@@ -2609,11 +2903,17 @@ pub struct UnmatchedSidecarDto {
 
 impl From<UnmatchedSidecar> for UnmatchedSidecarDto {
     fn from(u: UnmatchedSidecar) -> Self {
+        let UnmatchedSidecar {
+            path,
+            title,
+            partial_md5,
+            candidates,
+        } = u;
         UnmatchedSidecarDto {
-            path: path_str(&u.path),
-            title: u.title,
-            partial_md5: u.partial_md5,
-            candidates: u.candidates.into_iter().map(Into::into).collect(),
+            path: path_str(&path),
+            title,
+            partial_md5,
+            candidates: candidates.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -2632,10 +2932,15 @@ pub struct ImportReportDto {
 
 impl From<ImportReport> for ImportReportDto {
     fn from(r: ImportReport) -> Self {
+        let ImportReport {
+            imported,
+            unmatched,
+            warnings,
+        } = r;
         ImportReportDto {
-            imported: r.imported.into_iter().map(Into::into).collect(),
-            unmatched: r.unmatched.into_iter().map(Into::into).collect(),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            imported: imported.into_iter().map(Into::into).collect(),
+            unmatched: unmatched.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -2653,9 +2958,10 @@ pub struct PullReportDto {
 
 impl From<PullReport> for PullReportDto {
     fn from(r: PullReport) -> Self {
+        let PullReport { stats, warnings } = r;
         PullReportDto {
-            stats: r.stats.into(),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            stats: stats.into(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -2729,16 +3035,27 @@ pub struct DeviceBookDto {
 
 impl From<DeviceBook> for DeviceBookDto {
     fn from(b: DeviceBook) -> Self {
+        let DeviceBook {
+            path,
+            title,
+            authors,
+            partial_md5,
+            book_id,
+            matched_by,
+            state,
+            ko_percent,
+            ko_status,
+        } = b;
         DeviceBookDto {
-            path: path_str(&b.path),
-            title: b.title,
-            authors: b.authors,
-            partial_md5: b.partial_md5,
-            book_id: b.book_id,
-            matched_by: b.matched_by.map(Into::into),
-            state: b.state.into(),
-            ko_percent: b.ko_percent,
-            ko_status: b.ko_status.map(Into::into),
+            path: path_str(&path),
+            title,
+            authors,
+            partial_md5,
+            book_id,
+            matched_by: matched_by.map(Into::into),
+            state: state.into(),
+            ko_percent,
+            ko_status: ko_status.map(Into::into),
         }
     }
 }
@@ -2760,12 +3077,19 @@ pub struct DeviceScanDto {
 
 impl From<DeviceScan> for DeviceScanDto {
     fn from(s: DeviceScan) -> Self {
+        let DeviceScan {
+            root,
+            books,
+            warnings,
+            parsed,
+            cached,
+        } = s;
         DeviceScanDto {
-            root: path_str(&s.root),
-            books: s.books.into_iter().map(Into::into).collect(),
-            warnings: s.warnings.into_iter().map(Into::into).collect(),
-            parsed: s.parsed,
-            cached: s.cached,
+            root: path_str(&root),
+            books: books.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
+            parsed,
+            cached,
         }
     }
 }
@@ -2824,18 +3148,30 @@ impl From<PluginStatus> for PluginStatusDto {
     fn from(s: PluginStatus) -> Self {
         // Read before the struct is taken apart: `condition()` borrows fields the moves below consume.
         let condition = s.condition().into();
+        let PluginStatus {
+            mount,
+            plugin_dir,
+            installed,
+            installed_version,
+            our_version,
+            paired,
+            device_id,
+            pairings,
+            modified,
+            unrecognised,
+        } = s;
         PluginStatusDto {
             condition,
-            mount: path_str(&s.mount),
-            plugin_dir: path_str(&s.plugin_dir),
-            installed: s.installed,
-            installed_version: s.installed_version,
-            our_version: s.our_version,
-            paired: s.paired,
-            device_id: s.device_id,
-            pairings: s.pairings.into_iter().map(Into::into).collect(),
-            modified: s.modified,
-            unrecognised: s.unrecognised,
+            mount: path_str(&mount),
+            plugin_dir: path_str(&plugin_dir),
+            installed,
+            installed_version,
+            our_version,
+            paired,
+            device_id,
+            pairings: pairings.into_iter().map(Into::into).collect(),
+            modified,
+            unrecognised,
         }
     }
 }
@@ -2887,11 +3223,17 @@ impl ListenerStatusDto {
     // Not a `From<ListenerStatus>`: the listener does not know the address, so a conversion would
     // report none.
     pub fn new(s: ListenerStatus, lan_address: Option<String>) -> Self {
+        let ListenerStatus {
+            mode,
+            tcp_port,
+            pushes,
+            last_push_at,
+        } = s;
         ListenerStatusDto {
-            mode: s.mode.into(),
-            tcp_port: s.tcp_port,
-            pushes: s.pushes,
-            last_push_at: s.last_push_at,
+            mode: mode.into(),
+            tcp_port,
+            pushes,
+            last_push_at,
             lan_address,
         }
     }
@@ -2913,10 +3255,15 @@ pub struct PairingDto {
 
 impl From<Pairing> for PairingDto {
     fn from(p: Pairing) -> Self {
+        let Pairing {
+            device_id,
+            name,
+            paired_at,
+        } = p;
         PairingDto {
-            device_id: p.device_id,
-            name: p.name,
-            paired_at: p.paired_at,
+            device_id,
+            name,
+            paired_at,
         }
     }
 }
@@ -2938,12 +3285,19 @@ pub struct InstallReportDto {
 
 impl From<InstallReport> for InstallReportDto {
     fn from(r: InstallReport) -> Self {
+        let InstallReport {
+            plugin_dir,
+            device_id,
+            version,
+            written,
+            upgraded_from,
+        } = r;
         InstallReportDto {
-            plugin_dir: path_str(&r.plugin_dir),
-            device_id: r.device_id,
-            version: r.version,
-            written: r.written,
-            upgraded_from: r.upgraded_from,
+            plugin_dir: path_str(&plugin_dir),
+            device_id,
+            version,
+            written,
+            upgraded_from,
         }
     }
 }
@@ -2962,10 +3316,16 @@ pub struct UninstallReportDto {
 
 impl From<UninstallReport> for UninstallReportDto {
     fn from(r: UninstallReport) -> Self {
+        let UninstallReport {
+            plugin_dir,
+            removed,
+            forgot_device,
+            removed_pairings: _,
+        } = r;
         UninstallReportDto {
-            plugin_dir: path_str(&r.plugin_dir),
-            removed: r.removed,
-            forgot_device: r.forgot_device,
+            plugin_dir: path_str(&plugin_dir),
+            removed,
+            forgot_device,
         }
     }
 }
@@ -2998,16 +3358,28 @@ pub struct PairedDeviceDto {
 
 impl From<PairedDevice> for PairedDeviceDto {
     fn from(d: PairedDevice) -> Self {
+        let PairedDevice {
+            device_id,
+            label,
+            plugin_version,
+            installed_at,
+            last_mount_path,
+            last_seen_at,
+            last_synced_at,
+            last_wireless_at,
+            last_lan_addr,
+            token: _,
+        } = d;
         PairedDeviceDto {
-            device_id: d.device_id,
-            label: d.label,
-            plugin_version: d.plugin_version,
-            installed_at: d.installed_at,
-            last_mount_path: d.last_mount_path,
-            last_seen_at: d.last_seen_at,
-            last_synced_at: d.last_synced_at,
-            last_wireless_at: d.last_wireless_at,
-            last_lan_addr: d.last_lan_addr,
+            device_id,
+            label,
+            plugin_version,
+            installed_at,
+            last_mount_path,
+            last_seen_at,
+            last_synced_at,
+            last_wireless_at,
+            last_lan_addr,
         }
     }
 }
@@ -3032,13 +3404,21 @@ pub struct MountSyncDto {
 
 impl From<MountSync> for MountSyncDto {
     fn from(s: MountSync) -> Self {
+        let MountSync {
+            mount,
+            device_id,
+            found,
+            synced,
+            reports,
+            warnings,
+        } = s;
         MountSyncDto {
-            mount: path_str(&s.mount),
-            device_id: s.device_id,
-            found: s.found,
-            synced: s.synced,
-            reports: s.reports.into_iter().map(Into::into).collect(),
-            warnings: s.warnings.into_iter().map(Into::into).collect(),
+            mount: path_str(&mount),
+            device_id,
+            found,
+            synced,
+            reports: reports.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3114,15 +3494,25 @@ pub struct GoodreadsBookReportDto {
 
 impl From<GoodreadsBookReport> for GoodreadsBookReportDto {
     fn from(r: GoodreadsBookReport) -> Self {
+        let GoodreadsBookReport {
+            book_id,
+            title,
+            matched_by,
+            readings_added,
+            tags_added,
+            review,
+            private_notes,
+            rating,
+        } = r;
         GoodreadsBookReportDto {
-            book_id: r.book_id,
-            title: r.title,
-            matched_by: r.matched_by.into(),
-            readings_added: r.readings_added,
-            tags_added: r.tags_added,
-            review: r.review.into(),
-            private_notes: r.private_notes.into(),
-            rating: r.rating,
+            book_id,
+            title,
+            matched_by: matched_by.into(),
+            readings_added,
+            tags_added,
+            review: review.into(),
+            private_notes: private_notes.into(),
+            rating,
         }
     }
 }
@@ -3145,12 +3535,19 @@ pub struct UnmatchedRowDto {
 
 impl From<UnmatchedRow> for UnmatchedRowDto {
     fn from(u: UnmatchedRow) -> Self {
+        let UnmatchedRow {
+            row,
+            title,
+            authors,
+            external_id,
+            candidates,
+        } = u;
         UnmatchedRowDto {
-            row: u.row,
-            title: u.title,
-            authors: u.authors,
-            external_id: u.external_id,
-            candidates: u.candidates.into_iter().map(Into::into).collect(),
+            row,
+            title,
+            authors,
+            external_id,
+            candidates: candidates.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3171,12 +3568,19 @@ pub struct GoodreadsReportDto {
 
 impl From<GoodreadsReport> for GoodreadsReportDto {
     fn from(r: GoodreadsReport) -> Self {
+        let GoodreadsReport {
+            dry_run,
+            rows,
+            books,
+            unmatched,
+            warnings,
+        } = r;
         GoodreadsReportDto {
-            dry_run: r.dry_run,
-            rows: r.rows,
-            books: r.books.into_iter().map(Into::into).collect(),
-            unmatched: r.unmatched.into_iter().map(Into::into).collect(),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            dry_run,
+            rows,
+            books: books.into_iter().map(Into::into).collect(),
+            unmatched: unmatched.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3244,22 +3648,40 @@ pub struct CalibreBookDto {
 
 impl From<CalibreBook> for CalibreBookDto {
     fn from(b: CalibreBook) -> Self {
+        let CalibreBook {
+            calibre_id,
+            uuid,
+            title,
+            authors,
+            publisher,
+            publish_year,
+            language,
+            isbn_10,
+            isbn_13,
+            description,
+            tags,
+            cover,
+            formats,
+            series,
+            series_index: _,
+            added,
+        } = b;
         CalibreBookDto {
-            calibre_id: b.calibre_id,
-            uuid: b.uuid,
-            title: b.title,
-            authors: b.authors,
-            publisher: b.publisher,
-            publish_year: b.publish_year,
-            language: b.language,
-            isbn_10: b.isbn_10,
-            isbn_13: b.isbn_13,
-            description: b.description,
-            tags: b.tags,
-            cover: opt_path(&b.cover),
-            formats: b.formats.iter().map(|p| path_str(p)).collect(),
-            series: b.series,
-            added: b.added,
+            calibre_id,
+            uuid,
+            title,
+            authors,
+            publisher,
+            publish_year,
+            language,
+            isbn_10,
+            isbn_13,
+            description,
+            tags,
+            cover: opt_path(&cover),
+            formats: formats.iter().map(|p| path_str(p)).collect(),
+            series,
+            added,
         }
     }
 }
@@ -3310,14 +3732,23 @@ pub struct CalibreBookReportDto {
 
 impl From<CalibreBookReport> for CalibreBookReportDto {
     fn from(r: CalibreBookReport) -> Self {
+        let CalibreBookReport {
+            calibre_id,
+            book_id,
+            title,
+            matched_by,
+            tags_added,
+            cover,
+            files_linked,
+        } = r;
         CalibreBookReportDto {
-            calibre_id: r.calibre_id,
-            book_id: r.book_id,
-            title: r.title,
-            matched_by: r.matched_by.into(),
-            tags_added: r.tags_added,
-            cover: r.cover,
-            files_linked: r.files_linked,
+            calibre_id,
+            book_id,
+            title,
+            matched_by: matched_by.into(),
+            tags_added,
+            cover,
+            files_linked,
         }
     }
 }
@@ -3340,12 +3771,19 @@ pub struct UnmatchedCalibreBookDto {
 
 impl From<bookmole::UnmatchedCalibreBook> for UnmatchedCalibreBookDto {
     fn from(u: bookmole::UnmatchedCalibreBook) -> Self {
+        let bookmole::UnmatchedCalibreBook {
+            calibre_id,
+            uuid,
+            title,
+            authors,
+            candidates,
+        } = u;
         UnmatchedCalibreBookDto {
-            calibre_id: u.calibre_id,
-            uuid: u.uuid,
-            title: u.title,
-            authors: u.authors,
-            candidates: u.candidates.into_iter().map(Into::into).collect(),
+            calibre_id,
+            uuid,
+            title,
+            authors,
+            candidates: candidates.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3366,12 +3804,19 @@ pub struct CalibreReportDto {
 
 impl From<CalibreReport> for CalibreReportDto {
     fn from(r: CalibreReport) -> Self {
+        let CalibreReport {
+            dry_run,
+            rows,
+            books,
+            unmatched,
+            warnings,
+        } = r;
         CalibreReportDto {
-            dry_run: r.dry_run,
-            rows: r.rows,
-            books: r.books.into_iter().map(Into::into).collect(),
-            unmatched: r.unmatched.into_iter().map(Into::into).collect(),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            dry_run,
+            rows,
+            books: books.into_iter().map(Into::into).collect(),
+            unmatched: unmatched.into_iter().map(Into::into).collect(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3394,11 +3839,17 @@ pub struct TocEntryDto {
 
 impl From<TocEntry> for TocEntryDto {
     fn from(e: TocEntry) -> Self {
+        let TocEntry {
+            label,
+            depth,
+            target,
+            spine_index,
+        } = e;
         TocEntryDto {
-            label: e.label,
-            depth: e.depth,
-            target: e.target,
-            spine_index: e.spine_index,
+            label,
+            depth,
+            target,
+            spine_index,
         }
     }
 }
@@ -3418,9 +3869,10 @@ pub struct TableOfContentsDto {
 
 impl From<TableOfContents> for TableOfContentsDto {
     fn from(t: TableOfContents) -> Self {
+        let TableOfContents { sha256, entries } = t;
         TableOfContentsDto {
-            sha256: t.sha256,
-            entries: t.entries.into_iter().map(Into::into).collect(),
+            sha256,
+            entries: entries.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3474,15 +3926,25 @@ pub struct ReadingEventDto {
 
 impl From<ReadingEvent> for ReadingEventDto {
     fn from(e: ReadingEvent) -> Self {
+        let ReadingEvent {
+            book_id,
+            reading_id,
+            day,
+            minutes,
+            pages,
+            source,
+            confidence,
+            created_at,
+        } = e;
         ReadingEventDto {
-            book_id: e.book_id,
-            reading_id: e.reading_id,
-            day: e.day,
-            minutes: e.minutes,
-            pages: e.pages,
-            source: e.source,
-            confidence: e.confidence.into(),
-            created_at: e.created_at,
+            book_id,
+            reading_id,
+            day,
+            minutes,
+            pages,
+            source,
+            confidence: confidence.into(),
+            created_at,
         }
     }
 }
@@ -3500,10 +3962,8 @@ pub struct FillStatsDto {
 
 impl From<FillStats> for FillStatsDto {
     fn from(s: FillStats) -> Self {
-        FillStatsDto {
-            inserted: s.inserted,
-            updated: s.updated,
-        }
+        let FillStats { inserted, updated } = s;
+        FillStatsDto { inserted, updated }
     }
 }
 
@@ -3521,10 +3981,15 @@ pub struct RefillReportDto {
 
 impl From<RefillReport> for RefillReportDto {
     fn from(r: RefillReport) -> Self {
+        let RefillReport {
+            highlights,
+            notes,
+            readings,
+        } = r;
         RefillReportDto {
-            highlights: r.highlights.into(),
-            notes: r.notes.into(),
-            readings: r.readings.into(),
+            highlights: highlights.into(),
+            notes: notes.into(),
+            readings: readings.into(),
         }
     }
 }
@@ -3570,14 +4035,23 @@ pub struct ActivitySummaryDto {
 
 impl From<ActivitySummary> for ActivitySummaryDto {
     fn from(s: ActivitySummary) -> Self {
+        let ActivitySummary {
+            range,
+            books_finished,
+            activity_days,
+            notes_created,
+            links_created,
+            minutes,
+            pages,
+        } = s;
         ActivitySummaryDto {
-            range: DayRangeDto::from(&s.range),
-            books_finished: s.books_finished,
-            activity_days: s.activity_days,
-            notes_created: s.notes_created,
-            links_created: s.links_created,
-            minutes: s.minutes,
-            pages: s.pages,
+            range: DayRangeDto::from(&range),
+            books_finished,
+            activity_days,
+            notes_created,
+            links_created,
+            minutes,
+            pages,
         }
     }
 }
@@ -3600,11 +4074,17 @@ pub struct DayActivityDto {
 
 impl From<DayActivity> for DayActivityDto {
     fn from(d: DayActivity) -> Self {
+        let DayActivity {
+            day,
+            books,
+            minutes,
+            pages,
+        } = d;
         DayActivityDto {
-            day: d.day,
-            books: d.books,
-            minutes: d.minutes,
-            pages: d.pages,
+            day,
+            books,
+            minutes,
+            pages,
         }
     }
 }
@@ -3630,12 +4110,19 @@ pub struct MonthActivityDto {
 
 impl From<MonthActivity> for MonthActivityDto {
     fn from(m: MonthActivity) -> Self {
+        let MonthActivity {
+            month,
+            books,
+            activity_days,
+            minutes,
+            pages,
+        } = m;
         MonthActivityDto {
-            month: m.month,
-            books: m.books,
-            activity_days: m.activity_days,
-            minutes: m.minutes,
-            pages: m.pages,
+            month,
+            books,
+            activity_days,
+            minutes,
+            pages,
         }
     }
 }
@@ -3707,13 +4194,21 @@ pub struct MomentDto {
 
 impl From<Moment> for MomentDto {
     fn from(m: Moment) -> Self {
+        let Moment {
+            id,
+            kind,
+            book_id,
+            reading_id,
+            day,
+            occurred_at,
+        } = m;
         MomentDto {
-            id: m.id,
-            kind: m.kind.into(),
-            book_id: m.book_id,
-            reading_id: m.reading_id,
-            day: m.day,
-            occurred_at: m.occurred_at,
+            id,
+            kind: kind.into(),
+            book_id,
+            reading_id,
+            day,
+            occurred_at,
         }
     }
 }
@@ -3738,13 +4233,21 @@ pub struct StatsImportReportDto {
 
 impl From<StatsImportReport> for StatsImportReportDto {
     fn from(r: StatsImportReport) -> Self {
+        let StatsImportReport {
+            schema_version,
+            books_in_db,
+            books_matched,
+            days,
+            events,
+            warnings,
+        } = r;
         StatsImportReportDto {
-            schema_version: r.schema_version,
-            books_in_db: r.books_in_db,
-            books_matched: r.books_matched,
-            days: r.days,
-            events: r.events.into(),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            schema_version,
+            books_in_db,
+            books_matched,
+            days,
+            events: events.into(),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3801,10 +4304,15 @@ pub struct FieldSourceDto {
 
 impl From<FieldSource> for FieldSourceDto {
     fn from(f: FieldSource) -> Self {
+        let FieldSource {
+            field,
+            source,
+            fetched_at,
+        } = f;
         FieldSourceDto {
-            field: f.field,
-            source: f.source,
-            fetched_at: f.fetched_at,
+            field,
+            source,
+            fetched_at,
         }
     }
 }
@@ -3847,10 +4355,15 @@ pub struct EnrichCandidateDto {
 
 impl From<EnrichCandidate> for EnrichCandidateDto {
     fn from(c: EnrichCandidate) -> Self {
+        let EnrichCandidate {
+            book,
+            score,
+            sources,
+        } = c;
         EnrichCandidateDto {
-            book: c.book.into(),
-            score: c.score,
-            sources: c.sources.into_iter().map(Into::into).collect(),
+            book: book.into(),
+            score,
+            sources: sources.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -3905,11 +4418,17 @@ pub struct FieldChangeDto {
 
 impl From<FieldChange> for FieldChangeDto {
     fn from(c: FieldChange) -> Self {
+        let FieldChange {
+            field,
+            source,
+            before,
+            after,
+        } = c;
         FieldChangeDto {
-            field: c.field.to_string(),
-            source: c.source.map(Into::into),
-            before: c.before,
-            after: c.after,
+            field: field.to_string(),
+            source: source.map(Into::into),
+            before,
+            after,
         }
     }
 }
@@ -3933,11 +4452,17 @@ pub struct HeldFieldDto {
 
 impl From<HeldField> for HeldFieldDto {
     fn from(h: HeldField) -> Self {
+        let HeldField {
+            field,
+            offered,
+            offered_by,
+            kept,
+        } = h;
         HeldFieldDto {
-            field: h.field.to_string(),
-            offered: h.offered,
-            offered_by: h.offered_by.map(Into::into),
-            kept: h.kept,
+            field: field.to_string(),
+            offered,
+            offered_by: offered_by.map(Into::into),
+            kept,
         }
     }
 }
@@ -3960,13 +4485,21 @@ pub struct EnrichReportDto {
 
 impl From<EnrichReport> for EnrichReportDto {
     fn from(r: EnrichReport) -> Self {
+        let EnrichReport {
+            book_id,
+            outcome,
+            filled,
+            held,
+            cover,
+            warnings,
+        } = r;
         EnrichReportDto {
-            book_id: r.book_id,
-            outcome: r.outcome.into(),
-            filled: r.filled.into_iter().map(Into::into).collect(),
-            held: r.held.into_iter().map(Into::into).collect(),
-            cover: opt_path(&r.cover),
-            warnings: r.warnings.into_iter().map(Into::into).collect(),
+            book_id,
+            outcome: outcome.into(),
+            filled: filled.into_iter().map(Into::into).collect(),
+            held: held.into_iter().map(Into::into).collect(),
+            cover: opt_path(&cover),
+            warnings: warnings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -4049,18 +4582,23 @@ impl From<CloudService> for CloudServiceDto {
 
 impl From<CloudFolder> for CloudFolderDto {
     fn from(f: CloudFolder) -> Self {
+        let CloudFolder { service, root } = f;
         CloudFolderDto {
-            service: f.service.into(),
-            root: path_str(&f.root),
+            service: service.into(),
+            root: path_str(&root),
         }
     }
 }
 
 impl From<LibraryLocation> for LibraryLocationDto {
     fn from(l: LibraryLocation) -> Self {
+        let LibraryLocation {
+            database_dir,
+            cloud_folder,
+        } = l;
         LibraryLocationDto {
-            database_dir: opt_path(&l.database_dir),
-            cloud_folder: l.cloud_folder.map(Into::into),
+            database_dir: opt_path(&database_dir),
+            cloud_folder: cloud_folder.map(Into::into),
         }
     }
 }
@@ -4103,23 +4641,36 @@ pub struct SkippedEntriesDto {
 
 impl From<SkippedEntries> for SkippedEntriesDto {
     fn from(s: SkippedEntries) -> Self {
+        let SkippedEntries {
+            hidden,
+            not_books,
+            linked_folders,
+            too_deep,
+            unreadable,
+        } = s;
         SkippedEntriesDto {
-            hidden: s.hidden,
-            not_books: s.not_books,
-            linked_folders: s.linked_folders,
-            too_deep: s.too_deep,
-            unreadable: s.unreadable,
+            hidden,
+            not_books,
+            linked_folders,
+            too_deep,
+            unreadable,
         }
     }
 }
 
 impl From<ExpandedPaths> for ExpandedPathsDto {
     fn from(e: ExpandedPaths) -> Self {
+        let ExpandedPaths {
+            files,
+            calibre_libraries,
+            skipped,
+            cut_off_at,
+        } = e;
         ExpandedPathsDto {
-            files: e.files.iter().map(|p| path_str(p)).collect(),
-            calibre_libraries: e.calibre_libraries.iter().map(|p| path_str(p)).collect(),
-            skipped: e.skipped.into(),
-            cut_off_at: e.cut_off_at,
+            files: files.iter().map(|p| path_str(p)).collect(),
+            calibre_libraries: calibre_libraries.iter().map(|p| path_str(p)).collect(),
+            skipped: skipped.into(),
+            cut_off_at,
         }
     }
 }
@@ -4138,10 +4689,8 @@ pub struct SettingDto {
 
 impl From<bookmole::Setting> for SettingDto {
     fn from(s: bookmole::Setting) -> Self {
-        SettingDto {
-            key: s.key,
-            value: s.value,
-        }
+        let bookmole::Setting { key, value } = s;
+        SettingDto { key, value }
     }
 }
 
@@ -4226,18 +4775,37 @@ pub struct ReadSummaryDto {
 
 impl From<bookmole::HistoryRead> for ReadSummaryDto {
     fn from(r: bookmole::HistoryRead) -> Self {
+        let bookmole::HistoryRead {
+            book: _,
+            reading,
+            progress,
+            state: _,
+            count:
+                bookmole::ReadCount {
+                    number: read_number,
+                    of: of_reads,
+                },
+            put_down_at,
+            ended_at,
+            at,
+            days,
+            rating,
+            passages,
+            notes,
+            months,
+        } = r;
         ReadSummaryDto {
-            reading: ReadingDto::new(r.reading, r.progress),
-            read_number: r.count.number,
-            of_reads: r.count.of,
-            put_down_at: r.put_down_at,
-            ended_at: r.ended_at,
-            at: r.at,
-            days: r.days,
-            rating: r.rating.map(Into::into),
-            passages: r.passages,
-            notes: r.notes,
-            months: r.months,
+            reading: ReadingDto::new(reading, progress),
+            read_number,
+            of_reads,
+            put_down_at,
+            ended_at,
+            at,
+            days,
+            rating: rating.map(Into::into),
+            passages,
+            notes,
+            months,
         }
     }
 }
@@ -4257,6 +4825,7 @@ impl From<bookmole::HistoryRead> for HistoryReadDto {
     fn from(r: bookmole::HistoryRead) -> Self {
         HistoryReadDto {
             book: r.book.clone().into(),
+            // The rest of the record crosses through `ReadSummaryDto`, which destructures it.
             read: r.into(),
         }
     }
@@ -4275,10 +4844,8 @@ pub struct SourceNameDto {
 
 impl From<bookmole::SourceName> for SourceNameDto {
     fn from(s: bookmole::SourceName) -> Self {
-        SourceNameDto {
-            key: s.key,
-            label: s.label,
-        }
+        let bookmole::SourceName { key, label } = s;
+        SourceNameDto { key, label }
     }
 }
 
@@ -4328,24 +4895,40 @@ pub struct HistoryFiguresDto {
 
 impl From<bookmole::HistoryFigures> for HistoryFiguresDto {
     fn from(f: bookmole::HistoryFigures) -> Self {
+        let bookmole::HistoryFigures {
+            books_finished,
+            reading_now,
+            put_down,
+            pages,
+            elapsed_days,
+            pages_per_day,
+            minutes,
+            minutes_from,
+            passages,
+            passages_per_finished_book,
+            notes,
+            reviews,
+            reflections,
+            longest_run,
+        } = f;
         HistoryFiguresDto {
-            books_finished: f.books_finished,
-            reading_now: f.reading_now,
-            put_down: f.put_down,
-            pages: f.pages,
-            elapsed_days: f.elapsed_days,
-            pages_per_day: f.pages_per_day,
-            minutes: f.minutes,
-            minutes_from: map(f.minutes_from),
-            passages: f.passages,
-            passages_per_finished_book: f.passages_per_finished_book,
-            notes: f.notes,
-            reviews: f.reviews,
-            reflections: f.reflections,
-            longest_run: f.longest_run.map(|r| DayRunDto {
-                days: r.days,
-                first: r.first,
-                last: r.last,
+            books_finished,
+            reading_now,
+            put_down,
+            pages,
+            elapsed_days,
+            pages_per_day,
+            minutes,
+            minutes_from: map(minutes_from),
+            passages,
+            passages_per_finished_book,
+            notes,
+            reviews,
+            reflections,
+            longest_run: longest_run.map(|bookmole::DayRun { days, first, last }| DayRunDto {
+                days,
+                first,
+                last,
             }),
         }
     }
@@ -4370,12 +4953,19 @@ pub struct HistoryRecordDto {
 
 impl From<bookmole::HistoryRecord> for HistoryRecordDto {
     fn from(r: bookmole::HistoryRecord) -> Self {
+        let bookmole::HistoryRecord {
+            read,
+            pages,
+            pages_per_day,
+            marks,
+            tied_with,
+        } = r;
         HistoryRecordDto {
-            read: r.read.into(),
-            pages: r.pages,
-            pages_per_day: r.pages_per_day,
-            marks: r.marks,
-            tied_with: map(r.tied_with),
+            read: read.into(),
+            pages,
+            pages_per_day,
+            marks,
+            tied_with: map(tied_with),
         }
     }
 }
@@ -4401,11 +4991,17 @@ pub struct HistoryRecordsDto {
 
 impl From<bookmole::HistoryRecords> for HistoryRecordsDto {
     fn from(r: bookmole::HistoryRecords) -> Self {
+        let bookmole::HistoryRecords {
+            fastest,
+            longest,
+            most_marked,
+            best_rated,
+        } = r;
         HistoryRecordsDto {
-            fastest: r.fastest.map(Into::into),
-            longest: r.longest.map(Into::into),
-            most_marked: r.most_marked.map(Into::into),
-            best_rated: r.best_rated.map(Into::into),
+            fastest: fastest.map(Into::into),
+            longest: longest.map(Into::into),
+            most_marked: most_marked.map(Into::into),
+            best_rated: best_rated.map(Into::into),
         }
     }
 }
@@ -4576,34 +5172,51 @@ pub struct HistorySeriesDto {
 
 impl From<bookmole::HistorySeries> for HistorySeriesDto {
     fn from(s: bookmole::HistorySeries) -> Self {
+        let bookmole::HistorySeries {
+            buckets,
+            total,
+            known,
+            average,
+            busiest,
+            compare_total,
+            compare_change,
+        } = s;
         HistorySeriesDto {
-            buckets: s
-                .buckets
+            buckets: buckets
                 .into_iter()
-                .map(|b| SeriesBucketDto {
-                    period: b.period,
-                    start: b.start,
-                    end: b.end,
-                    value: b.value,
-                    known: b.known,
-                    parts: b
-                        .parts
-                        .into_iter()
-                        .map(|p| SeriesPartDto {
-                            key: p.key,
-                            label: p.label,
-                            value: p.value,
-                        })
-                        .collect(),
-                    compare: b.compare,
+                .map(|b| {
+                    let bookmole::SeriesBucket {
+                        period,
+                        start,
+                        end,
+                        value,
+                        known,
+                        parts,
+                        compare,
+                    } = b;
+                    SeriesBucketDto {
+                        period,
+                        start,
+                        end,
+                        value,
+                        known,
+                        parts: parts
+                            .into_iter()
+                            .map(|p| {
+                                let bookmole::SeriesPart { key, label, value } = p;
+                                SeriesPartDto { key, label, value }
+                            })
+                            .collect(),
+                        compare,
+                    }
                 })
                 .collect(),
-            total: s.total,
-            known: s.known,
-            average: s.average,
-            busiest: s.busiest.map(|i| i as i64),
-            compare_total: s.compare_total,
-            compare_change: s.compare_change,
+            total,
+            known,
+            average,
+            busiest: busiest.map(|i| i as i64),
+            compare_total,
+            compare_change,
         }
     }
 }
@@ -4622,10 +5235,15 @@ pub struct KeptRowDto {
 
 impl From<bookmole::KeptRow> for KeptRowDto {
     fn from(k: bookmole::KeptRow) -> Self {
+        let bookmole::KeptRow {
+            book,
+            passages,
+            notes,
+        } = k;
         KeptRowDto {
-            book: k.book.into(),
-            passages: k.passages,
-            notes: k.notes,
+            book: book.into(),
+            passages,
+            notes,
         }
     }
 }
@@ -4644,9 +5262,10 @@ pub struct SavedCsvDto {
 
 impl From<bookmole::SavedCsv> for SavedCsvDto {
     fn from(s: bookmole::SavedCsv) -> Self {
+        let bookmole::SavedCsv { path, rows } = s;
         SavedCsvDto {
-            path: path_str(&s.path),
-            rows: s.rows,
+            path: path_str(&path),
+            rows,
         }
     }
 }
@@ -4701,29 +5320,50 @@ pub struct LibraryTableDto {
 
 impl From<bookmole::LibraryTable> for LibraryTableDto {
     fn from(t: bookmole::LibraryTable) -> Self {
-        let c = t.counts;
+        let bookmole::LibraryTable {
+            rows,
+            counts,
+            total_pages,
+        } = t;
+        let bookmole::LibraryCounts {
+            all,
+            reading,
+            read,
+            put_down,
+            other,
+            no_reading,
+        } = counts;
         LibraryTableDto {
-            rows: t
-                .rows
+            rows: rows
                 .into_iter()
-                .map(|r| LibraryRowDto {
-                    book: r.book.into(),
-                    title_order: r.title_order,
-                    author_order: r.author_order,
-                    latest: r.latest.map(Into::into),
-                    passages: r.passages,
-                    notes: r.notes,
+                .map(|r| {
+                    let bookmole::LibraryRow {
+                        book,
+                        title_order,
+                        author_order,
+                        latest,
+                        passages,
+                        notes,
+                    } = r;
+                    LibraryRowDto {
+                        book: book.into(),
+                        title_order,
+                        author_order,
+                        latest: latest.map(Into::into),
+                        passages,
+                        notes,
+                    }
                 })
                 .collect(),
             counts: LibraryCountsDto {
-                all: c.all,
-                reading: c.reading,
-                read: c.read,
-                put_down: c.put_down,
-                other: c.other,
-                no_reading: c.no_reading,
+                all,
+                reading,
+                read,
+                put_down,
+                other,
+                no_reading,
             },
-            total_pages: t.total_pages,
+            total_pages,
         }
     }
 }
@@ -4857,16 +5497,25 @@ impl ListDto {
         in_library_count: i64,
         timeline_ready: bool,
     ) -> Self {
+        let bookmole::BookList {
+            id,
+            name,
+            description,
+            source,
+            source_ref: _,
+            created_at: _,
+            updated_at,
+        } = l;
         ListDto {
-            id: l.id,
-            name: l.name,
-            description: l.description,
-            source: l.source,
+            id,
+            name,
+            description,
+            source,
             book_count,
             not_in_library,
             in_library_count,
             timeline_ready,
-            updated_at: l.updated_at,
+            updated_at,
         }
     }
 }
@@ -4893,16 +5542,32 @@ pub struct ListSummaryDto {
 
 impl From<bookmole::ListSummary> for ListSummaryDto {
     fn from(s: bookmole::ListSummary) -> Self {
+        let bookmole::ListSummary {
+            list,
+            book_count,
+            not_in_library,
+            in_library,
+            preview,
+        } = s;
+        let bookmole::BookList {
+            id,
+            name,
+            description,
+            source,
+            source_ref: _,
+            created_at: _,
+            updated_at,
+        } = list;
         ListSummaryDto {
-            id: s.list.id,
-            name: s.list.name,
-            description: s.list.description,
-            source: s.list.source,
-            book_count: s.book_count,
-            not_in_library: s.not_in_library,
-            in_library_count: s.in_library,
-            updated_at: s.list.updated_at,
-            preview: s.preview.into_iter().map(Into::into).collect(),
+            id,
+            name,
+            description,
+            source,
+            book_count,
+            not_in_library,
+            in_library_count: in_library,
+            updated_at,
+            preview: preview.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -4932,15 +5597,24 @@ pub struct ListEntryDto {
 
 impl From<bookmole::ListEntry> for ListEntryDto {
     fn from(e: bookmole::ListEntry) -> Self {
-        let publish_year = e.book.publish_year;
+        let bookmole::ListEntry {
+            book,
+            position,
+            note,
+            added_at: _,
+            year,
+            year_is_edition,
+            in_library,
+        } = e;
+        let publish_year = book.publish_year;
         ListEntryDto {
-            book: e.book.into(),
-            position: e.position,
-            note: e.note,
-            year: e.year,
-            year_is_edition: e.year_is_edition,
+            book: book.into(),
+            position,
+            note,
+            year,
+            year_is_edition,
             publish_year,
-            in_library: e.in_library,
+            in_library,
         }
     }
 }
@@ -4963,12 +5637,19 @@ pub struct ListMembershipDto {
 
 impl From<bookmole::ListMembership> for ListMembershipDto {
     fn from(m: bookmole::ListMembership) -> Self {
+        let bookmole::ListMembership {
+            list_id,
+            name,
+            position,
+            list_size,
+            note,
+        } = m;
         ListMembershipDto {
-            list_id: m.list_id,
-            name: m.name,
-            position: m.position,
-            list_size: m.list_size,
-            note: m.note,
+            list_id,
+            name,
+            position,
+            list_size,
+            note,
         }
     }
 }
@@ -4988,10 +5669,15 @@ pub struct ListTimelineDto {
 
 impl From<bookmole::ListTimeline> for ListTimelineDto {
     fn from(t: bookmole::ListTimeline) -> Self {
+        let bookmole::ListTimeline {
+            dated,
+            undated,
+            ready,
+        } = t;
         ListTimelineDto {
-            dated: t.dated.into_iter().map(Into::into).collect(),
-            undated: t.undated.into_iter().map(Into::into).collect(),
-            ready: t.ready,
+            dated: dated.into_iter().map(Into::into).collect(),
+            undated: undated.into_iter().map(Into::into).collect(),
+            ready,
         }
     }
 }
@@ -5013,12 +5699,19 @@ pub struct ShelfSuggestionDto {
 
 impl From<bookmole::ShelfSuggestion> for ShelfSuggestionDto {
     fn from(s: bookmole::ShelfSuggestion) -> Self {
+        let bookmole::ShelfSuggestion {
+            source,
+            tag,
+            name,
+            book_count,
+            preview,
+        } = s;
         ShelfSuggestionDto {
-            source: s.source,
-            tag: s.tag,
-            name: s.name,
-            book_count: s.book_count,
-            preview: s.preview.into_iter().map(Into::into).collect(),
+            source,
+            tag,
+            name,
+            book_count,
+            preview: preview.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -5073,15 +5766,25 @@ pub struct CopyPlaceDto {
 
 impl From<bookmole::CopyPlace> for CopyPlaceDto {
     fn from(p: bookmole::CopyPlace) -> Self {
+        let bookmole::CopyPlace {
+            copy_id,
+            kind,
+            reference,
+            detail,
+            last_hash,
+            last_seen_at,
+            last_mtime,
+            missing_since,
+        } = p;
         CopyPlaceDto {
-            copy_id: p.copy_id,
-            kind: p.kind.into(),
-            reference: p.reference,
-            detail: p.detail,
-            last_hash: p.last_hash,
-            last_seen_at: p.last_seen_at,
-            last_mtime: p.last_mtime,
-            missing_since: p.missing_since,
+            copy_id,
+            kind: kind.into(),
+            reference,
+            detail,
+            last_hash,
+            last_seen_at,
+            last_mtime,
+            missing_since,
             device_name: None,
         }
     }
@@ -5134,35 +5837,59 @@ pub struct CopyDto {
 
 impl CopyDto {
     pub fn from_parts(c: bookmole::Copy, facts: bookmole::CopyFacts) -> Self {
-        let mut places: Vec<CopyPlaceDto> = c.places.iter().cloned().map(Into::into).collect();
-        for (place, dto) in c.places.iter().zip(places.iter_mut()) {
-            dto.device_name = facts
-                .reader_devices
+        let bookmole::Copy {
+            id,
+            book_id,
+            form,
+            tenure,
+            have_now,
+            from_whom,
+            app,
+            location,
+            started_at,
+            due_at,
+            ended_at,
+            lent_to,
+            unreadable,
+            note,
+            learned_from,
+            created_at,
+            updated_at,
+            places: copy_places,
+        } = c;
+        let bookmole::CopyFacts {
+            format,
+            can_keep_here,
+            reader_devices,
+        } = facts;
+        let mut places: Vec<CopyPlaceDto> = copy_places.iter().cloned().map(Into::into).collect();
+        for (place, dto) in copy_places.iter().zip(places.iter_mut()) {
+            dto.device_name = reader_devices
                 .iter()
                 .find(|(r, _)| place.kind == bookmole::PlaceKind::Reader && *r == place.reference)
                 .map(|(_, n)| n.clone());
         }
         CopyDto {
-            id: c.id,
-            book_id: c.book_id,
-            form: c.form.map(Into::into),
-            tenure: c.tenure.into(),
-            have_now: c.have_now,
-            from_whom: c.from_whom,
-            app: c.app,
-            location: c.location,
-            started_at: c.started_at,
-            due_at: c.due_at,
-            ended_at: c.ended_at,
-            lent_to: c.lent_to,
-            unreadable: c.unreadable,
-            note: c.note,
-            learned_from: c.learned_from.into(),
-            created_at: c.created_at,
-            updated_at: c.updated_at,
+            id,
+            book_id,
+            form: form.map(Into::into),
+            tenure: tenure.into(),
+            have_now,
+            from_whom,
+            app,
+            location,
+            started_at,
+            due_at,
+            ended_at,
+            lent_to,
+            unreadable,
+            note,
+            learned_from: learned_from.into(),
+            created_at,
+            updated_at,
             places,
-            format: facts.format,
-            can_keep_here: facts.can_keep_here,
+            format,
+            can_keep_here,
         }
     }
 }
@@ -5206,14 +5933,23 @@ pub struct HighlightOriginFactDto {
 
 impl From<bookmole::HighlightOriginFact> for HighlightOriginFactDto {
     fn from(f: bookmole::HighlightOriginFact) -> Self {
+        let bookmole::HighlightOriginFact {
+            highlight_id,
+            origin,
+            copy_id,
+            device_name,
+            on_this_computer,
+            pos_kind,
+            text_unavailable,
+        } = f;
         HighlightOriginFactDto {
-            highlight_id: f.highlight_id,
-            origin: f.origin.into(),
-            copy_id: f.copy_id,
-            device_name: f.device_name,
-            on_this_computer: f.on_this_computer,
-            pos_kind: f.pos_kind.map(Into::into),
-            text_unavailable: f.text_unavailable,
+            highlight_id,
+            origin: origin.into(),
+            copy_id,
+            device_name,
+            on_this_computer,
+            pos_kind: pos_kind.map(Into::into),
+            text_unavailable,
         }
     }
 }
@@ -5233,10 +5969,15 @@ pub struct BookStandingDto {
 
 impl From<bookmole::BookStanding> for BookStandingDto {
     fn from(s: bookmole::BookStanding) -> Self {
+        let bookmole::BookStanding {
+            in_library,
+            touched,
+            read_without_copy,
+        } = s;
         BookStandingDto {
-            in_library: s.in_library,
-            touched: s.touched,
-            read_without_copy: s.read_without_copy,
+            in_library,
+            touched,
+            read_without_copy,
         }
     }
 }
@@ -5290,25 +6031,40 @@ pub struct LibraryCopiesDto {
 
 impl From<bookmole::LibraryCopies> for LibraryCopiesDto {
     fn from(l: bookmole::LibraryCopies) -> Self {
-        let c = l.counts;
+        let bookmole::LibraryCopies { rows, counts } = l;
+        let bookmole::LibraryCopyCounts {
+            have_now,
+            had,
+            borrowed,
+            copy_not_recorded,
+        } = counts;
         LibraryCopiesDto {
-            rows: l
-                .rows
+            rows: rows
                 .into_iter()
-                .map(|r| LibraryCopyRowDto {
-                    book_id: r.book_id,
-                    have_now: r.have_now,
-                    had: r.had,
-                    borrowed: r.borrowed,
-                    copy_not_recorded: r.copy_not_recorded,
-                    tenure: r.tenure.into(),
+                .map(|r| {
+                    let bookmole::CopyStanding {
+                        book_id,
+                        have_now,
+                        had,
+                        borrowed,
+                        copy_not_recorded,
+                        tenure,
+                    } = r;
+                    LibraryCopyRowDto {
+                        book_id,
+                        have_now,
+                        had,
+                        borrowed,
+                        copy_not_recorded,
+                        tenure: tenure.into(),
+                    }
                 })
                 .collect(),
             counts: LibraryCopyCountsDto {
-                have_now: c.have_now,
-                had: c.had,
-                borrowed: c.borrowed,
-                copy_not_recorded: c.copy_not_recorded,
+                have_now,
+                had,
+                borrowed,
+                copy_not_recorded,
             },
         }
     }
@@ -5332,13 +6088,21 @@ pub struct HighlightImportDto {
 
 impl From<bookmole::HighlightImportSummary> for HighlightImportDto {
     fn from(s: bookmole::HighlightImportSummary) -> Self {
+        let bookmole::HighlightImportSummary {
+            inserted,
+            updated,
+            unchanged,
+            removed,
+            unparsed,
+            diagnostics,
+        } = s;
         HighlightImportDto {
-            inserted: s.inserted,
-            updated: s.updated,
-            unchanged: s.unchanged,
-            removed: s.removed,
-            unparsed: s.unparsed,
-            diagnostics: map_vec(s.diagnostics),
+            inserted,
+            updated,
+            unchanged,
+            removed,
+            unparsed,
+            diagnostics: map_vec(diagnostics),
         }
     }
 }
@@ -5370,11 +6134,17 @@ pub struct PreviewPlaceDto {
 
 impl From<bookmole::PreviewPlaceRescan> for PreviewPlaceDto {
     fn from(p: bookmole::PreviewPlaceRescan) -> Self {
+        let bookmole::PreviewPlaceRescan {
+            copy_id,
+            path,
+            outcome,
+            summary,
+        } = p;
         PreviewPlaceDto {
-            copy_id: p.copy_id,
-            path: path_str(&p.path),
-            outcome: p.outcome.into(),
-            summary: p.summary.into(),
+            copy_id,
+            path: path_str(&path),
+            outcome: outcome.into(),
+            summary: summary.into(),
         }
     }
 }
@@ -5394,9 +6164,10 @@ pub struct PreviewImportDto {
 
 impl From<bookmole::PreviewBookImport> for PreviewImportDto {
     fn from(i: bookmole::PreviewBookImport) -> Self {
+        let bookmole::PreviewBookImport { places, totals } = i;
         PreviewImportDto {
-            places: map_vec(i.places),
-            totals: i.totals.into(),
+            places: map_vec(places),
+            totals: totals.into(),
         }
     }
 }
@@ -5500,16 +6271,27 @@ pub struct AppleBooksBookDto {
 
 impl From<bookmole::AppleBooksBook> for AppleBooksBookDto {
     fn from(b: bookmole::AppleBooksBook) -> Self {
+        let bookmole::AppleBooksBook {
+            asset_id,
+            title,
+            authors,
+            store_bought,
+            outcome,
+            copy_id,
+            highlights_in_source,
+            deleted_in_source,
+            summary,
+        } = b;
         AppleBooksBookDto {
-            asset_id: b.asset_id,
-            title: b.title,
-            authors: b.authors,
-            store_bought: b.store_bought,
-            outcome: b.outcome.into(),
-            copy_id: b.copy_id,
-            highlights_in_source: b.highlights_in_source,
-            deleted_in_source: b.deleted_in_source,
-            summary: b.summary.into(),
+            asset_id,
+            title,
+            authors,
+            store_bought,
+            outcome: outcome.into(),
+            copy_id,
+            highlights_in_source,
+            deleted_in_source,
+            summary: summary.into(),
         }
     }
 }
@@ -5544,17 +6326,29 @@ pub struct AppleBooksReportDto {
 
 impl From<bookmole::AppleBooksReport> for AppleBooksReportDto {
     fn from(r: bookmole::AppleBooksReport) -> Self {
+        let bookmole::AppleBooksReport {
+            dry_run,
+            annotation_db,
+            library_db,
+            books,
+            totals,
+            assets_in_library,
+            assets_skipped,
+            not_highlights,
+            orphaned,
+            diagnostics,
+        } = r;
         AppleBooksReportDto {
-            dry_run: r.dry_run,
-            annotation_db: opt_path(&r.annotation_db),
-            library_db: opt_path(&r.library_db),
-            books: map_vec(r.books),
-            totals: r.totals.into(),
-            assets_in_library: r.assets_in_library,
-            assets_skipped: r.assets_skipped,
-            not_highlights: r.not_highlights,
-            orphaned: r.orphaned,
-            diagnostics: map_vec(r.diagnostics),
+            dry_run,
+            annotation_db: opt_path(&annotation_db),
+            library_db: opt_path(&library_db),
+            books: map_vec(books),
+            totals: totals.into(),
+            assets_in_library,
+            assets_skipped,
+            not_highlights,
+            orphaned,
+            diagnostics: map_vec(diagnostics),
         }
     }
 }
@@ -5577,13 +6371,21 @@ pub struct KindleClippingsBookDto {
 
 impl From<bookmole::kindle_clippings::KindleClippingsBook> for KindleClippingsBookDto {
     fn from(b: bookmole::kindle_clippings::KindleClippingsBook) -> Self {
+        let bookmole::kindle_clippings::KindleClippingsBook {
+            title_line,
+            book_id,
+            copy_id,
+            inserted,
+            updated,
+            unchanged,
+        } = b;
         KindleClippingsBookDto {
-            title_line: b.title_line,
-            book_id: b.book_id,
-            copy_id: b.copy_id,
-            inserted: b.inserted,
-            updated: b.updated,
-            unchanged: b.unchanged,
+            title_line,
+            book_id,
+            copy_id,
+            inserted,
+            updated,
+            unchanged,
         }
     }
 }
@@ -5608,12 +6410,19 @@ pub struct UnmatchedKindleTitleDto {
 
 impl From<bookmole::kindle_clippings::UnmatchedKindleTitle> for UnmatchedKindleTitleDto {
     fn from(u: bookmole::kindle_clippings::UnmatchedKindleTitle) -> Self {
+        let bookmole::kindle_clippings::UnmatchedKindleTitle {
+            title_line,
+            title,
+            authors,
+            entries,
+            candidates,
+        } = u;
         UnmatchedKindleTitleDto {
-            title_line: u.title_line,
-            title: u.title,
-            authors: u.authors,
-            entries: u.entries,
-            candidates: map_vec(u.candidates),
+            title_line,
+            title,
+            authors,
+            entries,
+            candidates: map_vec(candidates),
         }
     }
 }
@@ -5638,13 +6447,20 @@ pub struct KindleClippingsReportDto {
 
 impl KindleClippingsReportDto {
     pub fn new(path: &Path, r: bookmole::kindle_clippings::KindleClippingsReport) -> Self {
+        let bookmole::kindle_clippings::KindleClippingsReport {
+            dry_run,
+            books,
+            unmatched,
+            bookmarks,
+            summary,
+        } = r;
         KindleClippingsReportDto {
             path: path_str(path),
-            dry_run: r.dry_run,
-            books: map_vec(r.books),
-            unmatched: map_vec(r.unmatched),
-            bookmarks: r.bookmarks,
-            summary: r.summary.into(),
+            dry_run,
+            books: map_vec(books),
+            unmatched: map_vec(unmatched),
+            bookmarks,
+            summary: summary.into(),
         }
     }
 }
@@ -5676,16 +6492,27 @@ pub struct KindleNotebookReportDto {
 
 impl From<bookmole::kindle_notebook::KindleNotebookReport> for KindleNotebookReportDto {
     fn from(r: bookmole::kindle_notebook::KindleNotebookReport) -> Self {
+        let bookmole::kindle_notebook::KindleNotebookReport {
+            dry_run,
+            title,
+            authors,
+            book_id,
+            copy_id,
+            entries,
+            bookmarks,
+            candidates,
+            summary,
+        } = r;
         KindleNotebookReportDto {
-            dry_run: r.dry_run,
-            title: r.title,
-            authors: r.authors,
-            book_id: r.book_id,
-            copy_id: r.copy_id,
-            entries: r.entries,
-            bookmarks: r.bookmarks,
-            candidates: map_vec(r.candidates),
-            summary: r.summary.into(),
+            dry_run,
+            title,
+            authors,
+            book_id,
+            copy_id,
+            entries,
+            bookmarks,
+            candidates: map_vec(candidates),
+            summary: summary.into(),
         }
     }
 }
@@ -5722,17 +6549,29 @@ pub struct CopyFileDto {
 
 impl From<bookmole::CopyFile> for CopyFileDto {
     fn from(f: bookmole::CopyFile) -> Self {
+        let bookmole::CopyFile {
+            copy_id,
+            kind,
+            reference,
+            format,
+            path,
+            calibre_library,
+            on_disk,
+            size,
+            missing_since,
+            last_seen_at,
+        } = f;
         CopyFileDto {
-            copy_id: f.copy_id,
-            kind: f.kind.into(),
-            reference: f.reference,
-            format: f.format,
-            path: f.path.map(|p| path_str(&p)),
-            calibre_library: f.calibre_library,
-            on_disk: f.on_disk,
-            size: f.size,
-            missing_since: f.missing_since,
-            last_seen_at: f.last_seen_at,
+            copy_id,
+            kind: kind.into(),
+            reference,
+            format,
+            path: path.map(|p| path_str(&p)),
+            calibre_library,
+            on_disk,
+            size,
+            missing_since,
+            last_seen_at,
         }
     }
 }
@@ -5761,11 +6600,17 @@ pub struct CopyHighlightSourceDto {
 
 impl From<bookmole::CopyHighlightSource> for CopyHighlightSourceDto {
     fn from(s: bookmole::CopyHighlightSource) -> Self {
+        let bookmole::CopyHighlightSource {
+            copy_id,
+            origin,
+            device_name,
+            last_read_at,
+        } = s;
         CopyHighlightSourceDto {
-            copy_id: s.copy_id,
-            origin: s.origin.into(),
-            device_name: s.device_name,
-            last_read_at: s.last_read_at,
+            copy_id,
+            origin: origin.into(),
+            device_name,
+            last_read_at,
         }
     }
 }
