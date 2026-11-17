@@ -77,6 +77,16 @@ wildcards = "deny"
 allow-wildcard-paths = true
 skip = []
 
+# The crate boundaries: `wrappers` names the only crates that may depend on
+# that crate directly.
+deny = [
+    # The engine itself is listed because its tests turn on `internals`.
+    { crate = "bookmole", wrappers = ["bookmole", "bookmole-api", "bookmoled", "bookmole-cli", "bookmole-tui"] },
+    { crate = "epubkit", wrappers = ["bookmole"] },
+    { crate = "ratatui", wrappers = ["bookmole-tui"] },
+    { crate = "crossterm", wrappers = ["bookmole-tui", "ratatui"] },
+]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
