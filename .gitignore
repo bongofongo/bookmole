@@ -1,0 +1,64 @@
+/target
+
+/epubs
+
+/database
+
+/vault
+
+anki.tsv
+
+# Perf runs: per-run JSONL + summary, and the accumulated history.tsv. Machine-
+# and terminal-specific, so a committed number would be misleading rather than
+# useful — the trend only means anything against your own baseline.
+/perf
+
+# `make dist` staging. The real archives are built by .github/workflows/release.yml
+# and live on the GitHub release; this is only the local rehearsal of that.
+/dist
+
+.DS_Store
+
+# Drop-in dir for the user's own real KOReader exports (never commit highlights).
+/crates/engine/tests/fixtures/koreader/real/*
+!/crates/engine/tests/fixtures/koreader/real/README.md
+!/crates/engine/tests/fixtures/koreader/real/.gitkeep
+
+# Same shape, for PDFs: drop a real PDF here and `pdf.rs`'s fixture test
+# reads it. The synthetic documents in that module cover shape; only a file a
+# real producer wrote covers a cross-reference *stream*. Never commit one — a
+# `.pdf` in the tree is the fixture nobody can read a diff of, and it is very
+# likely to be someone's book.
+/crates/engine/tests/fixtures/pdf/real/*
+!/crates/engine/tests/fixtures/pdf/real/README.md
+!/crates/engine/tests/fixtures/pdf/real/.gitkeep
+
+# The testing corpus is committed: the 51 Gutenberg epubs, the generated
+# KOReader/statistics/calibre/reader layers and their locks — 60 MB, so a
+# clone, a sandbox that cannot reach gutenberg.org, and CI all have tier 2
+# without a fetch. `make corpus-layers` regenerates it byte-for-byte from the
+# seed. The one layer still ignored is the dev library's seed: `gen-devdb`
+# writes this machine's absolute data-dir into `cover_path`, and `make dev-db`
+# rebuilds it in seconds.
+/corpus/generated/devdb
+
+# calibredb needs a config dir of its own while gen-calibre runs (so it never
+# touches ~/.config/calibre); it writes this machine's paths into it.
+/corpus/generated/calibre/calibre-config
+
+# cargo-fuzz working state. `fuzz/seeds/` IS committed — the set
+# tests/fuzz_seeds.rs replays on stable in PR CI; runs write to fuzz/corpus/.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+
+# A developer's own calibre library / personal reading data. Never commit.
+/personal_data
+
+# Log files, when the repository root is used as a data dir.
+/logs
+
+# The seeded dev library `make dev-db` builds. Gitignored for the tier-2
+# corpus's reason: it is large, it is a pure function of a seed, and a committed
+# copy would be a second source of truth for what the dev library contains.
+/dev-data

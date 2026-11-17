@@ -1,0 +1,123 @@
+[package]
+name = "bookmole"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+[features]
+default = ["wellknown"]
+# The offline index of well-known works (`data/README.md`): the file under
+# `data/`, embedded. Off, everything still compiles, and suggestions and
+# correction answer empty with `DiagnosticKind::OfflineIndexUnavailable`.
+wellknown = []
+# The `Engine::storage` escape hatch, for tests only.
+#
+# `tests/` is a separate crate, so it cannot reach a `pub(crate)` field — and
+# the field is private precisely so no frontend can. A feature is
+# how the engine's own suite keeps the access without handing it to anyone else,
+# and the self dev-dependency below is how a package turns its own feature on
+# for its own test targets. A frontend that wrote `engine.storage()` in
+# production code would still fail `cargo check --workspace`, which is why CI
+# runs one.
+internals = []
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+# EPUB reading: the workspace's own standalone reader (zip + quick-xml, all
+# permissive), which replaced the GPL-3.0 `epub` crate. `src/epub.rs` adapts it.
+epubkit = { path = "../epubkit" }
+lopdf.workspace = true
+sqlx.workspace = true
+time.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+strsim.workspace = true
+mlua.workspace = true
+sha2.workspace = true
+# System randomness for the KOReader plugin's pairing token and device id. Already in
+# the graph via `rand_core`; MIT/Apache-2.0, so `cargo deny` is unaffected.
+getrandom = "0.3"
+md-5.workspace = true
+# `pairing.lua` names each paired computer, and the honest name is the
+# hostname — the same string the router already registers, so the menu label and
+# the discovery ladder's DNS rung are one value rather than two that can
+# disagree. Already resolved in `Cargo.lock` via a transitive dependency, so
+# this changes nothing about the graph; Apache-2.0/MIT, so `cargo deny` is
+# unaffected.
+gethostname = "1"
+# The wireless link's pairing token is a challenge-response credential, so the
+# rendezvous needs HMAC-SHA256 on this side of the language boundary. `sha2` is
+# already a direct dependency and `hmac` is already resolved in `Cargo.lock`
+# via a transitive path, so this changes nothing about the graph;
+# MIT/Apache-2.0, so `cargo deny` is unaffected.
+hmac = "0.12"
+# Covers are measured (width, height, border accent) and downscaled
+# once, at the moment they are written, so a shelf of three hundred spines is
+# one query rather than three hundred image decodes. The same crate the TUI's
+# renderer already links, at the same workspace feature set — the engine is now
+# where a cover is *decoded*, `render3d` is where one is drawn.
+image.workspace = true
+regex.workspace = true
+# Search folds what was typed and what providers return the same way (NFKD,
+# marks dropped) so `cafe` finds *Café*. Already resolved in
+# `Cargo.lock` through `idna`; MIT/Apache-2.0, so `cargo deny` is unaffected.
+unicode-normalization = "0.1.24"
+csv.workspace = true
+tracing.workspace = true
+# The offline index ships as one gzip (`data/wellknown.tsv.gz`) and is read
+# once, into its derived database. Already in `Cargo.lock` (the TUI's kitty
+# path, `image`'s PNG decoder); MIT/Apache-2.0.
+flate2.workspace = true
+# `sync` is the mount watcher's channel seam; `time` is the provider timeout
+# and the watcher's debounce; `process` is how calibre's binaries are run —
+# `ebook-convert` on a large book takes minutes, and blocking the executor for
+# that would stop every other task in the frontend.
+tokio = { workspace = true, features = ["time", "sync", "process"] }
+notify.workspace = true
+# `ko_statistics` copies the device's live `statistics.sqlite3` out before reading it,
+# and the copy has to land somewhere private that is cleaned up even when the
+# read fails. It was already a dev-dependency; this promotes it.
+tempfile = "3"
+
+# Which of this machine's addresses is on a LAN. The route-to-nowhere trick in
+# `plugin::this_lan_address` answers *which address would reach the world*, and
+# on a machine running a VPN that is the tunnel's — found on 2026-11-11, when an
+# install stamped `198.51.100.2` into a Kindle that lives on `192.0.2.0/24`. Only
+# the list of interfaces can tell a tunnel from a network. `nix` is MIT, was
+# already resolved in `Cargo.lock` at this version (as was `memoffset`, which
+# the `net` feature pulls in), and its `getifaddrs` is a safe wrapper, so the
+# engine still contains no `unsafe`.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["net"] }
+
+[dev-dependencies]
+# A package depending on itself, which cargo permits for dev-dependencies and
+# which is the only way to switch a feature on for one's own `tests/`.
+bookmole = { path = ".", features = ["internals"] }
+tempfile = "3"
+proptest = "1"
+# Test payloads for `partial_md5` are generated, never committed as a binary.
+# ChaCha8 specifically, per the corpus rule: StdRng's algorithm is explicitly
+# permitted to change between `rand` versions, which is how a "deterministic"
+# fixture quietly stops being deterministic.
+rand_chacha = "0.9"
+rand_core = "0.9"
+# Builds the ISBN-less epub that `engine_facade.rs` imports. It has to be built
+# rather than committed *and* it has to lack an ISBN: `import_epub` looks a
+# found ISBN up through the providers, and the suite makes no network calls.
+# `src/epub.rs`'s tests build their small books with it too.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+wiremock = "0.6"
+# For the redaction test's capturing layer only. The engine itself must never
+# depend on a subscriber.
+tracing-subscriber.workspace = true
+# `test-util` is what makes the 5s provider timeout testable in zero wall
+# time, via #[tokio::test(start_paused = true)].
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+serde_json.workspace = true

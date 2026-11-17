@@ -1,0 +1,60 @@
+-- A note continued in dated parts, and the order a note list
+-- is read in.
+--
+-- ## The file stays one note
+--
+-- A continuation is appended to the **same** markdown file under a marker line
+-- the engine writes and parses (`crate::notes::PartMarker`):
+--
+--     <!-- part 2 · 2026-11-04T21:10:00Z · p. 251 -->
+--
+-- Part 1 is everything before the first marker; its date is the note's
+-- `created_at` and its page the note's `page`. The body is still the origin of
+-- every fact here — these two columns are an **index of the file**, recomputed
+-- by every writer of `notes_fts` (`insert_note`, and `reindex` under both
+-- `refresh_note_body` and `reindex_note`), so an outside edit that deletes a
+-- marker un-parts the note the next time `reindex_from_body` sees it.
+--
+-- Two alternatives were weighed and refused. A visible dated heading per part
+-- (`## 4 November 2026 · p. 251`) collides with the reader's own `##`
+-- subheadings, so a part boundary becomes a guess. Separate notes chained by
+-- an id give each part its own title and wikilink target, so the graph and
+-- the threads see N notes where the reader wrote one. The marker's cost is
+-- stated instead: outside readingbuddy (Obsidian's reading view hides HTML
+-- comments) the parts read as one undated note, and an outside edit that
+-- deletes a marker merges two parts, which the index then reports honestly.
+--
+-- ## `parts`
+--
+-- How many parts the body holds. `1` for every note that exists today, which is
+-- exactly what the default back-fills: no body written before this migration
+-- can contain a marker the engine wrote, because nothing wrote one.
+--
+-- ## `latest_part_at`
+--
+-- Unix seconds: the newest part's date — `created_at` for an unparted note. It
+-- is the key a note list orders by (`latest_part_at DESC, id DESC`), so a
+-- continued note moves up when a part is **added** and never when one is
+-- edited; `last_modified` moves on every save and would reorder the list every
+-- time a typo was fixed.
+--
+-- Nullable only because SQLite cannot `ADD COLUMN … NOT NULL` with a default
+-- read from another column. It is back-filled from `created_at` here, and every
+-- writer stamps it, so a NULL is unreachable rather than a case to handle.
+--
+-- The index is on the exact key the list orders by, `id` included, so the
+-- tie-break does not cost a temp B-tree on a vault of thousands.
+ALTER TABLE notes ADD COLUMN parts INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE notes ADD COLUMN latest_part_at INTEGER;
+UPDATE notes SET latest_part_at = created_at;
+CREATE INDEX idx_notes_latest_part ON notes(latest_part_at DESC, id DESC);
+
+-- ## A typed passage needs nothing here
+--
+-- `CreateHighlight` (E8) writes `highlights.source = 'user'`. That column has
+-- been free TEXT since `0001_init.sql` — no `CHECK`, the vocabulary lives in
+-- comments, the `readings.source` precedent from `0005` — so the new word needs
+-- no schema change, and this note is the record that the question was asked.
+-- A KOReader import cannot touch such a row: `refresh_device_fields` and
+-- `device_highlight_digest` are keyed on the device's identity hash and on
+-- `source = 'koreader'` respectively.

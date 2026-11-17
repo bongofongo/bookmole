@@ -1,0 +1,1205 @@
+//! Data-driven KOReader import harness.
+//!
+//! Auto-discovers the fixture corpus under `tests/fixtures/koreader/`, imports
+//! each sidecar into a fresh in-memory database, and asserts:
+//!   * results match committed golden JSON snapshots (`import_matches_golden`),
+//!   * re-importing the same export changes nothing — the idempotency guarantee
+//!     (`reimport_is_strictly_idempotent`),
+//!   * a superset re-import adds only the genuinely new rows
+//!     (`appends_only_new_on_partial_reimport`),
+//!   * malformed/unmatched sidecars degrade to warnings, never abort
+//!     (`malformed_and_unmatched_are_non_fatal`),
+//!   * the user's own drop-in exports under `real/` are idempotent, when present
+//!     (`real_exports_are_idempotent`).
+//!
+//! Regenerate the golden snapshots with `UPDATE_GOLDEN=1` (or `make golden`).
+
+use std::path::{Path, PathBuf};
+
+use bookmole::koreader::{self, parse_sidecar};
+use bookmole::{Book, Diagnostic, DiagnosticKind, Storage};
+use serde_json::{Value, json};
+
+fn fixtures_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/koreader")
+}
+
+fn synthetic_dir() -> PathBuf {
+    fixtures_root().join("synthetic")
+}
+
+/// The `fixtures` table from `manifest.json`.
+fn manifest() -> Value {
+    let raw =
+        std::fs::read_to_string(fixtures_root().join("manifest.json")).expect("read manifest.json");
+    let m: Value = serde_json::from_str(&raw).expect("parse manifest.json");
+    m["fixtures"].clone()
+}
+
+/// Every `*.sdr` directory under `synthetic/`, sorted by name.
+fn synthetic_fixtures() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(synthetic_dir())
+        .expect("read synthetic dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".sdr"))
+        .collect();
+    names.sort();
+    names
+}
+
+async fn mem_storage() -> Storage {
+    Storage::connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db")
+}
+
+/// Seed the library with the books a fixture expects (so title-fuzzy matching
+/// in `koreader::match_book` succeeds).
+async fn seed_books(storage: &Storage, books: &Value) {
+    let Some(arr) = books.as_array() else { return };
+    for b in arr {
+        let authors = b["authors"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        storage
+            .upsert_book(
+                &Book {
+                    title: b["title"].as_str().map(str::to_owned),
+                    authors,
+                    // Optional, and the reason the schema was extended: without an
+                    // ISBN on the seeded book, the sibling-epub match path can
+                    // never fire and stays untested.
+                    isbn_10: b["isbn_10"].as_str().map(str::to_owned),
+                    isbn_13: b["isbn_13"].as_str().map(str::to_owned),
+                    language: b["language"].as_str().map(str::to_owned),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .expect("seed book");
+    }
+}
+
+/// Snapshot every highlight of a book in stored order: the fields that must
+/// stay stable across a re-import.
+async fn highlight_rows(storage: &Storage, book_id: i64) -> Value {
+    let rows = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list highlights");
+    Value::Array(
+        rows.into_iter()
+            .map(|h| {
+                json!({
+                    "text": h.text,
+                    "chapter": h.chapter,
+                    "page": h.page,
+                    // The device's note (`highlights.origin_note` since migration
+                    // 0004). Keyed as `note` still, because the key names what
+                    // the *sidecar* wrote and renaming it would churn every
+                    // golden for no change in behaviour. Our own `annotation`
+                    // is deliberately absent: import must never write it, and
+                    // that is asserted by name in
+                    // `device_edits_refresh_but_ours_survive`.
+                    "note": h.origin_note,
+                    "ko_datetime": h.ko_datetime,
+                })
+            })
+            .collect(),
+    )
+}
+
+async fn flashcard_words(storage: &Storage, book_id: i64) -> Vec<String> {
+    let mut words: Vec<String> = storage
+        .list_flashcards_for_book(book_id)
+        .await
+        .expect("list flashcards")
+        .into_iter()
+        .map(|f| f.word)
+        .collect();
+    words.sort();
+    words
+}
+
+/// A golden-safe rendering of one diagnostic: **which** degradation fired, plus
+/// any count it carries. Never `Display`, which prints the fixture's absolute
+/// path and would differ on every machine.
+///
+/// This replaced a bare `has_warnings: bool`, and the reason is the lesson of
+/// the PDF-anchor fix (highlights KOReader anchors to a page plus coordinates
+/// used to be dropped with no count and no diagnostic): an absence has to be
+/// reported by name. That boolean was `true` for a sidecar with an unknown
+/// device status and `true` for one whose highlights we could not anchor — so a
+/// golden could not tell the two apart, and a fixture asserting "some warning
+/// happened" is green when the wrong one happens, or when the right one is
+/// replaced by a different wrong one. A golden that merely records an absence
+/// is the bug written down.
+///
+/// The catch-all **panics** rather than bucketing. A new koreader diagnostic has
+/// to be taught to this function on purpose; silently folding it into "other"
+/// is how the next silence would get committed.
+fn warning_name(d: &Diagnostic) -> String {
+    match &d.kind {
+        DiagnosticKind::NoSidecarsFound { .. } => "NoSidecarsFound".to_string(),
+        DiagnosticKind::SidecarUnreadable { .. } => "SidecarUnreadable".to_string(),
+        DiagnosticKind::SidecarUnparsable { .. } => "SidecarUnparsable".to_string(),
+        DiagnosticKind::SidecarNotIdentified { .. } => "SidecarNotIdentified".to_string(),
+        DiagnosticKind::UnknownDeviceStatus { .. } => "UnknownDeviceStatus".to_string(),
+        // The count is in the name on purpose: it is the number the fixture is
+        // about, and a golden carrying the kind without it could not tell three
+        // lost highlights from one.
+        DiagnosticKind::SidecarAnchorsUnsupported { entries, .. } => {
+            format!("SidecarAnchorsUnsupported({entries})")
+        }
+        other => {
+            panic!("koreader::import produced a diagnostic this harness cannot name: {other:?}")
+        }
+    }
+}
+
+/// Import one fixture dir into a freshly seeded in-memory DB and reduce the
+/// result to the golden JSON shape. Warning text carries absolute paths, so we
+/// record which warnings fired and never their prose.
+async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
+    let storage = mem_storage().await;
+    seed_books(&storage, books).await;
+    let dir = synthetic_dir().join(fixture);
+    let report = koreader::import(&storage, &dir, false)
+        .await
+        .expect("import");
+
+    let mut imported = Vec::new();
+    for s in &report.imported {
+        imported.push(json!({
+            "book_title": s.book_title,
+            "inserted": s.inserted,
+            // Device-owned fields refreshed on a row we already had. Zero
+            // everywhere in this loop — each fixture is imported once into a
+            // fresh database, so there is nothing yet to refresh — and that is
+            // the point: it pins that a first import never claims to have
+            // updated anything.
+            "updated": s.updated,
+            "skipped": s.skipped,
+            "flashcards": s.flashcards,
+            // Recorded because the two match paths are not interchangeable and
+            // the fallback masks the failure of the better one: break the
+            // sibling-epub ISBN lookup and fuzzy title matching silently
+            // rescues every fixture, leaving every other field in this golden
+            // unchanged. This is the only line that guards that branch.
+            "matched_by": s.matched_by.to_string(),
+            // The device's own reading state, as parsed. It also feeds
+            // `readings`, but this is the place the `summary` /
+            // `percent_finished` parse itself is asserted end to end.
+            // Without these three lines the four device-state fixtures would be
+            // green while parsing nothing.
+            "percent_finished": s.percent_finished,
+            "status": s.status.as_ref().map(|s| s.to_string()),
+            "rating": s.rating,
+            "highlights": highlight_rows(&storage, s.book_id).await,
+            "flashcard_words": flashcard_words(&storage, s.book_id).await,
+        }));
+    }
+    let unmatched: Vec<Value> = report
+        .unmatched
+        .iter()
+        .map(|u| json!({ "title": u.title }))
+        .collect();
+
+    // Sorted: `find_sidecars` fixes file order, but a fixture that ever emits
+    // two warnings from one file should not make the golden depend on which
+    // check `import_into` happens to run first.
+    let mut warnings: Vec<String> = report.warnings.iter().map(warning_name).collect();
+    warnings.sort();
+
+    let golden = json!({
+        "imported": imported,
+        "unmatched": unmatched,
+        "warnings": warnings,
+    });
+    (storage, golden)
+}
+
+fn golden_path(fixture: &str) -> PathBuf {
+    // `Middlemarch.sdr` -> `expected/Middlemarch.json`
+    let stem = fixture.strip_suffix(".sdr").unwrap_or(fixture);
+    fixtures_root()
+        .join("expected")
+        .join(format!("{stem}.json"))
+}
+
+fn pretty(v: &Value) -> String {
+    serde_json::to_string_pretty(v).expect("serialize json")
+}
+
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn import_matches_golden() {
+    let update = std::env::var("UPDATE_GOLDEN").is_ok();
+    let man = manifest();
+    let mut failures = Vec::new();
+    let mut produced: Vec<PathBuf> = Vec::new();
+
+    for fixture in synthetic_fixtures() {
+        let books = man
+            .get(&fixture)
+            .and_then(|f| f.get("books"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        let (_s, actual) = import_to_golden(&fixture, &books).await;
+        let path = golden_path(&fixture);
+
+        if update {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("{}\n", pretty(&actual))).unwrap();
+            produced.push(path);
+            continue;
+        }
+
+        let expected_raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                failures.push(format!(
+                    "{fixture}: missing golden {} — run `make golden`",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let expected: Value = serde_json::from_str(&expected_raw).expect("parse golden");
+        if expected != actual {
+            failures.push(format!(
+                "{fixture}: golden mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                pretty(&expected),
+                pretty(&actual)
+            ));
+        }
+    }
+
+    if update {
+        // Regeneration used to be a pure overwrite that never removed anything,
+        // so deleting a fixture left its golden behind to rot — still loaded,
+        // still green, guarding nothing.
+        let expected_dir = fixtures_root().join("expected");
+        let mut stale = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&expected_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("json") && !produced.contains(&p)
+                {
+                    stale.push(p);
+                }
+            }
+        }
+        stale.sort();
+        for p in &stale {
+            std::fs::remove_file(p).expect("remove stale golden");
+            eprintln!("UPDATE_GOLDEN: removed stale golden {}", p.display());
+        }
+        eprintln!(
+            "UPDATE_GOLDEN: rewrote {} golden snapshots.",
+            produced.len()
+        );
+        return;
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
+/// The sibling-epub ISBN branch is the one match path that a failure hides:
+/// break it and fuzzy title matching silently rescues almost everything, with
+/// every other golden field unchanged. `expect.match_via` in the manifest is
+/// what makes that failure visible.
+#[tokio::test]
+async fn fixtures_match_by_the_method_the_manifest_expects() {
+    let man = manifest();
+    let mut checked = 0;
+
+    for fixture in synthetic_fixtures() {
+        let Some(want) = man
+            .get(&fixture)
+            .and_then(|f| f.get("expect"))
+            .and_then(|e| e.get("match_via"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let books = man
+            .get(&fixture)
+            .and_then(|f| f.get("books"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+
+        let storage = mem_storage().await;
+        seed_books(&storage, &books).await;
+        let report = koreader::import(&storage, &synthetic_dir().join(&fixture), false)
+            .await
+            .expect("import");
+
+        assert_eq!(
+            report.imported.len(),
+            1,
+            "{fixture}: expected exactly one matched book, got {:?}",
+            report.imported
+        );
+        assert_eq!(
+            report.imported[0].matched_by.to_string(),
+            want,
+            "{fixture}: matched by the wrong method"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no fixture declares expect.match_via — the ISBN branch is unguarded"
+    );
+}
+
+/// No fixture can declare `expect.match_via: "md5"`, because on a first import
+/// into a fresh library there is no mapping yet — the link is a consequence of
+/// matching, not an input to it. So the md5 branch needs its own test: import
+/// twice and assert the second pass used the recorded link rather than
+/// re-guessing.
+///
+/// `Gen-Stats` is the synthetic fixture carrying a root `partial_md5_checksum`.
+/// If that ever changes this test fails loudly rather than quietly checking
+/// nothing, which is the same reason `fixtures_match_by_the_method_the_manifest_expects`
+/// refuses to pass at zero.
+#[tokio::test]
+async fn a_second_import_matches_on_the_link_it_recorded() {
+    let fixture = "Gen-Stats.sdr";
+    let man = manifest();
+    let books = man
+        .get(fixture)
+        .and_then(|f| f.get("books"))
+        .cloned()
+        .expect("Gen-Stats must be in the manifest");
+
+    let storage = mem_storage().await;
+    seed_books(&storage, &books).await;
+    let dir = synthetic_dir().join(fixture);
+
+    let first = koreader::import(&storage, &dir, false)
+        .await
+        .expect("first");
+    assert_eq!(
+        first.imported[0].matched_by.to_string(),
+        "title",
+        "nothing is recorded yet, so the first pass can only guess"
+    );
+
+    // Mirrors the fixture's root `partial_md5_checksum`. If `Gen-Stats` loses
+    // that key, this fails rather than the test quietly degrading into a second
+    // title match that still says "md5" for no reason.
+    let linked = storage
+        .find_book_by_partial_md5("9f2c4e6a8b0d1357911d3f5b7d9f1a3c")
+        .await
+        .expect("lookup");
+    assert_eq!(
+        linked.and_then(|b| b.id),
+        Some(first.imported[0].book_id),
+        "the import must record the link it just made"
+    );
+
+    let second = koreader::import(&storage, &dir, false)
+        .await
+        .expect("second");
+    assert_eq!(second.imported[0].matched_by.to_string(), "md5");
+    assert_eq!(second.imported[0].inserted, 0);
+}
+
+#[tokio::test]
+async fn reimport_is_strictly_idempotent() {
+    let man = manifest();
+    for fixture in synthetic_fixtures() {
+        let books = man
+            .get(&fixture)
+            .and_then(|f| f.get("books"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+
+        let storage = mem_storage().await;
+        seed_books(&storage, &books).await;
+        let dir = synthetic_dir().join(&fixture);
+
+        let first = koreader::import(&storage, &dir, false)
+            .await
+            .expect("first import");
+        // Nothing produced (malformed / unmatched) has no rows to guard.
+        if first.imported.iter().all(|s| s.inserted == 0) {
+            continue;
+        }
+
+        // Capture rows for every imported book before re-importing.
+        let mut before = Vec::new();
+        for s in &first.imported {
+            before.push((
+                s.book_id,
+                highlight_rows(&storage, s.book_id).await,
+                flashcard_words(&storage, s.book_id).await,
+            ));
+        }
+
+        let second = koreader::import(&storage, &dir, false)
+            .await
+            .expect("second import");
+        for s in &second.imported {
+            assert_eq!(s.inserted, 0, "{fixture}: re-import inserted rows");
+            // Identical bytes carry no device edit, so the refresh must find
+            // nothing to do. The sum assertion below would catch this too, but
+            // only as an arithmetic mismatch several lines from the cause.
+            assert_eq!(s.updated, 0, "{fixture}: re-import refreshed rows");
+        }
+        // On a re-import every entry the sidecar contains must be skipped —
+        // which is `inserted + skipped` from the first run, not `inserted`
+        // alone. A sidecar can carry duplicates of its *own* entries (KOReader
+        // emits them after a sync conflict), so the first run already skips
+        // some; assuming otherwise made this assertion accidentally specific to
+        // duplicate-free fixtures.
+        let first_seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
+        let second_skipped: usize = second.imported.iter().map(|s| s.skipped).sum();
+        assert_eq!(
+            first_seen, second_skipped,
+            "{fixture}: re-import did not skip every entry it saw"
+        );
+
+        // Every row must be byte-for-byte unchanged: no overwrite, reorder, dup.
+        for (book_id, hl, cards) in before {
+            assert_eq!(
+                hl,
+                highlight_rows(&storage, book_id).await,
+                "{fixture}: highlights changed"
+            );
+            assert_eq!(
+                cards,
+                flashcard_words(&storage, book_id).await,
+                "{fixture}: flashcards changed"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn appends_only_new_on_partial_reimport() {
+    // Import Middlemarch, then import a superset (Middlemarch + one extra highlight).
+    // Only the new highlight is inserted; the originals are untouched.
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+
+    let base = synthetic_dir().join("Middlemarch.sdr");
+    let first = koreader::import(&storage, &base, false)
+        .await
+        .expect("base import");
+    let book_id = first.imported[0].book_id;
+    let base_inserted = first.imported[0].inserted;
+    let before = highlight_rows(&storage, book_id).await;
+
+    // The superset is a committed fixture, not a string splice. This used to
+    // do `original.replacen("    },\n    [\"doc_props\"]", ..)` against
+    // Middlemarch's literal indentation, so reformatting that file silently broke
+    // this test. It lives under `variants/` because fixture discovery is a
+    // NON-recursive read_dir — invisible to the golden loop, so it needs no
+    // golden of its own.
+    let superset_dir = synthetic_dir().join("variants/Middlemarch-Superset.sdr");
+    let second = koreader::import(&storage, &superset_dir, false)
+        .await
+        .expect("superset import");
+
+    let s = &second.imported[0];
+    assert_eq!(s.inserted, 1, "exactly one new highlight expected");
+    assert_eq!(s.skipped, base_inserted, "all originals should be skipped");
+
+    // Originals still present and unchanged; new one appended.
+    let after = highlight_rows(&storage, book_id).await;
+    let before_arr = before.as_array().unwrap();
+    let after_arr = after.as_array().unwrap();
+    assert_eq!(after_arr.len(), before_arr.len() + 1);
+    for row in before_arr {
+        assert!(
+            after_arr.contains(row),
+            "an original highlight went missing"
+        );
+    }
+    assert!(
+        after_arr
+            .iter()
+            .any(|r| r["text"] == "A brand new highlight added later."),
+        "new highlight not stored"
+    );
+}
+
+/// Import Middlemarch, put an annotation of our own on the highlight that is about
+/// to change, then import the same export with that highlight's device note
+/// rewritten.
+///
+/// This is the case `reimport_is_strictly_idempotent` structurally cannot see.
+/// That test is not wrong and stays: identical bytes genuinely should change
+/// nothing. What it cannot do is distinguish "nothing should have changed" from
+/// "we discard device updates", because the fixture it re-imports contains no
+/// device update. The gap was a missing fixture, not a too-strong assertion.
+#[tokio::test]
+async fn device_edits_refresh_but_ours_survive() {
+    const EDITED: &str = "We are all of us born in moral stupidity.";
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+
+    let first = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("base import");
+    let book_id = first.imported[0].book_id;
+    assert_eq!(first.imported[0].updated, 0, "nothing to refresh yet");
+
+    let before: Vec<_> = storage.list_highlights(book_id).await.expect("list");
+    let target = before
+        .iter()
+        .find(|h| h.text == EDITED)
+        .expect("the highlight the variant edits");
+    storage
+        .set_annotation(target.id, Some("mine, and not the device's business"))
+        .await
+        .expect("annotate");
+
+    let second = koreader::import(
+        &storage,
+        &synthetic_dir().join("variants/Middlemarch-NoteEdited.sdr"),
+        false,
+    )
+    .await
+    .expect("edited import");
+
+    let s = &second.imported[0];
+    assert_eq!(s.inserted, 0, "an edited note is not a new highlight");
+    assert_eq!(s.updated, 1, "exactly the one edited row");
+    assert_eq!(s.skipped, before.len() - 1, "the rest are untouched");
+
+    let after = storage.list_highlights(book_id).await.expect("list");
+    assert_eq!(after.len(), before.len(), "no row was added or lost");
+
+    let refreshed = after
+        .iter()
+        .find(|h| h.text == EDITED)
+        .expect("still there");
+    // Theirs tracked the device...
+    assert_eq!(
+        refreshed.origin_note.as_deref(),
+        Some("Rewritten on the device weeks later.")
+    );
+    // ...and ours did not move an inch.
+    assert_eq!(
+        refreshed.annotation.as_deref(),
+        Some("mine, and not the device's business")
+    );
+    assert_eq!(refreshed.source, target.source, "provenance is not payload");
+    assert_eq!(
+        refreshed.created_at, target.created_at,
+        "created_at is when WE stored it; a refresh must not restamp it"
+    );
+    assert_eq!(refreshed.text, target.text, "highlight text is frozen");
+}
+
+/// The one that would really hurt. `notes.highlight_id` and
+/// `flashcards.highlight_id` are foreign keys (`0001_init.sql:48`, `:67`), so a
+/// refresh implemented as delete-and-reinsert would silently null note anchors
+/// and cascade flashcards away — with nothing in any other assertion looking
+/// wrong. Assert it, don't assume it.
+#[tokio::test]
+async fn highlight_ids_are_stable_across_refresh() {
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+
+    let first = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("base import");
+    let book_id = first.imported[0].book_id;
+
+    let ids_before: Vec<i64> = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list")
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    let cards_before = flashcard_words(&storage, book_id).await;
+    assert!(!ids_before.is_empty(), "nothing to keep stable");
+    assert!(
+        !cards_before.is_empty(),
+        "the FK that would cascade is unused"
+    );
+
+    koreader::import(
+        &storage,
+        &synthetic_dir().join("variants/Middlemarch-NoteEdited.sdr"),
+        false,
+    )
+    .await
+    .expect("edited import");
+
+    let ids_after: Vec<i64> = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list")
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(ids_before, ids_after, "a refresh must update in place");
+    assert_eq!(
+        cards_before,
+        flashcard_words(&storage, book_id).await,
+        "flashcards hang off highlight_id and would have cascaded away"
+    );
+}
+
+/// The unsupported-anchor assertion, held outside the golden as well as in it.
+///
+/// The golden pins the shape; this pins the *claim*, in the two ways the shape
+/// alone cannot. First, it names the fixture — if `Gen-Pdf-Anchors` is ever
+/// deleted or renamed, `import_matches_golden` would simply stop checking it and
+/// stay green, which is how a fixture rots into a file nobody notices. Second,
+/// it separates the two numbers that a "0 highlights imported" golden conflates:
+/// **three** entries had an anchor we could not store, and the fourth was a
+/// bookmark that was never a highlight. An implementation that counted all four,
+/// or that counted none and merely imported nothing, produces the same
+/// zero-highlight golden as the correct one.
+#[tokio::test]
+async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
+    let fixture = "Gen-Pdf-Anchors.sdr";
+    let man = manifest();
+    let books = man
+        .get(fixture)
+        .and_then(|f| f.get("books"))
+        .cloned()
+        .expect("Gen-Pdf-Anchors must be in the manifest");
+
+    let storage = mem_storage().await;
+    seed_books(&storage, &books).await;
+    let report = koreader::import(&storage, &synthetic_dir().join(fixture), false)
+        .await
+        .expect("a PDF sidecar must not abort an import");
+
+    // It matched a book and imported nothing — which is the state that used to
+    // be indistinguishable from a book with no highlights.
+    assert_eq!(report.imported.len(), 1, "the sidecar must still match");
+    assert_eq!(report.imported[0].inserted, 0);
+    assert!(report.unmatched.is_empty());
+
+    let anchors: Vec<usize> = report
+        .warnings
+        .iter()
+        .filter_map(|d| match d.kind {
+            DiagnosticKind::SidecarAnchorsUnsupported { entries, .. } => Some(entries),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        anchors,
+        vec![3],
+        "expected exactly one diagnostic naming three lost highlights, got {:?}",
+        report.warnings
+    );
+
+    // One per file, not one per entry — a deliberate choice (300 identical
+    // diagnostics for a 300-highlight PDF replaces silence with noise), and the
+    // one most likely to be "fixed" into a diagnostic per highlight.
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "a 300-highlight PDF must not emit 300 diagnostics"
+    );
+
+    // And it says something a user can act on, naming the file it is about.
+    let text = report.warnings[0].to_string();
+    assert!(text.contains("metadata.pdf.lua"), "no path in {text:?}");
+    assert!(text.contains('3'), "no count in {text:?}");
+}
+
+/// The other half of the same claim, and the one that guards every *other*
+/// fixture: nothing that is not a paging document may acquire this diagnostic.
+///
+/// Counting unsupported anchors had to be a pure addition — a reflowable
+/// sidecar whose highlight count moved would be a regression dressed as a
+/// feature — and the count is asserted by the goldens. What they cannot say is
+/// that no EPUB fixture started emitting a *spurious* one, because a golden
+/// only sees the fixture it belongs to.
+#[tokio::test]
+async fn only_the_paging_fixture_reports_an_unsupported_anchor() {
+    let storage = mem_storage().await;
+    seed_all_synthetic(&storage).await;
+    let report = koreader::import(&storage, &synthetic_dir(), false)
+        .await
+        .expect("bulk import");
+
+    let named: Vec<String> = report
+        .warnings
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DiagnosticKind::SidecarAnchorsUnsupported { path, entries } => {
+                Some(format!("{}:{entries}", path.display()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named.len(), 1, "expected exactly one, got {named:?}");
+    assert!(
+        named[0].ends_with("Gen-Pdf-Anchors.sdr/metadata.pdf.lua:3"),
+        "the wrong fixture reported an unsupported anchor: {named:?}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_and_unmatched_are_non_fatal() {
+    // Malformed: bad Lua -> warning, no imported/unmatched.
+    let storage = mem_storage().await;
+    let report = koreader::import(&storage, &synthetic_dir().join("Malformed.sdr"), false)
+        .await
+        .expect("import must not error on bad lua");
+    assert!(report.imported.is_empty());
+    assert!(report.unmatched.is_empty());
+    assert!(!report.warnings.is_empty(), "malformed sidecar should warn");
+
+    // Unmatched: valid highlights, no matching book -> reported, not fatal.
+    let storage = mem_storage().await;
+    let report = koreader::import(&storage, &synthetic_dir().join("Unmatched.sdr"), false)
+        .await
+        .expect("import");
+    assert!(report.imported.is_empty());
+    assert_eq!(report.unmatched.len(), 1);
+    assert_eq!(
+        report.unmatched[0].title.as_deref(),
+        Some("Nonexistent Tome")
+    );
+
+    // And a whole-directory import over synthetic/ never aborts: it imports the
+    // matchable books, reports the rest.
+    let storage = mem_storage().await;
+    seed_all_synthetic(&storage).await;
+    let report = koreader::import(&storage, &synthetic_dir(), false)
+        .await
+        .expect("bulk import");
+    assert!(!report.imported.is_empty(), "bulk import found no books");
+    assert!(
+        !report.warnings.is_empty(),
+        "malformed fixture should still warn in bulk"
+    );
+}
+
+/// Seed every book named in the manifest — used for whole-directory imports.
+async fn seed_all_synthetic(storage: &Storage) {
+    let man = manifest();
+    if let Some(obj) = man.as_object() {
+        for f in obj.values() {
+            if let Some(books) = f.get("books") {
+                seed_books(storage, books).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn real_exports_are_idempotent() {
+    let real = fixtures_root().join("real");
+    let sidecars = koreader::find_sidecars(&real).expect("scan real dir");
+    if sidecars.is_empty() {
+        if std::env::var("BOOKMOLE_REQUIRE_FIXTURES").is_ok() {
+            panic!(
+                "REQUIRE_FIXTURES set but no drop-in exports under {}",
+                real.display()
+            );
+        }
+        eprintln!(
+            "SKIPPED real_exports_are_idempotent: no drop-in exports under {}",
+            real.display()
+        );
+        return;
+    }
+
+    let storage = mem_storage().await;
+    // Seed a book per sidecar title so fuzzy matching succeeds.
+    for path in &sidecars {
+        if let Ok(src) = std::fs::read_to_string(path)
+            && let Ok(sc) = parse_sidecar(&src)
+            && let Some(title) = sc.title
+        {
+            storage
+                .upsert_book(
+                    &Book {
+                        title: Some(title),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .expect("seed real book");
+        }
+    }
+
+    let first = koreader::import(&storage, &real, false)
+        .await
+        .expect("first real import");
+    let mut before = Vec::new();
+    for s in &first.imported {
+        before.push((
+            s.book_id,
+            highlight_rows(&storage, s.book_id).await,
+            flashcard_words(&storage, s.book_id).await,
+        ));
+    }
+
+    let second = koreader::import(&storage, &real, false)
+        .await
+        .expect("second real import");
+    for s in &second.imported {
+        assert_eq!(
+            s.inserted, 0,
+            "real re-import inserted new rows for {}",
+            s.book_title
+        );
+    }
+    for (book_id, hl, cards) in before {
+        assert_eq!(
+            hl,
+            highlight_rows(&storage, book_id).await,
+            "real highlights changed on re-import"
+        );
+        assert_eq!(
+            cards,
+            flashcard_words(&storage, book_id).await,
+            "real flashcards changed on re-import"
+        );
+    }
+    eprintln!(
+        "real_exports_are_idempotent: verified {} sidecar(s), {} book(s) imported",
+        sidecars.len(),
+        first.imported.len()
+    );
+}
+
+/// A real library is a directory tree, not a flat list of `.sdr` dirs. Nothing
+/// covered the recursive walk, the depth cap, or the rule that a non-sidecar
+/// file inside a `.sdr` is ignored.
+#[tokio::test]
+async fn a_nested_library_tree_is_walked_to_its_leaves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = tmp
+        .path()
+        .join("Fiction/Translated/Japanese/Modern/The Trial.sdr");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(
+        deep.join("metadata.epub.lua"),
+        std::fs::read(
+            synthetic_dir()
+                .join("The-Trial.sdr")
+                .join("metadata.epub.lua"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // Files that are not sidecars must be ignored, even inside a `.sdr`.
+    std::fs::write(deep.join("cover.jpg"), b"not a sidecar").unwrap();
+    std::fs::write(deep.join("notes.txt"), b"also not a sidecar").unwrap();
+
+    let found = koreader::find_sidecars(tmp.path()).expect("walk");
+    assert_eq!(found.len(), 1, "expected one sidecar, got {found:?}");
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "The Trial", "authors": ["Franz Kafka"] }]),
+    )
+    .await;
+    let report = koreader::import(&storage, tmp.path(), false)
+        .await
+        .expect("import from a nested tree");
+    assert_eq!(report.imported.len(), 1);
+    assert!(report.imported[0].inserted > 0);
+}
+
+/// Not a CI case — it exists so the cost of a genuinely large export is known
+/// rather than guessed. `cargo test -p bookmole -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "scale check; run explicitly"]
+async fn a_very_large_export_imports_in_reasonable_time() {
+    const N: usize = 5_000;
+
+    let mut lua = String::from("return {\n    [\"annotations\"] = {\n");
+    for i in 1..=N {
+        lua.push_str(&format!(
+            "        [{i}] = {{ [\"text\"] = \"highlight number {i}\", \
+             [\"pos0\"] = \"/body/p[{i}]/text().0\", [\"pageno\"] = {i}, \
+             [\"datetime\"] = \"2026-01-01 00:00:00\" }},\n"
+        ));
+    }
+    lua.push_str("    },\n    [\"doc_props\"] = { [\"title\"] = \"Enormous Book\" },\n}\n");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let sdr = tmp.path().join("Enormous Book.sdr");
+    std::fs::create_dir_all(&sdr).unwrap();
+    std::fs::write(sdr.join("metadata.epub.lua"), &lua).unwrap();
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Enormous Book", "authors": [] }]),
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let report = koreader::import(&storage, tmp.path(), false)
+        .await
+        .expect("large import");
+    let elapsed = started.elapsed();
+
+    assert_eq!(report.imported[0].inserted, N);
+    eprintln!(
+        "imported {N} highlights in {elapsed:?} ({:.0}/s)",
+        N as f64 / elapsed.as_secs_f64()
+    );
+}
+
+// ---- every highlight records where it came from -----------------------------
+
+async fn middlemarch_md5() -> String {
+    let src = std::fs::read_to_string(synthetic_dir().join("Middlemarch.sdr/metadata.epub.lua"))
+        .expect("read sidecar");
+    parse_sidecar(&src)
+        .expect("parse")
+        .partial_md5
+        .expect("the fixture has a partial_md5")
+}
+
+/// An import stamps `origin`, `copy_id` and `pos_kind` on every highlight it
+/// writes, creates the copy through the `reader` place, and does neither twice.
+#[tokio::test]
+async fn import_stamps_origin_and_links_the_reader_copy() {
+    use bookmole::copies::{LearnedFrom, PlaceKind};
+    use bookmole::{HighlightOrigin, PosKind};
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+    let md5 = middlemarch_md5().await;
+
+    let first = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("import");
+    let book_id = first.imported[0].book_id;
+
+    let copies = storage.copies_for_book(book_id).await.expect("copies");
+    assert_eq!(copies.len(), 1, "one file, one copy");
+    assert_eq!(copies[0].learned_from, LearnedFrom::Koreader);
+    assert_eq!(copies[0].have_now, None, "import never decides have_now");
+    assert_eq!(copies[0].places.len(), 1);
+    assert_eq!(copies[0].places[0].kind, PlaceKind::Reader);
+    assert_eq!(copies[0].places[0].reference, md5);
+
+    let highlights = storage.list_highlights(book_id).await.expect("list");
+    assert!(!highlights.is_empty());
+    for h in &highlights {
+        assert_eq!(h.origin, HighlightOrigin::Koreader);
+        assert_eq!(h.copy_id, Some(copies[0].id));
+        assert_eq!(h.origin_id, None, "KOReader keeps using identity_hash");
+        assert_eq!(h.pos_kind, Some(PosKind::KoreaderXpointer));
+        assert!(!h.text_unavailable);
+    }
+
+    // Idempotent: nothing new, no second copy or place.
+    let second = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("re-import");
+    assert_eq!(second.imported[0].inserted, 0);
+    assert_eq!(second.imported[0].updated, 0);
+    let again = storage.copies_for_book(book_id).await.expect("copies");
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].places.len(), 1);
+}
+
+/// One file is one copy wherever it sits: a book that already has an own file
+/// copy takes the `reader` place on it, and a highlight stored before the copy
+/// existed gets stamped on the next import without counting as `updated`.
+#[tokio::test]
+async fn import_attaches_to_the_books_existing_file_copy() {
+    use bookmole::copies::{CopyForm, LearnedFrom, NewCopy, PlaceKind, Tenure};
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+    let first = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), true)
+        .await
+        .expect("dry run");
+    let book_id = first.imported[0].book_id;
+    let calibres = storage
+        .create_copy(&NewCopy::new(
+            book_id,
+            Some(CopyForm::File),
+            Tenure::Own,
+            LearnedFrom::Calibre,
+        ))
+        .await
+        .expect("copy");
+
+    koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("import");
+    let copies = storage.copies_for_book(book_id).await.expect("copies");
+    assert_eq!(copies.len(), 1, "no second copy of the same file");
+    assert_eq!(copies[0].id, calibres.id);
+    assert_eq!(copies[0].learned_from, LearnedFrom::Calibre);
+    assert!(copies[0].places.iter().any(|p| p.kind == PlaceKind::Reader));
+
+    // History with no copy: deleting the copy nulls the stamp (the FK), the next
+    // import makes the file's copy again and stamps the rows, reporting nothing
+    // as changed.
+    storage.delete_copy(calibres.id).await.expect("delete");
+    let orphaned = storage.list_highlights(book_id).await.expect("list");
+    assert!(orphaned.iter().all(|h| h.copy_id.is_none()));
+    let again = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
+        .await
+        .expect("re-import");
+    assert_eq!(again.imported[0].updated, 0);
+    let copies = storage.copies_for_book(book_id).await.expect("copies");
+    assert_eq!(copies.len(), 1);
+    assert!(
+        storage
+            .list_highlights(book_id)
+            .await
+            .expect("list")
+            .iter()
+            .all(|h| h.copy_id == Some(copies[0].id))
+    );
+}
+
+/// The same passage from two apps stays two rows; the derived grouping names
+/// them together and merges nothing.
+#[tokio::test]
+async fn the_same_passage_from_two_origins_is_two_rows_in_one_group() {
+    use bookmole::{HighlightOrigin, NewHighlight, same_passages};
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+    let book_id = storage
+        .upsert_book(
+            &Book {
+                title: Some("Grouping".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("book");
+    let make = |text: &str, when: &str, source: &str| NewHighlight {
+        text: text.into(),
+        chapter: None,
+        page: None,
+        pos0: None,
+        pos1: None,
+        ko_datetime: Some(when.into()),
+        ko_datetime_updated: None,
+        color: None,
+        note: None,
+        source: source.into(),
+    };
+    let a = storage
+        .insert_highlight(
+            book_id,
+            &make("It\u{2019}s  a Long \u{2014} road.", "t1", "koreader"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let b = storage
+        .insert_highlight(book_id, &make("it's a long - road.", "t2", "user"))
+        .await
+        .unwrap()
+        .unwrap();
+    let lone = storage
+        .insert_highlight(book_id, &make("Something else entirely.", "t3", "user"))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let all = storage.list_highlights(book_id).await.unwrap();
+    assert_eq!(all.len(), 3, "never merged");
+    assert_eq!(same_passages(&all), vec![vec![a, b]]);
+    let origin = |id: i64| all.iter().find(|h| h.id == id).unwrap().origin;
+    assert_eq!(origin(a), HighlightOrigin::Koreader);
+    assert_eq!(origin(b), HighlightOrigin::User);
+    assert_eq!(origin(lone), HighlightOrigin::User);
+}
+
+/// An import that knows its paired reader records the device id on the `reader`
+/// place; one that does not leaves it alone, and never overwrites it.
+#[tokio::test]
+async fn import_records_the_paired_device_on_the_reader_place() {
+    use bookmole::copies::PlaceKind;
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Middlemarch", "authors": ["George Eliot"] }]),
+    )
+    .await;
+    let md5 = middlemarch_md5().await;
+    let sdr = synthetic_dir().join("Middlemarch.sdr");
+
+    // First seen by an import that does not know the device: no detail.
+    let first = koreader::import(&storage, &sdr, false)
+        .await
+        .expect("import");
+    let book_id = first.imported[0].book_id;
+    let place = |copies: Vec<bookmole::Copy>| copies[0].places[0].clone();
+    let copies = storage.copies_for_book(book_id).await.unwrap();
+    assert_eq!(place(copies).detail, None);
+
+    // The same file, now from a named reader: the NULL detail is filled.
+    koreader::import_for_device(&storage, &sdr, false, Some("kobo-1"))
+        .await
+        .expect("import for device");
+    let copies = storage.copies_for_book(book_id).await.unwrap();
+    assert_eq!(copies.len(), 1);
+    let p = place(copies);
+    assert_eq!(
+        (p.kind, p.reference.as_str()),
+        (PlaceKind::Reader, md5.as_str())
+    );
+    assert_eq!(p.detail.as_deref(), Some("kobo-1"));
+
+    // A later import that does not know the device does not clear it, and a
+    // different device does not take the place over.
+    koreader::import(&storage, &sdr, false)
+        .await
+        .expect("plain");
+    koreader::import_for_device(&storage, &sdr, false, Some("kobo-2"))
+        .await
+        .expect("other device");
+    let copies = storage.copies_for_book(book_id).await.unwrap();
+    assert_eq!(place(copies).detail.as_deref(), Some("kobo-1"));
+}

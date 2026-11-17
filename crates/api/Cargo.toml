@@ -1,0 +1,36 @@
+[package]
+name = "bookmole-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+# Deliberately thin. This crate is what a host with no daemon (an iOS app, a
+# desktop GUI) links **in-process**, so it must not drag in a socket, a runtime
+# flavour or a CLI parser. Those belong to `crates/daemon`, which is the
+# transport and nothing else.
+[dependencies]
+bookmole = { path = "../engine" }
+serde.workspace = true
+serde_json.workspace = true
+# Off by default, and that is the point: iOS links this crate in-process and has
+# no use for a TypeScript emitter. The `ts` feature is a *build-time tool*, not a
+# capability of the surface: a code generator turns it on, nothing that ships
+# does.
+ts-rs = { version = "12", optional = true }
+
+[features]
+# Emits TypeScript declarations for a web-based client from the same types the
+# wire uses, via the `export_bindings` tests ts-rs generates:
+#   TS_RS_EXPORT_DIR=<dir> cargo test -p bookmole-api --features ts export_bindings
+# Run them single-process (plain `cargo test`, not nextest): every type appends
+# to one bindings.ts, so one writer is what produces a whole file.
+ts = ["dep:ts-rs"]
+
+[dev-dependencies]
+tempfile = "3"
+# The DTO tests build a `Book` with real timestamps, which is the only way to
+# assert that the seam turns an `OffsetDateTime` into unix seconds and back.
+time.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

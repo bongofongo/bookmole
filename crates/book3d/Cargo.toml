@@ -1,0 +1,25 @@
+[package]
+name = "bookmole-book3d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+# The ray-traced book, as pixels and nothing else. Extracted from the TUI's
+# `render3d/` so that a GUI frontend, which wants RGBA pixels rather than
+# terminal cells, can draw the same object without linking a terminal: no
+# ratatui, no crossterm, no kitty, and — deliberately — no engine. What shape a
+# book is is decided in `bookmole::edition` and crosses as two ratios; a
+# frontend that holds a `Book` or a `BookDto` converts, which is what lets a
+# client that speaks only `bookmole-api` link this crate without ever
+# linking the engine.
+
+[lib]
+name = "bookmole_book3d"
+path = "src/lib.rs"
+
+[dependencies]
+# Cover decode and the Lanczos prescale (`texture.rs`), and nothing more: the
+# workspace's own feature set (jpeg, png, gif, webp).
+image.workspace = true

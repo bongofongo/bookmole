@@ -1,0 +1,66 @@
+[
+  {
+    "author_sort": "Grimm, Jacob",
+    "authors": "Jacob Grimm & Wilhelm Grimm",
+    "comments": "<p><strong>The collected household tales of the brothers Grimm.</strong><br>Two hundred stories gathered from <i>oral tradition</i>.</p>",
+    "cover": "/books/calibre/Jacob Grimm/Grimms' Fairy Tales (1)/cover.jpg",
+    "formats": [
+      "/books/calibre/Jacob Grimm/Grimms' Fairy Tales (1)/Grimms' Fairy Tales - Jacob Grimm.azw3",
+      "/books/calibre/Jacob Grimm/Grimms' Fairy Tales (1)/Grimms' Fairy Tales - Jacob Grimm.epub"
+    ],
+    "id": 1,
+    "identifiers": {
+      "goodreads": "22917",
+      "isbn": "9780140447101"
+    },
+    "isbn": "9780140447101",
+    "languages": [
+      "eng"
+    ],
+    "last_modified": "2026-11-13T09:49:17+00:00",
+    "pubdate": "2001-04-01T00:00:00+00:00",
+    "publisher": "Penguin Classics",
+    "rating": 10,
+    "series": "Household Tales",
+    "series_index": 1.0,
+    "size": 479031,
+    "tags": [
+      "fairy-tales",
+      "german-lit"
+    ],
+    "timestamp": "2026-11-13T09:46:14+00:00",
+    "title": "Grimms' Fairy Tales",
+    "uuid": "8810c85d-bb14-4a98-a1a9-897508436610"
+  },
+  {
+    "author_sort": "Gilman, Charlotte Perkins",
+    "authors": "Charlotte Perkins Gilman",
+    "cover": "/books/calibre/Charlotte Perkins Gilman/The Yellow Wallpaper (2)/cover.jpg",
+    "formats": [
+      "/books/calibre/Charlotte Perkins Gilman/The Yellow Wallpaper (2)/The Yellow Wallpaper - Charlotte Perkins Gilman.epub"
+    ],
+    "id": 2,
+    "identifiers": {
+      "uri": "http://www.gutenberg.org/1952"
+    },
+    "isbn": "",
+    "languages": [
+      "eng"
+    ],
+    "last_modified": "2026-11-13T09:49:20+00:00",
+    "pubdate": "0101-01-01T00:00:00+00:00",
+    "series_index": 1.0,
+    "size": 87914,
+    "tags": [],
+    "timestamp": "2026-11-13T09:46:16+00:00",
+    "title": "The Yellow Wallpaper",
+    "uuid": "e87a29fd-c971-4c30-ac0b-caabc783bac4"
+  },
+  {
+    "id": 3,
+    "series_index": 1.0,
+    "timestamp": "2026-11-13T09:46:20+00:00",
+    "title": "Untitled Draft",
+    "uuid": "d6eebbf3-bdf0-433b-84c3-cf5a4b6e53de"
+  }
+]

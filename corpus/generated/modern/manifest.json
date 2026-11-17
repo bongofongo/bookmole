@@ -1,0 +1,1104 @@
+{
+  "generator_version": 3,
+  "layer": "koreader-modern",
+  "salted": [
+    {
+      "case": "nul-byte",
+      "expect": "no-crash",
+      "field": "lua-string",
+      "row": 14,
+      "sidecar": "2701-moby-dick-or-the-whale",
+      "value": "before\u0000after"
+    },
+    {
+      "case": "sql-quote-drop",
+      "expect": "verbatim",
+      "field": "highlight",
+      "row": 19,
+      "sidecar": "2701-moby-dick-or-the-whale",
+      "value": "Robert'); DROP TABLE books;--"
+    },
+    {
+      "case": "fts-operators",
+      "expect": "no-crash",
+      "field": "highlight",
+      "row": 17,
+      "sidecar": "1661-the-adventures-of-sherlock-holmes",
+      "value": "\"unterminated NEAR(a b, 3) OR -minus * col:x"
+    },
+    {
+      "case": "sql-quote-drop",
+      "expect": "verbatim",
+      "field": "title",
+      "sidecar": "2600-war-and-peace",
+      "value": "Robert'); DROP TABLE books;--"
+    },
+    {
+      "case": "html-script",
+      "expect": "verbatim",
+      "field": "highlight",
+      "row": 12,
+      "sidecar": "174-the-picture-of-dorian-gray",
+      "value": "<script>alert('rb')</script> before <b>bold</b>"
+    },
+    {
+      "case": "html-script",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 9,
+      "sidecar": "1260-jane-eyre-an-autobiography",
+      "value": "<script>alert('rb')</script> before <b>bold</b>"
+    },
+    {
+      "case": "ansi-escapes",
+      "expect": "no-crash",
+      "field": "highlight",
+      "row": 21,
+      "sidecar": "76-adventures-of-huckleberry-finn",
+      "value": "Normal \u001b[31mRED\u001b[0m \u001b]8;;http://x\u0007link\u001b]8;;\u0007 title"
+    },
+    {
+      "case": "control-chars",
+      "expect": "no-crash",
+      "field": "highlight",
+      "row": 22,
+      "sidecar": "13951-le-petit-prince",
+      "value": "bell\u0007 backspace\b formfeed\f vt\u000b"
+    },
+    {
+      "case": "nul-byte",
+      "expect": "no-crash",
+      "field": "highlight",
+      "row": 21,
+      "sidecar": "21000-der-struwwelpeter",
+      "value": "before\u0000after"
+    },
+    {
+      "case": "sql-quote-drop",
+      "expect": "verbatim",
+      "field": "author",
+      "sidecar": "28054-untitled",
+      "value": "Robert'); DROP TABLE books;--"
+    },
+    {
+      "case": "lua-long-bracket",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 7,
+      "sidecar": "1656-untitled",
+      "value": "closing ]] bracket and ]==] level-two and \\\" escaped"
+    },
+    {
+      "case": "crlf-and-lone-cr",
+      "expect": "no-crash",
+      "field": "highlight",
+      "row": 21,
+      "sidecar": "74-the-adventures-of-tom-sawyer",
+      "value": "line one\r\nline two\rline three\n"
+    },
+    {
+      "case": "html-script",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 8,
+      "sidecar": "12-through-the-looking-glass",
+      "value": "<script>alert('rb')</script> before <b>bold</b>"
+    },
+    {
+      "case": "sql-comment-union",
+      "expect": "verbatim",
+      "field": "title",
+      "sidecar": "2591-grimms-fairy-tales",
+      "value": "x' UNION SELECT sql FROM sqlite_master; /*"
+    },
+    {
+      "case": "author-newline",
+      "expect": "no-crash",
+      "field": "lua-string",
+      "row": 31,
+      "sidecar": "1065-the-raven",
+      "value": "First Author\nSecond Author\n\nFourth"
+    },
+    {
+      "case": "lua-long-bracket",
+      "expect": "verbatim",
+      "field": "lua-string",
+      "row": 8,
+      "sidecar": "1513-romeo-and-juliet",
+      "value": "closing ]] bracket and ]==] level-two and \\\" escaped"
+    },
+    {
+      "case": "lua-long-bracket",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 17,
+      "sidecar": "1513-romeo-and-juliet",
+      "value": "closing ]] bracket and ]==] level-two and \\\" escaped"
+    },
+    {
+      "case": "html-script",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 13,
+      "sidecar": "39536-untitled",
+      "value": "<script>alert('rb')</script> before <b>bold</b>"
+    },
+    {
+      "case": "lua-long-bracket",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 15,
+      "sidecar": "39764-1",
+      "value": "closing ]] bracket and ]==] level-two and \\\" escaped"
+    },
+    {
+      "case": "ansi-escapes",
+      "expect": "no-crash",
+      "field": "author",
+      "sidecar": "40061-2",
+      "value": "Normal \u001b[31mRED\u001b[0m \u001b]8;;http://x\u0007link\u001b]8;;\u0007 title"
+    },
+    {
+      "case": "html-script",
+      "expect": "verbatim",
+      "field": "ko-note",
+      "row": 31,
+      "sidecar": "40061-2",
+      "value": "<script>alert('rb')</script> before <b>bold</b>"
+    }
+  ],
+  "seed": 42,
+  "sidecars": [
+    {
+      "authors": "Jane Austen",
+      "doc_pages": 390,
+      "gutenberg_id": 1342,
+      "highlights": 22,
+      "language": "en",
+      "notes": 7,
+      "partial_md5": "2b2f3835b1fadc176a340f7f66ca6842",
+      "percent_finished": 0.56,
+      "rating": null,
+      "reading_window": [
+        "2025-06-02",
+        "2025-06-13"
+      ],
+      "sidecar": "1342-pride-and-prejudice",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Pride and Prejudice"
+    },
+    {
+      "authors": "Mary Wollstonecraft Shelley",
+      "doc_pages": 232,
+      "gutenberg_id": 84,
+      "highlights": 32,
+      "language": "en",
+      "notes": 8,
+      "partial_md5": "c27094b0e70472a2b47c6cb905d299a8",
+      "percent_finished": 0.81,
+      "rating": null,
+      "reading_window": [
+        "2025-06-06",
+        "2025-06-20"
+      ],
+      "sidecar": "84-frankenstein-or-the-modern-prometheus",
+      "single_words": 2,
+      "status": "reading",
+      "title": "Frankenstein; Or, The Modern Prometheus"
+    },
+    {
+      "authors": "Lewis Carroll",
+      "doc_pages": 77,
+      "gutenberg_id": 11,
+      "highlights": 20,
+      "language": "en",
+      "notes": 6,
+      "partial_md5": "83bc06802c4c0a1522bff6837bab7c31",
+      "percent_finished": 0.5,
+      "rating": null,
+      "reading_window": [
+        "2025-06-11",
+        "2025-06-30"
+      ],
+      "sidecar": "11-alice-s-adventures-in-wonderland",
+      "single_words": 0,
+      "status": "reading",
+      "title": "Alice's Adventures in Wonderland"
+    },
+    {
+      "authors": "Herman Melville",
+      "doc_pages": 664,
+      "gutenberg_id": 2701,
+      "highlights": 36,
+      "language": "en",
+      "notes": 16,
+      "partial_md5": "ca59e1736258d1e2393d9a68ef5970c0",
+      "percent_finished": 0.9,
+      "rating": null,
+      "reading_window": [
+        "2025-06-18",
+        "2025-07-11"
+      ],
+      "sidecar": "2701-moby-dick-or-the-whale",
+      "single_words": 2,
+      "status": "reading",
+      "title": "Moby Dick; Or, The Whale"
+    },
+    {
+      "authors": "Arthur Conan Doyle",
+      "doc_pages": 301,
+      "gutenberg_id": 1661,
+      "highlights": 40,
+      "language": "en",
+      "notes": 12,
+      "partial_md5": "692b28839ddb8b285b5a17844fada146",
+      "percent_finished": 1.0,
+      "rating": 5,
+      "reading_window": [
+        "2025-06-24",
+        "2025-07-14"
+      ],
+      "sidecar": "1661-the-adventures-of-sherlock-holmes",
+      "single_words": 6,
+      "status": "complete",
+      "title": "The Adventures of Sherlock Holmes"
+    },
+    {
+      "authors": "Charles Dickens",
+      "doc_pages": 408,
+      "gutenberg_id": 98,
+      "highlights": 10,
+      "language": "en",
+      "notes": 5,
+      "partial_md5": "ab67cf2a7239a029a97f7666395d4cd2",
+      "percent_finished": 0.13,
+      "rating": null,
+      "reading_window": [
+        "2025-07-03",
+        "2025-07-08"
+      ],
+      "sidecar": "98-a-tale-of-two-cities",
+      "single_words": 0,
+      "status": "reading",
+      "title": "A Tale of Two Cities"
+    },
+    {
+      "authors": "Jonathan Swift",
+      "doc_pages": 11,
+      "gutenberg_id": 1080,
+      "highlights": 33,
+      "language": "en",
+      "notes": 13,
+      "partial_md5": "4c3c88af6c4fbedeb5774f27e71f5719",
+      "percent_finished": 0.8200000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-07-10",
+        "2025-08-02"
+      ],
+      "sidecar": "1080-a-modest-proposal",
+      "single_words": 2,
+      "status": "reading",
+      "title": "A Modest Proposal"
+    },
+    {
+      "authors": "Leo Tolstoy",
+      "doc_pages": 1748,
+      "gutenberg_id": 2600,
+      "highlights": 16,
+      "language": "en",
+      "notes": 8,
+      "partial_md5": "b77c0f93428c874828a9233aa1e2cc6e",
+      "percent_finished": 0.41000000000000003,
+      "rating": null,
+      "reading_window": [
+        "2025-07-14",
+        "2025-07-27"
+      ],
+      "sidecar": "2600-war-and-peace",
+      "single_words": 1,
+      "status": "abandoned",
+      "title": "Robert'); DROP TABLE books;--"
+    },
+    {
+      "authors": "Oscar Wilde",
+      "doc_pages": 234,
+      "gutenberg_id": 174,
+      "highlights": 23,
+      "language": "en",
+      "notes": 6,
+      "partial_md5": "336a8bb585e76a900f00ff1adedba3ac",
+      "percent_finished": 0.5700000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-07-19",
+        "2025-08-03"
+      ],
+      "sidecar": "174-the-picture-of-dorian-gray",
+      "single_words": 1,
+      "status": "reading",
+      "title": "The Picture of Dorian Gray"
+    },
+    {
+      "authors": "Bram Stoker",
+      "doc_pages": 459,
+      "gutenberg_id": 345,
+      "highlights": 10,
+      "language": "en",
+      "notes": 5,
+      "partial_md5": "645e61918a0af53c5ed878578b049b15",
+      "percent_finished": 0.14,
+      "rating": null,
+      "reading_window": [
+        "2025-07-25",
+        "2025-08-02"
+      ],
+      "sidecar": "345-dracula",
+      "single_words": 0,
+      "status": "abandoned",
+      "title": "Dracula"
+    },
+    {
+      "authors": "Charlotte Brontë",
+      "doc_pages": 554,
+      "gutenberg_id": 1260,
+      "highlights": 40,
+      "language": "en",
+      "notes": 14,
+      "partial_md5": "9110eba3c75df70ca434f438d4c4d220",
+      "percent_finished": 1.0,
+      "rating": 5,
+      "reading_window": [
+        "2025-07-29",
+        "2025-08-21"
+      ],
+      "sidecar": "1260-jane-eyre-an-autobiography",
+      "single_words": 7,
+      "status": "complete",
+      "title": "Jane Eyre: An Autobiography"
+    },
+    {
+      "authors": "James Joyce",
+      "doc_pages": 808,
+      "gutenberg_id": 4300,
+      "highlights": 17,
+      "language": "en",
+      "notes": 5,
+      "partial_md5": "fbaa2db028e31a92cf481c7f937b0925",
+      "percent_finished": 0.42000000000000004,
+      "rating": null,
+      "reading_window": [
+        "2025-08-05",
+        "2025-08-14"
+      ],
+      "sidecar": "4300-ulysses",
+      "single_words": 1,
+      "status": "abandoned",
+      "title": "Ulysses"
+    },
+    {
+      "authors": "Mark Twain",
+      "doc_pages": 307,
+      "gutenberg_id": 76,
+      "highlights": 32,
+      "language": "en",
+      "notes": 13,
+      "partial_md5": "f2567bc10ac8321bf86ba0a8e78b03a5",
+      "percent_finished": 0.8,
+      "rating": null,
+      "reading_window": [
+        "2025-08-11",
+        "2025-08-23"
+      ],
+      "sidecar": "76-adventures-of-huckleberry-finn",
+      "single_words": 3,
+      "status": "reading",
+      "title": "Adventures of Huckleberry Finn"
+    },
+    {
+      "authors": "Unknown",
+      "doc_pages": 16,
+      "gutenberg_id": 16328,
+      "highlights": 40,
+      "language": "en",
+      "notes": 12,
+      "partial_md5": "4c3a261eb793ab369b281dc3c2205fcc",
+      "percent_finished": 1.0,
+      "rating": 4,
+      "reading_window": [
+        "2025-09-01",
+        "2025-10-01"
+      ],
+      "sidecar": "16328-beowulf-an-anglo-saxon-epic-poem",
+      "single_words": 2,
+      "status": "complete",
+      "title": "Beowulf: An Anglo-Saxon Epic Poem"
+    },
+    {
+      "authors": "Victor Hugo",
+      "doc_pages": 349,
+      "gutenberg_id": 17489,
+      "highlights": 16,
+      "language": "fr",
+      "notes": 5,
+      "partial_md5": "6f6c940b26bcfbea182a88e5fa1968e1",
+      "percent_finished": 0.39,
+      "rating": null,
+      "reading_window": [
+        "2025-09-09",
+        "2025-09-18"
+      ],
+      "sidecar": "17489-les-mis-rables",
+      "single_words": 0,
+      "status": "reading",
+      "title": "Les Misérables"
+    },
+    {
+      "authors": "Antoine de Saint-Exupéry",
+      "doc_pages": 701,
+      "gutenberg_id": 13951,
+      "highlights": 25,
+      "language": "fr",
+      "notes": 11,
+      "partial_md5": "46ae4003fc5be54c03a2960b8ea8466b",
+      "percent_finished": 0.63,
+      "rating": null,
+      "reading_window": [
+        "2025-09-17",
+        "2025-09-25"
+      ],
+      "sidecar": "13951-le-petit-prince",
+      "single_words": 3,
+      "status": "reading",
+      "title": "Le Petit Prince"
+    },
+    {
+      "authors": "Miguel de Cervantes Saavedra",
+      "doc_pages": 1147,
+      "gutenberg_id": 2000,
+      "highlights": 20,
+      "language": "es",
+      "notes": 6,
+      "partial_md5": "3a60daa12dd3bfeba4a5676a58742f31",
+      "percent_finished": 0.49,
+      "rating": null,
+      "reading_window": [
+        "2025-09-21",
+        "2025-10-09"
+      ],
+      "sidecar": "2000-don-quijote",
+      "single_words": 0,
+      "status": "reading",
+      "title": "Don Quijote"
+    },
+    {
+      "authors": "Heinrich Hoffmann",
+      "doc_pages": 92,
+      "gutenberg_id": 21000,
+      "highlights": 28,
+      "language": "de",
+      "notes": 9,
+      "partial_md5": "5068cbe8c1a8b892d0b422695ee7921b",
+      "percent_finished": 0.6900000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-09-27",
+        "2025-10-25"
+      ],
+      "sidecar": "21000-der-struwwelpeter",
+      "single_words": 3,
+      "status": "reading",
+      "title": "Der Struwwelpeter"
+    },
+    {
+      "authors": "Johann Wolfgang von Goethe",
+      "doc_pages": 101,
+      "gutenberg_id": 2229,
+      "highlights": 29,
+      "language": "de",
+      "notes": 8,
+      "partial_md5": "8981721e175653a17faf199bfc1dbc97",
+      "percent_finished": 0.7300000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-10-02",
+        "2025-10-22"
+      ],
+      "sidecar": "2229-faust-der-trag-die-erster-teil",
+      "single_words": 5,
+      "status": "reading",
+      "title": "Faust: Der Tragödie erster Teil"
+    },
+    {
+      "authors": "Robert'); DROP TABLE books;--",
+      "doc_pages": 1055,
+      "gutenberg_id": 28054,
+      "highlights": 16,
+      "language": "ru",
+      "notes": 6,
+      "partial_md5": "8fc6266bf89ab790ec868efe911fe8c5",
+      "percent_finished": 0.39,
+      "rating": null,
+      "reading_window": [
+        "2025-10-09",
+        "2025-10-17"
+      ],
+      "sidecar": "28054-untitled",
+      "single_words": 0,
+      "status": "reading",
+      "title": "Братья Карамазовы"
+    },
+    {
+      "authors": "Fyodor Dostoyevsky",
+      "doc_pages": 618,
+      "gutenberg_id": 2554,
+      "highlights": 40,
+      "language": "en",
+      "notes": 15,
+      "partial_md5": "f391d3817fa70567adb9f3c642437af7",
+      "percent_finished": 1.0,
+      "rating": null,
+      "reading_window": [
+        "2025-10-12",
+        "2025-11-14"
+      ],
+      "sidecar": "2554-crime-and-punishment",
+      "single_words": 1,
+      "status": "complete",
+      "title": "Crime and Punishment"
+    },
+    {
+      "authors": "夏目 漱石",
+      "doc_pages": 4,
+      "gutenberg_id": 24039,
+      "highlights": 14,
+      "language": "ja",
+      "notes": 4,
+      "partial_md5": "ccae712b7db49322b18b7139d6b638b1",
+      "percent_finished": 0.35,
+      "rating": null,
+      "reading_window": [
+        "2025-10-13",
+        "2025-10-19"
+      ],
+      "sidecar": "24039-untitled",
+      "single_words": 2,
+      "status": "reading",
+      "title": "こころ"
+    },
+    {
+      "authors": "Confucius",
+      "doc_pages": 48,
+      "gutenberg_id": 1656,
+      "highlights": 40,
+      "language": "zh",
+      "notes": 14,
+      "partial_md5": "fcfdfed30b3513e5263836595a1352e2",
+      "percent_finished": 1.0,
+      "rating": 5,
+      "reading_window": [
+        "2025-10-14",
+        "2025-11-22"
+      ],
+      "sidecar": "1656-untitled",
+      "single_words": 3,
+      "status": "complete",
+      "title": "論語"
+    },
+    {
+      "authors": "Giovanni Boccaccio",
+      "doc_pages": 116,
+      "gutenberg_id": 30235,
+      "highlights": 10,
+      "language": "it",
+      "notes": 6,
+      "partial_md5": "0bfb58de98cdc34541056e62436b2a7c",
+      "percent_finished": 0.22000000000000003,
+      "rating": null,
+      "reading_window": [
+        "2025-10-15",
+        "2025-10-22"
+      ],
+      "sidecar": "30235-il-decamerone",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Il Decamerone"
+    },
+    {
+      "authors": "Alexander Hamilton, John Jay, James Madison",
+      "doc_pages": 630,
+      "gutenberg_id": 1404,
+      "highlights": 26,
+      "language": "en",
+      "notes": 11,
+      "partial_md5": "a361c6e261f6f9f906d20070e552e69c",
+      "percent_finished": 0.64,
+      "rating": null,
+      "reading_window": [
+        "2025-10-16",
+        "2025-11-10"
+      ],
+      "sidecar": "1404-the-federalist-papers",
+      "single_words": 0,
+      "status": "reading",
+      "title": "The Federalist Papers"
+    },
+    {
+      "authors": "William Shakespeare",
+      "doc_pages": 2720,
+      "gutenberg_id": 100,
+      "highlights": 10,
+      "language": "en",
+      "notes": 3,
+      "partial_md5": "88132b87d577855d5decb5f8015e2a88",
+      "percent_finished": 0.09,
+      "rating": null,
+      "reading_window": [
+        "2025-10-17",
+        "2025-10-28"
+      ],
+      "sidecar": "100-the-complete-works-of-william-shakespeare",
+      "single_words": 1,
+      "status": "reading",
+      "title": "The Complete Works of William Shakespeare"
+    },
+    {
+      "authors": "Nathaniel Hawthorne",
+      "doc_pages": 267,
+      "gutenberg_id": 25344,
+      "highlights": 40,
+      "language": "en",
+      "notes": 13,
+      "partial_md5": "3ccaa48ae17d644ac779d733ccaaced7",
+      "percent_finished": 1.0,
+      "rating": null,
+      "reading_window": [
+        "2025-10-26",
+        "2025-11-16"
+      ],
+      "sidecar": "25344-the-scarlet-letter",
+      "single_words": 1,
+      "status": "complete",
+      "title": "The Scarlet Letter"
+    },
+    {
+      "authors": "Mark Twain",
+      "doc_pages": 207,
+      "gutenberg_id": 74,
+      "highlights": 24,
+      "language": "en",
+      "notes": 9,
+      "partial_md5": "470ff72624650cec4e2e80a4a5e5d3ae",
+      "percent_finished": 0.6100000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-11-01",
+        "2025-11-16"
+      ],
+      "sidecar": "74-the-adventures-of-tom-sawyer",
+      "single_words": 2,
+      "status": "reading",
+      "title": "The Adventures of Tom Sawyer"
+    },
+    {
+      "authors": "Joseph Conrad",
+      "doc_pages": 117,
+      "gutenberg_id": 219,
+      "highlights": 22,
+      "language": "en",
+      "notes": 9,
+      "partial_md5": "d285a18f5eaf6f9226fb4d87b367bd56",
+      "percent_finished": 0.54,
+      "rating": null,
+      "reading_window": [
+        "2025-11-10",
+        "2025-12-02"
+      ],
+      "sidecar": "219-heart-of-darkness",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Heart of Darkness"
+    },
+    {
+      "authors": "Lewis Carroll",
+      "doc_pages": 88,
+      "gutenberg_id": 12,
+      "highlights": 18,
+      "language": "en",
+      "notes": 4,
+      "partial_md5": "116ca796a3b534d467f15591445d118c",
+      "percent_finished": 0.45999999999999996,
+      "rating": null,
+      "reading_window": [
+        "2025-11-17",
+        "2025-11-28"
+      ],
+      "sidecar": "12-through-the-looking-glass",
+      "single_words": 2,
+      "status": "reading",
+      "title": "Through the Looking-Glass"
+    },
+    {
+      "authors": "L. Frank Baum",
+      "doc_pages": 112,
+      "gutenberg_id": 55,
+      "highlights": 10,
+      "language": "en",
+      "notes": 4,
+      "partial_md5": "c760a69566de2cf3c3655d1bae5ac665",
+      "percent_finished": 0.21000000000000002,
+      "rating": null,
+      "reading_window": [
+        "2025-11-20",
+        "2025-11-27"
+      ],
+      "sidecar": "55-the-wonderful-wizard-of-oz",
+      "single_words": 0,
+      "status": "reading",
+      "title": "The Wonderful Wizard of Oz"
+    },
+    {
+      "authors": "Rudyard Kipling",
+      "doc_pages": 150,
+      "gutenberg_id": 236,
+      "highlights": 40,
+      "language": "en",
+      "notes": 11,
+      "partial_md5": "a46bea4a1623cb09446510129809fd28",
+      "percent_finished": 1.0,
+      "rating": 3,
+      "reading_window": [
+        "2025-11-26",
+        "2025-12-31"
+      ],
+      "sidecar": "236-the-jungle-book",
+      "single_words": 1,
+      "status": "complete",
+      "title": "The Jungle Book"
+    },
+    {
+      "authors": "Jacob Grimm and Wilhelm Grimm",
+      "doc_pages": 281,
+      "gutenberg_id": 2591,
+      "highlights": 40,
+      "language": "en",
+      "notes": 16,
+      "partial_md5": "a6edcc1ee89d774174a9e2d25d8f8881",
+      "percent_finished": 1.0,
+      "rating": null,
+      "reading_window": [
+        "2025-12-03",
+        "2025-12-20"
+      ],
+      "sidecar": "2591-grimms-fairy-tales",
+      "single_words": 4,
+      "status": "complete",
+      "title": "x' UNION SELECT sql FROM sqlite_master; /*"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "doc_pages": 4,
+      "gutenberg_id": 1065,
+      "highlights": 34,
+      "language": "en",
+      "notes": 10,
+      "partial_md5": "bd7a8d60641c31f5477f3de8b70f5bc2",
+      "percent_finished": 0.8400000000000001,
+      "rating": null,
+      "reading_window": [
+        "2025-12-10",
+        "2026-01-13"
+      ],
+      "sidecar": "1065-the-raven",
+      "single_words": 6,
+      "status": "reading",
+      "title": "The Raven"
+    },
+    {
+      "authors": "Walt Whitman",
+      "doc_pages": 1,
+      "gutenberg_id": 1322,
+      "highlights": 4,
+      "language": "en",
+      "notes": 2,
+      "partial_md5": "310fbd798e0d808aa814dc8991d5cd93",
+      "percent_finished": 0.78,
+      "rating": null,
+      "reading_window": [
+        "2025-12-31",
+        "2026-01-22"
+      ],
+      "sidecar": "1322-leaves-of-grass",
+      "single_words": 4,
+      "status": "reading",
+      "title": "Leaves of Grass"
+    },
+    {
+      "authors": "William Shakespeare",
+      "doc_pages": 73,
+      "gutenberg_id": 1513,
+      "highlights": 40,
+      "language": "en",
+      "notes": 15,
+      "partial_md5": "e6f9a86547f4654e5fdf97b96b76a379",
+      "percent_finished": 1.0,
+      "rating": null,
+      "reading_window": [
+        "2026-01-09",
+        "2026-01-18"
+      ],
+      "sidecar": "1513-romeo-and-juliet",
+      "single_words": 1,
+      "status": "complete",
+      "title": "Romeo and Juliet"
+    },
+    {
+      "authors": "Oscar Wilde",
+      "doc_pages": 62,
+      "gutenberg_id": 844,
+      "highlights": 16,
+      "language": "en",
+      "notes": 5,
+      "partial_md5": "a07ca62c576eace00e30c497f9095d8f",
+      "percent_finished": 0.4,
+      "rating": null,
+      "reading_window": [
+        "2026-01-16",
+        "2026-01-22"
+      ],
+      "sidecar": "844-the-importance-of-being-earnest-a-trivial-comedy",
+      "single_words": 0,
+      "status": "abandoned",
+      "title": "The Importance of Being Earnest: A Trivial Comedy for Serious People"
+    },
+    {
+      "authors": "Mrs. Beeton",
+      "doc_pages": 1564,
+      "gutenberg_id": 10136,
+      "highlights": 13,
+      "language": "en",
+      "notes": 7,
+      "partial_md5": "64c34afcb95ea50fe5c25734c627f840",
+      "percent_finished": 0.33,
+      "rating": null,
+      "reading_window": [
+        "2026-01-26",
+        "2026-01-31"
+      ],
+      "sidecar": "10136-the-book-of-household-management",
+      "single_words": 0,
+      "status": "reading",
+      "title": "The Book of Household Management"
+    },
+    {
+      "authors": "Jane Austen",
+      "doc_pages": 376,
+      "gutenberg_id": 42671,
+      "highlights": 40,
+      "language": "en",
+      "notes": 13,
+      "partial_md5": "822f91d3d2aec6ed604808b2a0d01071",
+      "percent_finished": 1.0,
+      "rating": null,
+      "reading_window": [
+        "2026-02-05",
+        "2026-02-15"
+      ],
+      "sidecar": "42671-pride-and-prejudice",
+      "single_words": 3,
+      "status": "complete",
+      "title": "Pride and Prejudice"
+    },
+    {
+      "authors": "Lewis Carroll",
+      "doc_pages": 72,
+      "gutenberg_id": 28885,
+      "highlights": 18,
+      "language": "en",
+      "notes": 7,
+      "partial_md5": "433baddb2091053dcd256d2c04a7f048",
+      "percent_finished": 0.45999999999999996,
+      "rating": null,
+      "reading_window": [
+        "2026-02-14",
+        "2026-03-03"
+      ],
+      "sidecar": "28885-alice-s-adventures-in-wonderland",
+      "single_words": 2,
+      "status": "reading",
+      "title": "Alice's Adventures in Wonderland"
+    },
+    {
+      "authors": "Franz Kafka",
+      "doc_pages": 68,
+      "gutenberg_id": 22367,
+      "highlights": 21,
+      "language": "de",
+      "notes": 9,
+      "partial_md5": "9e3a3dbc8fa37d99ced4050d99cecfd0",
+      "percent_finished": 0.52,
+      "rating": null,
+      "reading_window": [
+        "2026-02-21",
+        "2026-03-02"
+      ],
+      "sidecar": "22367-die-verwandlung",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Die Verwandlung"
+    },
+    {
+      "authors": "Gustave Flaubert",
+      "doc_pages": 368,
+      "gutenberg_id": 14155,
+      "highlights": 32,
+      "language": "fr",
+      "notes": 7,
+      "partial_md5": "2ae3ba1ef9301226ae812c3eae236586",
+      "percent_finished": 0.79,
+      "rating": null,
+      "reading_window": [
+        "2026-03-03",
+        "2026-03-16"
+      ],
+      "sidecar": "14155-madame-bovary",
+      "single_words": 3,
+      "status": "reading",
+      "title": "Madame Bovary"
+    },
+    {
+      "authors": "Aeschylus",
+      "doc_pages": 38,
+      "gutenberg_id": 39536,
+      "highlights": 21,
+      "language": "el",
+      "notes": 6,
+      "partial_md5": "5a433d711fa05cf3c8bbc6129c2e27d2",
+      "percent_finished": 0.52,
+      "rating": null,
+      "reading_window": [
+        "2026-03-12",
+        "2026-03-31"
+      ],
+      "sidecar": "39536-untitled",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Αγαμέμνων"
+    },
+    {
+      "authors": "Xenophon",
+      "doc_pages": 187,
+      "gutenberg_id": 39764,
+      "highlights": 30,
+      "language": "el",
+      "notes": 7,
+      "partial_md5": "9100cc2ef87b9a544964ae47a65eb7a6",
+      "percent_finished": 0.74,
+      "rating": null,
+      "reading_window": [
+        "2026-03-18",
+        "2026-04-03"
+      ],
+      "sidecar": "39764-1",
+      "single_words": 1,
+      "status": "reading",
+      "title": "Κύρου Ανάβασις Τόμος 1"
+    },
+    {
+      "authors": "Normal \u001b[31mRED\u001b[0m \u001b]8;;http://x\u0007link\u001b]8;;\u0007 title",
+      "doc_pages": 155,
+      "gutenberg_id": 40061,
+      "highlights": 32,
+      "language": "el",
+      "notes": 12,
+      "partial_md5": "0a13c33aa1176a599f07dc09c3e928df",
+      "percent_finished": 0.81,
+      "rating": null,
+      "reading_window": [
+        "2026-03-28",
+        "2026-04-09"
+      ],
+      "sidecar": "40061-2",
+      "single_words": 4,
+      "status": "reading",
+      "title": "Κύρου Ανάβασις Τόμος 2"
+    },
+    {
+      "authors": "Gautier of Metz",
+      "doc_pages": 39,
+      "gutenberg_id": 61024,
+      "highlights": 10,
+      "language": "he",
+      "notes": 5,
+      "partial_md5": "b97bdcf72916550b0af18dd5f0ae28ed",
+      "percent_finished": 0.13,
+      "rating": null,
+      "reading_window": [
+        "2026-04-03",
+        "2026-04-15"
+      ],
+      "sidecar": "61024-untitled",
+      "single_words": 4,
+      "status": "reading",
+      "title": "צל העולם"
+    },
+    {
+      "authors": "Charlotte Perkins Gilman",
+      "doc_pages": 17,
+      "gutenberg_id": 1952,
+      "highlights": 10,
+      "language": "en",
+      "notes": 2,
+      "partial_md5": "7b3fb311db5871f5e430a55bb20cd740",
+      "percent_finished": 0.1,
+      "rating": null,
+      "reading_window": [
+        "2026-04-08",
+        "2026-04-14"
+      ],
+      "sidecar": "1952-the-yellow-wallpaper",
+      "single_words": 0,
+      "status": "reading",
+      "title": "The Yellow Wallpaper"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "doc_pages": 286,
+      "gutenberg_id": 2147,
+      "highlights": 40,
+      "language": "en",
+      "notes": 12,
+      "partial_md5": "4d89d195e3081aa79437eeea53a5869c",
+      "percent_finished": 1.0,
+      "rating": 5,
+      "reading_window": [
+        "2026-04-14",
+        "2026-05-22"
+      ],
+      "sidecar": "2147-the-works-of-edgar-allan-poe-volume-1",
+      "single_words": 1,
+      "status": "complete",
+      "title": "The Works of Edgar Allan Poe — Volume 1"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "doc_pages": 301,
+      "gutenberg_id": 2148,
+      "highlights": 14,
+      "language": "en",
+      "notes": 2,
+      "partial_md5": "b360f566c8627024575307b3ed9b3ecf",
+      "percent_finished": 0.34,
+      "rating": null,
+      "reading_window": [
+        "2026-04-21",
+        "2026-05-02"
+      ],
+      "sidecar": "2148-the-works-of-edgar-allan-poe-volume-2",
+      "single_words": 0,
+      "status": "abandoned",
+      "title": "The Works of Edgar Allan Poe — Volume 2"
+    }
+  ]
+}

@@ -1,0 +1,4608 @@
+use std::collections::HashMap;
+
+use sqlx::Row;
+use sqlx::query::Query;
+use sqlx::sqlite::{Sqlite, SqliteArguments, SqliteRow};
+use time::OffsetDateTime;
+
+use super::copies;
+use super::field_provenance::{self, Source};
+use super::highlights::identity_hash_of;
+use super::query::{Bind, BookFilter, BookQuery, BookSummary, LibraryScope};
+use super::{Storage, now_unix};
+use crate::book::{Book, series_index_text};
+use crate::error::{EngineError, Result};
+
+/// What [`Storage::list_books`] orders by.
+///
+/// **`limit` selects along the sort key, in every arm alike.** `list_books(200,
+/// Title)` is the first two hundred books alphabetically, not two hundred
+/// arbitrary books shown alphabetically — which is what `LIMIT` means and what
+/// a paginated shelf needs. The TUI wants the *other* thing, deliberately: it
+/// fetches one page by recency and reorders that same page in Rust, so pressing
+/// `s` reorders the list rather than swapping its contents
+/// (`crates/tui/src/app.rs`). That is a frontend policy about a fixed page and
+/// it stays there; the two are not in tension as long as nobody mistakes one for
+/// the other, which is what this paragraph is for.
+///
+/// **Every arm is an `ORDER BY` over an index** — see
+/// [`order_by`] and migration `0016`. [`BookSort::Progress`] is the one that
+/// has no index and cannot have one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookSort {
+    LastModified,
+    Title,
+    Progress,
+    /// Alphabetically by the first author's **last name**, authorless books
+    /// last.
+    ///
+    /// This used to be the one arm with no `ORDER BY` at all, on the argument
+    /// that "last name" is a parse of a human name ([`crate::names`]) and SQLite
+    /// has nothing to parse one with — so it read the whole library, sorted in
+    /// Rust and *then* truncated, which made page 40 cost exactly what page 1
+    /// did and made the arm's `limit` contract Rust's to honour rather than the
+    /// database's.
+    ///
+    /// Migration `0016` moved the parse to **write** time instead.
+    /// `books.sort_author`
+    /// holds [`crate::sort::author_key`]'s encoding of that same
+    /// `names::sort_key` tuple, `Storage::refresh_sort_keys` is its only writer,
+    /// and this is now an ordinary indexed `ORDER BY` like the rest. The
+    /// function did not change and neither did the order; what changed is which
+    /// side of the write it runs on.
+    Author,
+    /// Newest first, undated last.
+    ///
+    /// Descending like every other list in this app. An ascending year sort
+    /// would be the one place the newest thing is at the bottom.
+    Year,
+}
+
+/// What [`Storage::merge_books`] actually moved.
+///
+/// The dropped counts are the interesting ones: they are rows that existed on
+/// both sides and are gone from the count of what survived, which is the only
+/// way a caller can tell "merged cleanly" from "merged and lost duplicates".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergeReport {
+    /// False when `src` was already gone — the merge had nothing to do. Every
+    /// other field is then zero, which is what makes a repeat merge a no-op
+    /// rather than an error.
+    pub src_existed: bool,
+    pub highlights_moved: usize,
+    /// Highlights that collided on identity with one already on `dst`. Dropped,
+    /// not duplicated; anything anchored to the dropped copy was repointed at
+    /// the survivor first.
+    pub highlights_dropped: usize,
+    pub notes_moved: usize,
+    /// Readings repointed at `dst`. Both books may have had an open reading;
+    /// the older one is closed as `abandoned` rather than deleted, so it is
+    /// counted here like any other.
+    pub readings_moved: usize,
+    pub flashcards_moved: usize,
+    /// `flashcards` is `UNIQUE(book_id, word)`, so a word both books captured
+    /// cannot move.
+    pub flashcards_dropped: usize,
+    pub device_links_moved: usize,
+    /// Owned files repointed at `dst`. No `dropped` twin: `book_files` is keyed
+    /// on the sha256 alone, so the same content cannot already be on both sides
+    /// and a collision is not representable.
+    pub files_moved: usize,
+    /// `src`'s cover file, when `dst` already had one of its own and therefore
+    /// kept it. The file is now unreferenced; the caller deletes it, the same
+    /// contract [`Storage::delete_book`] has.
+    pub orphaned_cover: Option<String>,
+}
+
+/// The `books` columns plus the reading-state **projections**.
+///
+/// Six of them now. `current_page`, `finished`, `date_started` and
+/// `date_finished` left `books`
+/// with migration `0005` and now come off the current reading; `reading_status`
+/// and `ko_percent` joined them later, both because a value a
+/// frontend needs *per row* is a value a list cannot afford one query each for.
+/// Keeping them on
+/// [`Book`] as read-only projections is what left every consumer — the CLI's
+/// `render.rs`, the TUI's `progress_tag` and `progress_text`, the note page
+/// auto-anchor — untouched by that move, and [`row_to_book`] unchanged with it.
+///
+/// The four **cover metrics** (migration `0014`) are read here and
+/// written nowhere else in this file: they are not `MERGE_RULES` columns, they
+/// are what the engine measured about the file at `cover_path`, and
+/// [`Storage::set_cover`] is their only writer. Same arrangement as the reading
+/// projections above and for the same reason — one writer means the four can
+/// never describe an image the row is not pointing at.
+///
+/// Every `books` column is qualified: `readings` carries `id`, `created_at` and
+/// `last_modified` of its own, and an unqualified name would be ambiguous.
+pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, books.authors, \
+     books.translators, books.publisher, books.publish_year, books.first_published, books.language, books.isbn_10, \
+     books.isbn_13, books.openlibrary_key, books.googlebooks_id, books.cover_url, \
+     books.cover_path, books.page_count, books.description, books.first_sentence, \
+     books.subjects, books.series, books.series_index, \
+     books.cover_width, books.cover_height, books.cover_accent, books.cover_thumb_path, \
+     cur.current_page AS current_page, \
+     CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
+     cur.status AS reading_status, cur.ko_percent AS ko_percent, \
+     cur.started_at AS date_started, cur.finished_at AS date_finished, \
+     books.created_at, books.last_modified";
+
+/// The join that resolves **the current reading**: the open one if there is
+/// one, else the most recent.
+///
+/// One join rather than four correlated subqueries, and one definition of
+/// "current" rather than a different one per column — a book whose `finished`
+/// came from its last reading while its `current_page` came from nowhere would
+/// render as a contradiction.
+///
+/// **A macro rather than a `const` because it has two drivers.**
+/// `BOOK_FROM` drives from `books`; `list_reading_rows` drives from `readings`
+/// so its `ORDER BY readings.finished_at` can walk `idx_readings_finished_at`
+/// instead of sorting the whole table. The join text is identical either way and
+/// **must stay identical** — a second spelling of "current" is exactly the
+/// contradiction the paragraph above describes, one query over — and a `const`
+/// cannot be `concat!`ed into another `const`, so the shared definition is a
+/// macro expanding to a string literal. Nothing here is stringly at runtime:
+/// both `FROM` clauses are one literal by the time the binary exists.
+macro_rules! book_current_join {
+    () => {
+        "LEFT JOIN readings cur ON cur.id = (
+         SELECT r.id FROM readings r WHERE r.book_id = books.id
+          ORDER BY (r.finished_at IS NULL) DESC,
+                   COALESCE(r.started_at, r.created_at) DESC, r.id DESC
+          LIMIT 1)"
+    };
+}
+pub(super) use book_current_join;
+
+/// The book-driven `FROM`: every `books` query in the repo, and the shape
+/// `BOOK_COLUMNS` is written against.
+pub(super) const BOOK_FROM: &str = concat!("FROM books ", book_current_join!());
+
+/// The `ORDER BY` for one sort key, **ending in `books.id`**.
+///
+/// The tie-break is what makes offset pagination coherent. `publish_year DESC`
+/// across four hundred books sharing a year is a *partial* order, and page 2 is
+/// only the successor of page 1 if both statements break those ties the same
+/// way. SQLite's sorter happens to today — the same plan over the same rows
+/// produces the same sequence, which is why removing this line does **not**
+/// break `a_page_and_its_successor_partition_the_list` — and that is precisely
+/// the reason to write it down rather than rely on it: the guarantee is a
+/// property of the current query plan, and the day an index over `title` or a
+/// different `LIMIT` sends the planner down another path, a book would appear on
+/// two pages and another on none, intermittently, with nothing on screen looking
+/// wrong. `books.id` is unique and never NULL, so every arm here is a total order
+/// by construction instead.
+///
+/// `order_by_is_a_total_order` is the assertion, and it is structural for that
+/// reason: the behavioural test cannot fail today, so a test that reads the SQL
+/// is the only one with teeth.
+///
+/// The tie-break follows the primary key's own direction, so a descending list's
+/// ties read newest-first like the rest of it.
+///
+/// **Every clause here is an index scan since migration `0016`**, and the
+/// leading term of each one is written to match its index exactly — a collation
+/// or an expression that differs by a character is an index SQLite silently
+/// declines to use, which is `0008`'s lesson. `books.id` needs no column of its
+/// own in any of them: it is the `INTEGER PRIMARY KEY`, i.e. the rowid, and
+/// SQLite appends the rowid to every index entry, so the tie-break comes free
+/// off the same scan in either direction.
+/// `the_sort_key_indexes_are_the_plan_the_planner_picks` asserts it against
+/// `EXPLAIN QUERY PLAN`, because a behavioural test cannot see an index.
+fn order_by(sort: BookSort) -> &'static str {
+    match sort {
+        BookSort::LastModified => "books.last_modified DESC, books.id DESC",
+        // `COALESCE`, not the bare column: `sort_title` is NULL for a row the
+        // writer has not reached, and NULL there means *not computed yet*
+        // rather than *files under nothing*. The fallback is the row's own raw
+        // title, which is precisely the order this sort had before `sort_title`
+        // had a writer — so an un-back-filled library degrades to the old
+        // behaviour instead of piling at the top. `idx_books_sort_title` is on
+        // this same expression, `COLLATE NOCASE` and all.
+        BookSort::Title => {
+            "COALESCE(books.sort_title, books.title) COLLATE NOCASE ASC, books.id ASC"
+        }
+        // The joined reading's page, not a `books` column any more. A computed
+        // ratio across a LEFT JOIN, which is exactly why it has no cursor key,
+        // why `list_books` paginates by offset, and why it is the one sort
+        // migration `0016` could not index.
+        BookSort::Progress => {
+            "CAST(cur.current_page AS REAL) / NULLIF(books.page_count, 0) DESC NULLS LAST, \
+             books.id ASC"
+        }
+        // Undated last, so the `NULL` arm must sit outside the reversal.
+        BookSort::Year => "books.publish_year DESC NULLS LAST, books.id DESC",
+        // Plain BINARY comparison, deliberately: `sort_author` is a packed
+        // encoding whose whole claim is that `memcmp` reproduces
+        // `names::sort_key`'s tuple order, and a `COLLATE NOCASE` here would
+        // compare differently from the function this column is a cache of.
+        // NULLs — rows the back-fill has not reached — sort first, which is
+        // visible and is argued in the migration.
+        BookSort::Author => "books.sort_author ASC, books.id ASC",
+    }
+}
+
+/// Apply a [`Predicate`](super::query::Predicate)'s values, in the order its
+/// clause named them.
+///
+/// Shared with [`super::readings`]: the second filter/count pair
+/// binds by the same rule, and a second copy is a second chance to bind them in
+/// the order they were *declared* rather than the order the clause names.
+pub(super) fn bind_all<'q>(
+    mut q: Query<'q, Sqlite, SqliteArguments<'q>>,
+    binds: &[Bind],
+) -> Query<'q, Sqlite, SqliteArguments<'q>> {
+    for b in binds {
+        q = match b {
+            Bind::Text(s) => q.bind(s.clone()),
+            Bind::Int(i) => q.bind(*i),
+        };
+    }
+    q
+}
+
+pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
+    let authors: String = row.try_get("authors")?;
+    let translators: String = row.try_get("translators")?;
+    let subjects: String = row.try_get("subjects")?;
+    let created: i64 = row.try_get("created_at")?;
+    let modified: i64 = row.try_get("last_modified")?;
+    Ok(Book {
+        id: row.try_get("id")?,
+        title: row.try_get("title")?,
+        sort_title: row.try_get("sort_title")?,
+        authors: serde_json::from_str(&authors).unwrap_or_default(),
+        translators: serde_json::from_str(&translators).unwrap_or_default(),
+        publisher: row.try_get("publisher")?,
+        publish_year: row.try_get("publish_year")?,
+        first_published: row.try_get("first_published")?,
+        language: row.try_get("language")?,
+        isbn_10: row.try_get("isbn_10")?,
+        isbn_13: row.try_get("isbn_13")?,
+        openlibrary_key: row.try_get("openlibrary_key")?,
+        googlebooks_id: row.try_get("googlebooks_id")?,
+        cover_url: row.try_get("cover_url")?,
+        cover_path: row.try_get("cover_path")?,
+        page_count: row.try_get("page_count")?,
+        description: row.try_get("description")?,
+        first_sentence: row.try_get("first_sentence")?,
+        subjects: serde_json::from_str(&subjects).unwrap_or_default(),
+        series: row.try_get("series")?,
+        series_index: row.try_get("series_index")?,
+        cover_width: row.try_get("cover_width")?,
+        cover_height: row.try_get("cover_height")?,
+        cover_accent: row.try_get("cover_accent")?,
+        cover_thumb_path: row.try_get("cover_thumb_path")?,
+        current_page: row.try_get("current_page")?,
+        finished: row.try_get::<i64, _>("finished")? != 0,
+        reading_status: row.try_get("reading_status")?,
+        ko_percent: row.try_get("ko_percent")?,
+        date_started: row.try_get("date_started")?,
+        date_finished: row.try_get("date_finished")?,
+        created_at: OffsetDateTime::from_unix_timestamp(created).ok(),
+        last_modified: OffsetDateTime::from_unix_timestamp(modified).ok(),
+    })
+}
+
+/// How one column merges when a **partial** record arrives.
+///
+/// The three shapes are not stylistic. `title` and the two JSON list columns are
+/// NOT NULL with a sentinel empty value (`''`, `'[]'`), so `COALESCE` would
+/// happily overwrite a real title with an empty string; the rest are nullable
+/// and `NULL` genuinely means "this record does not say".
+#[derive(Clone, Copy)]
+enum Merge {
+    /// NOT NULL text: keep what is there unless the new value is non-empty.
+    NonEmptyText,
+    /// NOT NULL JSON array: keep what is there unless the new value is not `[]`.
+    NonEmptyList,
+    /// Nullable: `COALESCE`, so a missing field never clobbers a known one.
+    Coalesce,
+}
+
+/// Copy one column across, `src` → `dst`, unconditionally. The *whether* is
+/// [`Federated`]'s; this is only the *how*.
+type Take = fn(&mut Book, &Book);
+
+/// How the **federated search** merges this column, before anything is stored.
+///
+/// The fourth consumer of this table, and until now the one that was not
+/// generated from it: `search::merge_into` spelled the column list a second
+/// time, so a column added here compiled cleanly and was **silently dropped
+/// from every search result**. Only `every_claimed_field_is_a_merge_column`
+/// noticed, and it caught exactly that when `subjects` and `series` were added
+/// (migration `0013`).
+///
+/// It could not simply reuse [`Merge`], which is a different question asked at
+/// a different layer: `Merge` is about a *partial record meeting a stored row*
+/// and compiles to SQL, while this is about *two providers meeting each other*
+/// in memory, with a per-column preference between them that has no equivalent
+/// on the storage side. Two questions, one table, one row each.
+///
+/// Every variant but [`Federated::Local`] carries its own [`Take`], so a column
+/// that is never merged has no setter to leave dead or to call by mistake.
+#[derive(Clone, Copy)]
+enum Federated {
+    /// Ours, never a provider's — a derived sort key, a path on this machine.
+    /// There is nothing to merge and nothing to attribute.
+    Local,
+    /// The first provider to speak owns it; a later one fills only a gap.
+    Fill(Take),
+    /// This source outranks a value already merged in. OpenLibrary is the
+    /// authority on editions (the ISBNs, the page count), Google Books on prose
+    /// (the description, the language tag).
+    Prefer(Source, Take),
+    /// Moves with [`Rule::pair`] and is **never taken on its own** — the rule
+    /// `series_index` needs, since an index taken from a record whose series
+    /// name lost is how a row ends up saying *Dune #2* about its neighbour.
+    WithPair(Take),
+}
+
+/// One column's entry in [`MERGE_RULES`].
+///
+/// `says` is the third thing the table has to answer, and it is not a
+/// convenience: provenance is stamped for the fields a record actually
+/// *supplied*, which is the same question `merge` answers in SQL — "is there a
+/// value here, by this column's own definition of empty". Keeping it beside the
+/// rule is what stops the two definitions of empty drifting apart, which for
+/// `authors` (`[]`) and `title` (`''`) is a real risk and not a hypothetical.
+struct Rule {
+    col: &'static str,
+    merge: Merge,
+    /// Does this record say anything about this column?
+    says: fn(&Book) -> bool,
+    /// What this record says about this column, as text a report can print.
+    ///
+    /// The fifth thing the table generates, and it is here for the same reason
+    /// `says` is. Enrichment's `EnrichReport` has to name the value a provider
+    /// *offered* for a field it was not allowed to write — a held-back field
+    /// reported by name alone is exactly the "silently not updated" state the
+    /// report exists to remove — and a `Book`-to-text projection written beside
+    /// the table rather than in it is the second column list all of this is
+    /// arranged to make unrepresentable.
+    ///
+    /// **`Some` exactly when `says` is true**, asserted by
+    /// `show_and_says_agree_on_every_column`: they are two readings of one
+    /// question, and a column where they disagree is a field that is claimed
+    /// and unprintable or printable and unclaimed.
+    show: fn(&Book) -> Option<String>,
+    /// The column this one is only meaningful *beside*, if any — and therefore
+    /// the column whose user-ownership also protects this one.
+    ///
+    /// **Per-field provenance cannot protect a field pair**, which enrichment
+    /// hit for real: a user-owned `isbn_13` was held while the unowned `isbn_10`
+    /// landed from a *different edition*, leaving one row carrying two ISBNs of
+    /// two books. `series`/`series_index` has exactly that shape — owning
+    /// "Dune" without owning "#2" is not a coherent state, and a provider that
+    /// knows a different series would write its index under the user's name.
+    ///
+    /// The fix is a guard, not a new kind of claim: **owning either half holds
+    /// both**. That is strictly weaker than what the ISBN case was said to need
+    /// (a claim on an *edition*, i.e. a claim with no value) and it is enough
+    /// for both instances, because in both the incoherence is only ever
+    /// introduced by a write to the unowned half. It costs the user nothing
+    /// they can't undo: `Engine::set_book_fields` writes both halves and the
+    /// user outranks the guard.
+    ///
+    /// Symmetric by construction — `pairs_are_symmetric` asserts that a
+    /// column's pair names it back, since a one-way pairing protects one
+    /// direction of exactly the write it exists to stop.
+    pair: Option<&'static str>,
+    /// How the federated search merges this column, and — where it merges it at
+    /// all — how to copy it. The sixth thing the table generates, and the one
+    /// that closes the last hand-written column list. See [`Federated`].
+    federated: Federated,
+}
+
+/// **The provider no-clobber merge, defined once.**
+///
+/// Four statements need it — `ON CONFLICT DO UPDATE` in
+/// [`Storage::upsert_book`], a plain `UPDATE … WHERE id = ?` in
+/// [`Storage::enrich_book`], the `dst`-wins fill in [`Storage::merge_books`],
+/// and the `field_provenance` stamp all three carry — and they must not be able
+/// to disagree about what "merge a partial record" means. That is the same rule
+/// `DEVICE_FIELDS_DIFFER` and `identity_hash_of` follow: one formula, every side
+/// through it. A field name that exists in one list and not another is the bug
+/// this arrangement makes unrepresentable, and it is the bug that would
+/// otherwise arrive with the next column added.
+///
+/// It is emphatically **not** the device merge. A sidecar is the device's
+/// complete state, so a missing note there means the user deleted it and
+/// straight assignment is correct. A provider record — and a `calibredb list`
+/// row, which carries no page count at all — is partial, and missing means
+/// "don't know". Do not copy one pattern to the other.
+/// **`sort_title` left this table with migration `0016`**, and that removal is
+/// the second time a column was kept out of this table on purpose (the cover
+/// metrics of migration `0014` were the first).
+///
+/// It had been a row here since the table existed, `Federated::Local`, with a
+/// `says` and a `show` and a bind — and NULL on every row of every database that
+/// has ever existed, because nothing computed it. Giving it a writer made the
+/// contradiction visible: `MERGE_RULES` governs what a **record** can carry,
+/// with a source to attribute, and *no provider publishes a filing key*. Leaving
+/// it here would have handed every record-shaped writer (`upsert_book`,
+/// `enrich_book`, `fill_book`, `set_book_fields`) a way to move a book's filing
+/// name without moving the title it is derived from — `0014`'s "stored
+/// dimensions describe a different image", one column over — and it would have
+/// let a provider *claim* a value that `refresh_sort_keys` had already replaced,
+/// which is a `field_provenance` row naming an origin that supplied nothing.
+///
+/// So it takes the cover metrics' shape instead: one writer
+/// ([`refresh_sort_keys`]), no claim, ignored by every merge. `sort_author`,
+/// which arrives with the same migration, was never a candidate for this table
+/// for the same reason and is not even on [`Book`].
+///
+/// The cost, stated: `Book::sort_title` is now a read-only projection, so a
+/// record carrying one is ignored rather than stored, and there is no longer a
+/// door for a user to file a book under a name of their own. Nothing had ever
+/// opened that door — `rb set` has no flag for it — and re-opening it is a
+/// `Rule` and a flag, not a migration.
+const MERGE_RULES: [Rule; 19] = [
+    Rule {
+        col: "title",
+        merge: Merge::NonEmptyText,
+        says: |b| b.title.as_deref().is_some_and(|t| !t.is_empty()),
+        show: |b| b.title.clone().filter(|t| !t.is_empty()),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.title = s.title.clone()),
+    },
+    Rule {
+        col: "authors",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.authors.is_empty(),
+        show: |b| (!b.authors.is_empty()).then(|| b.authors.join(", ")),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.authors = s.authors.clone()),
+    },
+    Rule {
+        col: "translators",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.translators.is_empty(),
+        show: |b| (!b.translators.is_empty()).then(|| b.translators.join(", ")),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.translators = s.translators.clone()),
+    },
+    Rule {
+        col: "publisher",
+        merge: Merge::Coalesce,
+        says: |b| b.publisher.is_some(),
+        show: |b| b.publisher.clone(),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.publisher = s.publisher.clone()),
+    },
+    Rule {
+        col: "publish_year",
+        merge: Merge::Coalesce,
+        says: |b| b.publish_year.is_some(),
+        show: |b| b.publish_year.map(|y| y.to_string()),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.publish_year = s.publish_year),
+    },
+    Rule {
+        col: "first_published",
+        merge: Merge::Coalesce,
+        says: |b| b.first_published.is_some(),
+        show: |b| b.first_published.map(|y| y.to_string()),
+        pair: None,
+        // A work-level fact, and only OpenLibrary publishes one (Google's
+        // `publishedDate` is the edition's). Prefer, not Fill, so the day a
+        // second source reports a year its answer cannot displace the work
+        // registry's.
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| {
+            d.first_published = s.first_published
+        }),
+    },
+    Rule {
+        col: "language",
+        merge: Merge::Coalesce,
+        says: |b| b.language.is_some(),
+        show: |b| b.language.clone(),
+        pair: None,
+        // Google publishes a BCP-47 tag; OpenLibrary a MARC name, often
+        // absent. Prose is Google's.
+        federated: Federated::Prefer(Source::GoogleBooks, |d, s| d.language = s.language.clone()),
+    },
+    Rule {
+        col: "isbn_10",
+        merge: Merge::Coalesce,
+        says: |b| b.isbn_10.is_some(),
+        show: |b| b.isbn_10.clone(),
+        // Two ISBNs of two editions is a row enrichment once produced: a
+        // user-owned ISBN-13 held while another edition's ISBN-10 landed. It
+        // is the same shape as `series`, so it takes the same guard.
+        pair: Some("isbn_13"),
+        // Editions are OpenLibrary's — Google's volume records routinely
+        // carry another printing's ISBN.
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.isbn_10 = s.isbn_10.clone()),
+    },
+    Rule {
+        col: "isbn_13",
+        merge: Merge::Coalesce,
+        says: |b| b.isbn_13.is_some(),
+        show: |b| b.isbn_13.clone(),
+        pair: Some("isbn_10"),
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.isbn_13 = s.isbn_13.clone()),
+    },
+    Rule {
+        col: "openlibrary_key",
+        merge: Merge::Coalesce,
+        says: |b| b.openlibrary_key.is_some(),
+        show: |b| b.openlibrary_key.clone(),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.openlibrary_key = s.openlibrary_key.clone()),
+    },
+    Rule {
+        col: "googlebooks_id",
+        merge: Merge::Coalesce,
+        says: |b| b.googlebooks_id.is_some(),
+        show: |b| b.googlebooks_id.clone(),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.googlebooks_id = s.googlebooks_id.clone()),
+    },
+    Rule {
+        col: "cover_url",
+        merge: Merge::Coalesce,
+        says: |b| b.cover_url.is_some(),
+        show: |b| b.cover_url.clone(),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.cover_url = s.cover_url.clone()),
+    },
+    Rule {
+        col: "cover_path",
+        merge: Merge::Coalesce,
+        says: |b| b.cover_path.is_some(),
+        show: |b| b.cover_path.clone(),
+        pair: None,
+        // Ours: where the bytes landed on this machine, written by
+        // `download_cover` long after any merge.
+        federated: Federated::Local,
+    },
+    Rule {
+        col: "page_count",
+        merge: Merge::Coalesce,
+        says: |b| b.page_count.is_some(),
+        show: |b| b.page_count.map(|n| n.to_string()),
+        pair: None,
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.page_count = s.page_count),
+    },
+    Rule {
+        col: "description",
+        merge: Merge::Coalesce,
+        says: |b| b.description.is_some(),
+        show: |b| b.description.clone(),
+        pair: None,
+        federated: Federated::Prefer(Source::GoogleBooks, |d, s| {
+            d.description = s.description.clone()
+        }),
+    },
+    Rule {
+        col: "first_sentence",
+        merge: Merge::Coalesce,
+        says: |b| b.first_sentence.is_some(),
+        show: |b| b.first_sentence.clone(),
+        pair: None,
+        federated: Federated::Fill(|d, s| d.first_sentence = s.first_sentence.clone()),
+    },
+    // ---- migration 0013 ----------------------------------------------------
+    Rule {
+        // A **set**, and `MERGE_RULES` had no vocabulary for one — so it got the
+        // vocabulary `authors` already had rather than a new one. `NonEmptyList`
+        // means a provider with subjects replaces the stored set whole, and a
+        // provider without them says nothing: `[]` is "this record does not
+        // say", never "this book has no subjects".
+        //
+        // **Not a union**, and that is the decision this column forced. A union
+        // reads as generous and is dishonest twice over: Google's categories are
+        // BISAC paths and OpenLibrary's are free-text headings, so the result is
+        // a two-dialect pile no source vouches for; and `field_provenance` holds
+        // exactly one `source` per field, so a unioned value would have to name
+        // one of two origins. The set that survives is the set one provider
+        // actually published.
+        col: "subjects",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.subjects.is_empty(),
+        show: |b| (!b.subjects.is_empty()).then(|| b.subjects.join(", ")),
+        pair: None,
+        // Filled whole or not at all, never unioned — the argument is on
+        // `merge` above and applies identically here.
+        federated: Federated::Fill(|d, s| d.subjects = s.subjects.clone()),
+    },
+    Rule {
+        col: "series",
+        merge: Merge::Coalesce,
+        says: |b| b.series.is_some(),
+        show: |b| b.series.clone(),
+        pair: Some("series_index"),
+        federated: Federated::Fill(|d, s| d.series = s.series.clone()),
+    },
+    Rule {
+        // Fractional, because novellas are 0.5. `show` prints it the way a
+        // series index is written rather than as a float: `Dune #2`, not `2`.
+        col: "series_index",
+        merge: Merge::Coalesce,
+        says: |b| b.series_index.is_some(),
+        show: |b| b.series_index.map(|n| format!("#{}", series_index_text(n))),
+        pair: Some("series"),
+        // Comes from whoever supplied the name, **including when that
+        // provider had no index at all** — so the assignment is
+        // unconditional and only a value present is claimed.
+        federated: Federated::WithPair(|d, s| d.series_index = s.series_index),
+    },
+];
+
+/// Every column the merge table governs, in its own order.
+///
+/// `pub(crate)` so that a caller assembling per-field attribution — enrichment
+/// (`enrich.rs`), which merges provider by provider — names columns this table
+/// knows about rather than strings that merely look like column names.
+pub(crate) fn merge_columns() -> impl Iterator<Item = &'static str> {
+    MERGE_RULES.iter().map(|r| r.col)
+}
+
+/// What a record says about one column, as printable text.
+///
+/// `None` both when the column is not in [`MERGE_RULES`] and when the record is
+/// silent about it — a caller asking for a field's value has no use for the
+/// difference, and every caller here has already been through `merge_columns`.
+pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
+    MERGE_RULES
+        .iter()
+        .find(|r| r.col == col)
+        .and_then(|r| (r.show)(book))
+}
+
+/// Merge one provider's record into a partially-merged one, and name the
+/// columns it actually supplied.
+///
+/// **This is `search::merge_into`'s body, generated from [`MERGE_RULES`].** It
+/// lives here rather than in `search.rs` because the alternative is what was
+/// there before: a hand-written column list, which is the fourth spelling of
+/// this table and the one place a new column could be added, compile, pass
+/// clippy and then be silently dropped from every search result. Now a new
+/// `Rule` does not compile without saying how it federates.
+///
+/// It writes nothing and stamps nothing — at this point in a search there is no
+/// row yet. The returned columns are the attribution, in table order, for the
+/// caller to carry (`search::FieldClaims`); `save_book` then stamps `None`,
+/// because by the time a merged record reaches it the map has been discarded.
+///
+/// `provider` is a [`Source`] rather than a `ProviderId` so that the preference
+/// table can name calibre or the epub reader the day either one merges here;
+/// `ProviderId` already converts.
+pub(crate) fn merge_provider_record(
+    dst: &mut Book,
+    src: &Book,
+    provider: Source,
+) -> Vec<&'static str> {
+    let mut claimed: Vec<&'static str> = Vec::new();
+    for rule in MERGE_RULES.iter() {
+        // `WithPair` columns are taken below, beside the column they belong to.
+        // `Local` ones are never a provider's to supply.
+        let (take, outranks) = match rule.federated {
+            Federated::Local | Federated::WithPair(_) => continue,
+            Federated::Fill(take) => (take, false),
+            Federated::Prefer(wins, take) => (take, wins == provider),
+        };
+        if !(rule.says)(src) || (!outranks && (rule.says)(dst)) {
+            continue;
+        }
+        take(dst, src);
+        claimed.push(rule.col);
+
+        // The pair moves with it — see [`Federated::WithPair`]. Assigned
+        // unconditionally (a provider that named the series and no index clears
+        // a stale index that belonged to a different series) but claimed only
+        // where there is a value, since a source is not the origin of a NULL.
+        if let Some(pair) = MERGE_RULES.iter().find(|r| Some(r.col) == rule.pair)
+            && let Federated::WithPair(take_pair) = pair.federated
+        {
+            take_pair(dst, src);
+            if (pair.says)(src) {
+                claimed.push(pair.col);
+            }
+        }
+    }
+    claimed
+}
+
+/// The column whose user-ownership also protects `col` — see [`Rule::pair`].
+///
+/// `pub(crate)` for `enrich.rs`, whose *report* has to ask the same question the
+/// merge clause asks: a field held back because the user owns its partner is a
+/// field silently not updated, which is the state `EnrichReport::held` exists to
+/// remove. Asked of the table rather than re-derived, for the reason every other
+/// consumer is.
+pub(crate) fn field_pair(col: &str) -> Option<&'static str> {
+    MERGE_RULES
+        .iter()
+        .find(|r| r.col == col)
+        .and_then(|r| r.pair)
+}
+
+/// Which side of a merge wins where both have something to say.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Winner {
+    /// The record being merged in. `upsert_book` and `enrich_book`: the new
+    /// data is the authority and the stored row only survives where the record
+    /// is silent.
+    Incoming,
+    /// The stored row. `merge_books`: `dst` is the row the user chose to keep,
+    /// so `src` fills gaps and nothing else.
+    Stored,
+}
+
+/// The SET clause for [`MERGE_RULES`]. `src` names where the incoming value
+/// comes from, per column: `excluded.title` inside an upsert, `?1` inside an
+/// update. `last_modified` is appended by the caller, since not every statement
+/// binds it positionally.
+///
+/// `guard_user` wraps every column in the one rule that makes field provenance
+/// worth recording: **a field the user owns is not overwritten by a merge.** It
+/// lives here, in the generated SQL, rather than in each caller — a caller-side
+/// check is a rule that has to be remembered once per writer, and every new
+/// writer (enrichment was one) would have to remember it. `merge_books` turns
+/// it off, and that is not an exception to the rule:
+/// `dst` wins there anyway, so a `user` field is only ever *filled* when `dst`
+/// has no value for the user to have corrected.
+fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> String) -> String {
+    // The expression this statement will actually store in `cover_path`, kept
+    // so the cover metrics can be invalidated against it — see
+    // `invalidate_cover_metrics`.
+    let mut cover_value: Option<String> = None;
+    let mut sets: Vec<String> = MERGE_RULES
+        .iter()
+        .enumerate()
+        .map(|(i, rule)| {
+            let col = rule.col;
+            let new = src(i, col);
+            let stored = format!("books.{col}");
+            let (a, b) = match winner {
+                Winner::Incoming => (&new, &stored),
+                Winner::Stored => (&stored, &new),
+            };
+            let merged = match rule.merge {
+                Merge::NonEmptyText => format!("CASE WHEN {a} != '' THEN {a} ELSE {b} END"),
+                Merge::NonEmptyList => format!("CASE WHEN {a} != '[]' THEN {a} ELSE {b} END"),
+                Merge::Coalesce => format!("COALESCE({a}, {b})"),
+            };
+            let value = if guard_user {
+                // A paired column is guarded by *either* half's claim — see
+                // `Rule::pair`. Without it, owning one half of a pair invites
+                // the other half to be filled from a record about something
+                // else, which is a row that contradicts itself and that nothing
+                // downstream can tell from a correct one.
+                let owned = match rule.pair {
+                    Some(other) => format!(
+                        "({} OR {})",
+                        field_provenance::user_owns("books.id", col),
+                        field_provenance::user_owns("books.id", other)
+                    ),
+                    None => field_provenance::user_owns("books.id", col),
+                };
+                format!("CASE WHEN {owned} THEN {stored} ELSE {merged} END")
+            } else {
+                merged
+            };
+            if col == "cover_path" {
+                cover_value = Some(value.clone());
+            }
+            format!("{col} = {value}")
+        })
+        .collect();
+    if let Some(cover) = cover_value {
+        sets.push(invalidate_cover_metrics(&cover));
+    }
+    sets.join(",\n            ")
+}
+
+/// The cover columns that came off `cover_path`, and are worthless the moment
+/// it moves. Not `MERGE_RULES` rows — migration `0014` argues why — but every
+/// statement that can move a path has to know about them.
+const COVER_METRICS: [&str; 4] = [
+    "cover_width",
+    "cover_height",
+    "cover_accent",
+    "cover_thumb_path",
+];
+
+/// **A write that moves `cover_path` throws away what was measured from the old
+/// file.**
+///
+/// This is what makes "the stored dimensions describe a different image"
+/// unrepresentable rather than merely unlikely, and it is generated from the
+/// *same expression* that stores the path — so it cannot fall out of step with
+/// the merge rule, the user guard or the `dst`-wins inversion.
+///
+/// One writer was not enough, and the test that failed said so:
+/// [`Storage::set_cover`] is the only writer of these four, but `cover_path` is
+/// a `MERGE_RULES` column with three other writers, and `Merge::Coalesce` under
+/// `Winner::Incoming` means an incoming record's path *wins*. A calibre row or
+/// an `rb set` carrying a cover therefore repointed the row and left a width,
+/// a height and an accent belonging to the jacket before it. `IS` rather than
+/// `=` because both sides are nullable and `NULL = NULL` is not true, which is
+/// exactly the case where a book gains its first cover.
+fn invalidate_cover_metrics(cover_value: &str) -> String {
+    COVER_METRICS
+        .iter()
+        .map(|col| format!("{col} = CASE WHEN ({cover_value}) IS books.cover_path THEN books.{col} ELSE NULL END"))
+        .collect::<Vec<_>>()
+        .join(",\n            ")
+}
+
+/// **Move the filing keys to match the row that was just written.**
+///
+/// Migration `0016`'s whole mechanism, and the reason `sort_title` stopped
+/// being a column
+/// that "looks answered and is not". Both keys are derived — `sort_title` from
+/// `books.title`, `sort_author` from `books.authors` through
+/// [`crate::names::sort_key`] — so every write that can move a title or an
+/// author list has to move them with it, and there are five such writes
+/// ([`Storage::upsert_book`], [`Storage::enrich_book_attributed`],
+/// [`Storage::fill_book`], [`Storage::merge_books`]' `dst`-wins fill, and
+/// `Engine::set_book_fields` through the second of those). This is the one
+/// function all five call.
+///
+/// **It reads the merged row back rather than deriving from the record**, which
+/// is the design decision worth carrying forward. The alternative — computing
+/// the keys in Rust from the incoming `Book` and binding them beside it — is
+/// wrong in a way that only shows up on a partial record: a merge clause stores
+/// `CASE WHEN excluded.title != '' THEN excluded.title ELSE books.title END`,
+/// so a record silent about the title keeps the row's, and a key bound from the
+/// record would then describe a title the row does not have. Deriving from what
+/// was actually stored makes the two coherent by construction, through the merge
+/// rule, the user guard and `merge_books`' `dst`-wins inversion alike, without
+/// any of them being re-spelled here. That is `invalidate_cover_metrics`' rule
+/// reached by a different route: the companion value is generated from the
+/// column's own stored value, never from the caller's copy of it.
+///
+/// It runs **last inside the caller's own transaction**, so a row whose title
+/// landed and whose filing key did not is unrepresentable rather than merely
+/// unlikely — the same argument `upsert_book` makes about its provenance stamp.
+///
+/// **A user-owned `sort_title` is left alone.** `sort_title` is still a
+/// `MERGE_RULES` column, so `Engine::set_book_fields` can claim it and
+/// `field_provenance` protects it exactly as it protects a corrected title; this
+/// derivation is not the user, and field provenance's rule is "everyone except
+/// the user themself". `sort_author` has no such door — it is not a merge column, not on
+/// [`Book`] and not on the wire — so it is always ours to write.
+///
+/// `last_modified` is deliberately untouched: recomputing a derived key is not
+/// an edit to the book, and every caller here has already stamped its own.
+pub(super) async fn refresh_sort_keys(
+    conn: &mut sqlx::SqliteConnection,
+    book_id: i64,
+) -> Result<()> {
+    let Some(row) = sqlx::query("SELECT title, authors FROM books WHERE id = ?")
+        .bind(book_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        // Not an error: `merge_books` deletes `src` inside the same transaction,
+        // and a caller asking for a book that is gone has nothing to be told.
+        return Ok(());
+    };
+    let title: String = row.try_get("title")?;
+    let authors: String = row.try_get("authors")?;
+    let authors: Vec<String> = serde_json::from_str(&authors).unwrap_or_default();
+
+    let author_key = crate::sort::author_key(&authors);
+    if field_provenance::user_owns_now(&mut *conn, book_id, "sort_title").await? {
+        sqlx::query("UPDATE books SET sort_author = ?1 WHERE id = ?2")
+            .bind(author_key)
+            .bind(book_id)
+            .execute(&mut *conn)
+            .await?;
+        return Ok(());
+    }
+    sqlx::query("UPDATE books SET sort_title = ?1, sort_author = ?2 WHERE id = ?3")
+        .bind(crate::sort::sort_title(&title))
+        .bind(author_key)
+        .bind(book_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Does a write from `source` have to respect fields the user owns?
+///
+/// Everyone except the user, and stated once because "except the user" is
+/// exactly the clause that gets remembered in two writers out of three. An
+/// unattributed write (`None`) is guarded like any other: not knowing who is
+/// writing is not a reason to let them past a correction.
+fn guards_user(source: Option<Source>) -> bool {
+    source != Some(Source::User)
+}
+
+/// The columns this record has something to say about — which is exactly the
+/// set that gets a `field_provenance` row, since a source can only be the origin
+/// of a value it supplied.
+pub(crate) fn fields_said(book: &Book) -> Vec<&'static str> {
+    MERGE_RULES
+        .iter()
+        .filter(|r| (r.says)(book))
+        .map(|r| r.col)
+        .collect()
+}
+
+/// The fields a guarded write is allowed to *claim*, which is not always the
+/// set it supplied.
+///
+/// [`field_provenance::stamp`]'s own `WHERE` refuses to overwrite a `user` claim
+/// on the same field, and that covers every unpaired column: value held, claim
+/// held, one predicate. A **paired** column is held by the *other* half's claim
+/// and has no row of its own, so the stamp would sail past a value the merge
+/// clause had just refused to write — a field claiming a provider that did not
+/// supply it, which is the exact half-protected state the guard exists to
+/// prevent. Same rule as `merge_set`'s, read off the same `Rule::pair`.
+async fn claimable(
+    conn: &mut sqlx::SqliteConnection,
+    book_id: i64,
+    fields: &[&'static str],
+    guard_user: bool,
+) -> Result<Vec<&'static str>> {
+    if !guard_user {
+        return Ok(fields.to_vec());
+    }
+    let mut out = Vec::with_capacity(fields.len());
+    for field in fields {
+        let held = match MERGE_RULES
+            .iter()
+            .find(|r| r.col == *field)
+            .and_then(|r| r.pair)
+        {
+            Some(other) => field_provenance::user_owns_now(conn, book_id, other).await?,
+            None => false,
+        };
+        if !held {
+            out.push(*field);
+        }
+    }
+    Ok(out)
+}
+
+/// The columns `stored` is silent about and `incoming` is not — the only ones a
+/// `Winner::Stored` merge actually takes from the incoming record, and therefore
+/// the only ones whose attribution may travel with it.
+fn gap_fields(stored: &Book, incoming: &Book) -> Vec<&'static str> {
+    MERGE_RULES
+        .iter()
+        .filter(|r| !(r.says)(stored) && (r.says)(incoming))
+        .map(|r| r.col)
+        .collect()
+}
+
+/// The positional parameters that follow the [`MERGE_RULES`] columns in the
+/// three `UPDATE` statements: `last_modified`, then the row id.
+///
+/// Computed rather than written down. They used to be the literals `?20` and
+/// `?21` beside a clause generated from a table whose length decides them, which
+/// is a hand-maintained number that a column added or removed here silently puts
+/// out of step — and removing `sort_title` changed it, so the trap is not
+/// hypothetical.
+fn tail_params() -> (String, String) {
+    let n = MERGE_RULES.len();
+    (format!("?{}", n + 1), format!("?{}", n + 2))
+}
+
+/// Bind the [`MERGE_RULES`] columns, in order, to a query.
+///
+/// Shared for the same reason the clause is: the SQL and the binds are one
+/// thing, and a column added to the list without a bind beside it is a runtime
+/// error in a statement nobody reads.
+fn bind_merge_columns<'q>(
+    q: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    book: &Book,
+) -> Result<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
+    Ok(q.bind(book.title.clone().unwrap_or_default())
+        .bind(serde_json::to_string(&book.authors)?)
+        .bind(serde_json::to_string(&book.translators)?)
+        .bind(book.publisher.clone())
+        .bind(book.publish_year)
+        .bind(book.first_published)
+        .bind(book.language.clone())
+        .bind(book.isbn_10.clone())
+        .bind(book.isbn_13.clone())
+        .bind(book.openlibrary_key.clone())
+        .bind(book.googlebooks_id.clone())
+        .bind(book.cover_url.clone())
+        .bind(book.cover_path.clone())
+        .bind(book.page_count)
+        .bind(book.description.clone())
+        .bind(book.first_sentence.clone())
+        .bind(serde_json::to_string(&book.subjects)?)
+        .bind(book.series.clone())
+        .bind(book.series_index))
+}
+
+impl Storage {
+    /// Insert-or-merge keyed on isbn_10, else isbn_13, else plain insert.
+    /// COALESCE(excluded.x, books.x) keeps NULL fields from clobbering
+    /// existing data. Returns the row id.
+    ///
+    /// **Reading state is not written here, and `Book`'s four progress fields
+    /// are ignored.** They are projections of the current reading
+    /// (`BOOK_COLUMNS`); writing them belongs to
+    /// [`Storage::update_progress`]. This is also why the old
+    /// `finished = MAX(excluded.finished, books.finished)` clause is gone rather
+    /// than moved: it only ever existed to stop a metadata refresh from
+    /// un-finishing a book, and a provider upsert now has no reach into reading
+    /// state at all. Everything else keeps its `COALESCE` no-clobber — that
+    /// pattern is still right for providers, which return partial records.
+    ///
+    /// **`source` is who supplied this record**, and every field the record
+    /// speaks to gets a `field_provenance` row stamped with it, in the same
+    /// transaction as the write. `None` is the honest answer for a writer that
+    /// cannot say — `Engine::save_book` holds a record already merged across
+    /// providers by `search::merge_provider_books`, which keeps the winning
+    /// value and discards which provider supplied it — and it stamps nothing
+    /// rather than picking one. It is a parameter and not a default precisely so
+    /// that every writer has to answer; a writer that does not stamp is a field
+    /// that goes on silently claiming whatever it claimed last.
+    pub async fn upsert_book(&self, book: &Book, source: Option<Source>) -> Result<i64> {
+        let set_clause = format!(
+            "{},\n            last_modified = excluded.last_modified",
+            merge_set(Winner::Incoming, guards_user(source), |_, col| format!(
+                "excluded.{col}"
+            ))
+        );
+
+        // Column list and placeholders both off `MERGE_RULES`, so a column
+        // added or removed there cannot leave this statement one `?` short —
+        // `sort_title` left the table in migration `0016` and this is where a
+        // hand-written list would have gone wrong first. `created_at` and
+        // `last_modified` are the two the table does not govern.
+        let holes = std::iter::repeat_n("?", MERGE_RULES.len() + 2)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert = format!(
+            "INSERT INTO books ({}, created_at, last_modified) VALUES ({holes})",
+            merge_columns().collect::<Vec<_>>().join(", ")
+        );
+
+        let sql = if book.isbn_10.is_some() {
+            format!("{insert} ON CONFLICT(isbn_10) DO UPDATE SET {set_clause} RETURNING id")
+        } else if book.isbn_13.is_some() {
+            format!("{insert} ON CONFLICT(isbn_13) DO UPDATE SET {set_clause} RETURNING id")
+        } else {
+            format!("{insert} RETURNING id")
+        };
+
+        let now = now_unix();
+        // One transaction, for the same reason `merge_books` is one: a row whose
+        // `page_count` landed and whose provenance did not is indistinguishable
+        // from history, and it is indistinguishable *forever* — nothing later
+        // re-derives where a field came from.
+        let mut tx = self.pool().begin().await?;
+        let row = bind_merge_columns(sqlx::query(&sql), book)?
+            .bind(now)
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await?;
+        let id: i64 = row.try_get("id")?;
+        if let Some(source) = source {
+            let fields =
+                claimable(&mut tx, id, &fields_said(book), guards_user(Some(source))).await?;
+            field_provenance::stamp(&mut tx, id, &fields, source).await?;
+        }
+        // After the stamp, because a `Source::User` claim on `sort_title` is
+        // what tells the derivation to leave that half alone.
+        refresh_sort_keys(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Merge a partial record into a book **we have already identified**.
+    ///
+    /// [`Storage::upsert_book`] cannot do this job, and the way it fails is
+    /// silent: its third branch — no `isbn_10`, no `isbn_13` — is a *plain
+    /// unconditional insert*, so handing it a `Book` whose `id` is set creates a
+    /// second row rather than updating the first. That is the same trap
+    /// `import_book_from_sidecar` had to key on `device_books` to avoid, and it
+    /// is exactly the shape a calibre import meets: a book matched by uuid or by
+    /// file hash, carrying no ISBN at all.
+    ///
+    /// Same rules as the upsert, from [`MERGE_RULES`] — the caller has a partial
+    /// record either way, and which statement runs is about *how the book was
+    /// found*, never about what a missing field means.
+    ///
+    /// Same `source` contract as [`Storage::upsert_book`] — and this is also the
+    /// door a user edit comes through: `Some(Source::User)` both writes the
+    /// value and claims the field, after which no provider merge can overwrite
+    /// it. The rule lives in the merge itself because re-enrichment is where
+    /// its absence would be discovered, by silently overwriting a hand
+    /// correction.
+    pub async fn enrich_book(
+        &self,
+        book_id: i64,
+        book: &Book,
+        source: Option<Source>,
+    ) -> Result<()> {
+        let claims: Vec<(&'static str, Source)> = match source {
+            Some(source) => fields_said(book).into_iter().map(|f| (f, source)).collect(),
+            // Not "claims nothing by accident": `None` is a writer that cannot
+            // honestly name a source, and an empty claim list is exactly that.
+            None => Vec::new(),
+        };
+        self.enrich_book_attributed(book_id, book, &claims).await
+    }
+
+    /// [`Storage::enrich_book`] where the record's fields came from **different
+    /// sources**, each named.
+    ///
+    /// `Engine::save_book` stamps `None` because
+    /// `search::merge_provider_books` keeps the winning value per field and
+    /// discards which provider supplied it; enrichment (`enrich.rs`) merges
+    /// provider by provider, so it holds that map and can answer honestly. Rather than one
+    /// `UPDATE` per provider — which would make whichever provider ran first win
+    /// every field it spoke to, a *second* dialect of the federated merge's
+    /// tuned per-field preference — the merged record is written once and the
+    /// attribution is stamped per field.
+    ///
+    /// A claim for a field the record does not actually supply is dropped: a
+    /// source can only be the origin of a value it gave us, and the same
+    /// `fields_said` that decides what the SQL moves decides what may be
+    /// claimed.
+    ///
+    /// **The user guard is on** unless every claim is the user's, which is the
+    /// one-source case [`guards_user`] already describes — reached through that
+    /// predicate rather than re-spelled, since `merge_set`'s value guard and
+    /// `field_provenance::stamp`'s stamp guard have to keep agreeing about which
+    /// rows are protected. A mixed set containing `Source::User` guards like any
+    /// other, which is the safe direction and is not a set any caller here
+    /// produces: a user edit names one source and comes through
+    /// [`Storage::enrich_book`].
+    pub async fn enrich_book_attributed(
+        &self,
+        book_id: i64,
+        book: &Book,
+        claims: &[(&'static str, Source)],
+    ) -> Result<()> {
+        let guard_user = claims.iter().all(|(_, s)| guards_user(Some(*s)));
+        // ?1..?N are the merge columns; `tail_params` names the two past them.
+        let (modified, id) = tail_params();
+        let sql = format!(
+            "UPDATE books SET {}, last_modified = {modified} WHERE id = {id}",
+            merge_set(Winner::Incoming, guard_user, |i, _| format!("?{}", i + 1))
+        );
+        let mut tx = self.pool().begin().await?;
+        bind_merge_columns(sqlx::query(&sql), book)?
+            .bind(now_unix())
+            .bind(book_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let said = fields_said(book);
+        for source in Source::ALL {
+            let fields: Vec<&'static str> = claims
+                .iter()
+                .filter(|(field, s)| *s == source && said.contains(field))
+                .map(|(field, _)| *field)
+                .collect();
+            let fields = claimable(&mut tx, book_id, &fields, guard_user).await?;
+            if !fields.is_empty() {
+                field_provenance::stamp(&mut tx, book_id, &fields, source).await?;
+            }
+        }
+        refresh_sort_keys(&mut tx, book_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Merge a **fallback** record: the stored row wins, and this fills only
+    /// what it is silent about.
+    ///
+    /// The mirror of [`Storage::enrich_book`], and the difference is which
+    /// record is the authority rather than how a missing field is read. It
+    /// exists for `Engine::import_epub`, where the file's own metadata is
+    /// deliberately second to whatever a provider said about the same ISBN —
+    /// that used to be a hand-written `if book.title.is_none()` chain folding
+    /// the two into one `Book` before a single write, which is `MERGE_RULES`
+    /// spelled a second time *and* a record with two origins and no way to say
+    /// which supplied what. Two writes, two sources, one merge table.
+    ///
+    /// Provenance is stamped for the fields it actually filled, never for the
+    /// ones the stored row already answered — a source is only the origin of a
+    /// value that survived.
+    pub async fn fill_book(&self, book_id: i64, book: &Book, source: Option<Source>) -> Result<()> {
+        // ?1..?N are the merge columns; `tail_params` names the two past them.
+        let (modified, id) = tail_params();
+        let sql = format!(
+            "UPDATE books SET {}, last_modified = {modified} WHERE id = {id}",
+            merge_set(Winner::Stored, guards_user(source), |i, _| format!(
+                "?{}",
+                i + 1
+            ))
+        );
+        let mut tx = self.pool().begin().await?;
+        // Read before the write, or the gaps this filled are already closed and
+        // it would look as though it had supplied nothing.
+        let select = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
+        let stored = sqlx::query(&select)
+            .bind(book_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
+        let gaps = gap_fields(&row_to_book(&stored)?, book);
+
+        bind_merge_columns(sqlx::query(&sql), book)?
+            .bind(now_unix())
+            .bind(book_id)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(source) = source {
+            let gaps = claimable(&mut tx, book_id, &gaps, guards_user(Some(source))).await?;
+            field_provenance::stamp(&mut tx, book_id, &gaps, source).await?;
+        }
+        refresh_sort_keys(&mut tx, book_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn get_book(&self, id: i64) -> Result<Option<Book>> {
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(row_to_book).transpose()
+    }
+
+    /// Lookup by a normalized ISBN (either column).
+    pub async fn find_book_by_isbn(&self, isbn: &str) -> Result<Option<Book>> {
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.isbn_10 = ?1 OR books.isbn_13 = ?1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(isbn)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(row_to_book).transpose()
+    }
+
+    pub async fn find_books_by_title(&self, fragment: &str) -> Result<Vec<Book>> {
+        self.find_books_by_title_in(fragment, LibraryScope::All)
+            .await
+    }
+
+    /// [`Storage::find_books_by_title`] narrowed by library membership.
+    pub async fn find_books_by_title_in(
+        &self,
+        fragment: &str,
+        scope: LibraryScope,
+    ) -> Result<Vec<Book>> {
+        let scoped = scope
+            .clause("books.id")
+            .map(|c| format!(" AND {c}"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.title LIKE ?{scoped}
+             ORDER BY books.last_modified DESC, books.id DESC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(format!("%{fragment}%"))
+            .fetch_all(self.pool())
+            .await?;
+        rows.iter().map(row_to_book).collect()
+    }
+
+    /// One page of the library. See [`BookSort`] for what `limit` means about
+    /// membership — it is a contract, not an accident of `LIMIT` — and
+    /// `storage/query.rs` for why the page is an offset and why every arm ends in
+    /// `books.id`.
+    pub async fn list_books(&self, query: &BookQuery) -> Result<Vec<Book>> {
+        let predicate = query.filter.predicate();
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} {} ORDER BY {} LIMIT ? OFFSET ?",
+            predicate.sql,
+            order_by(query.sort)
+        );
+        let q = bind_all(sqlx::query(&sql), &predicate.binds)
+            .bind(query.limit)
+            .bind(query.offset.max(0));
+        let rows = q.fetch_all(self.pool()).await?;
+        rows.iter().map(row_to_book).collect()
+    }
+
+    /// How many books a [`BookFilter`] matches.
+    ///
+    /// The same clause the page uses, from the same function — see
+    /// `storage/query.rs`. A shelf wants this once per filter and the page
+    /// many times per filter, which is why it is its own call rather than a
+    /// field beside the rows: bundled, every scroll would pay for a scan of the
+    /// whole matching set.
+    ///
+    /// A count of books that exist. Nothing here counts what has not been done.
+    pub async fn count_books(&self, filter: &BookFilter) -> Result<i64> {
+        let predicate = filter.predicate();
+        let sql = format!("SELECT COUNT(*) {BOOK_FROM} {}", predicate.sql);
+        let row = bind_all(sqlx::query(&sql), &predicate.binds)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(row.try_get::<i64, _>(0)?)
+    }
+
+    /// What is behind each of these books: highlights, notes, owned files.
+    ///
+    /// **One call for a page, not four per row.** The detail screen makes four
+    /// queries for one book, which a list of eight hundred cannot; this is three
+    /// grouped aggregates over three `book_id` indexes, whatever the page size.
+    ///
+    /// Returns one [`BookSummary`] per id **in the order given**, zeros
+    /// included, so a caller can zip it against the page it just fetched without
+    /// a lookup — and so "nothing behind this book" is an answer rather than a
+    /// missing row.
+    pub async fn book_summaries(&self, book_ids: &[i64]) -> Result<Vec<BookSummary>> {
+        let mut totals: HashMap<i64, BookSummary> = HashMap::new();
+        for id in book_ids {
+            totals.entry(*id).or_insert(BookSummary {
+                book_id: *id,
+                ..Default::default()
+            });
+        }
+        // SQLite's default parameter ceiling is 999 on older builds, and a
+        // caller may hand this the whole library. Chunked rather than
+        // documented-as-a-limit, because a limit stated in a doc comment is a
+        // limit somebody exceeds.
+        let ids: Vec<i64> = totals.keys().copied().collect();
+        for chunk in ids.chunks(500) {
+            let holes = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            for (table, pick) in [
+                ("highlights", 0usize),
+                ("notes", 1usize),
+                ("book_files", 2usize),
+            ] {
+                let sql = format!(
+                    "SELECT book_id, COUNT(*) AS n FROM {table} \
+                     WHERE book_id IN ({holes}) GROUP BY book_id"
+                );
+                let mut q = sqlx::query(&sql);
+                for id in chunk {
+                    q = q.bind(*id);
+                }
+                for row in q.fetch_all(self.pool()).await? {
+                    let id: i64 = row.try_get("book_id")?;
+                    let n: i64 = row.try_get("n")?;
+                    if let Some(s) = totals.get_mut(&id) {
+                        match pick {
+                            0 => s.highlights = n,
+                            1 => s.notes = n,
+                            _ => s.files = n,
+                        }
+                    }
+                }
+            }
+        }
+        Ok(book_ids.iter().map(|id| totals[id]).collect())
+    }
+
+    /// Fold `src` into `dst`: move highlights, notes, flashcards, readings,
+    /// device links and owned files, fill `dst`'s empty fields from `src`,
+    /// delete `src`.
+    ///
+    /// This exists because the ISBN-less insert path guarantees duplicates
+    /// regardless of how good matching gets: `upsert_book` branches
+    /// isbn_10 → isbn_13 → *plain insert*, and a book created from a sidecar
+    /// has neither ISBN. Matching can only shrink the rate, never reach zero,
+    /// so the library needs a way to put two rows back together.
+    ///
+    /// **One transaction.** A half-merged library — highlights moved, notes
+    /// not — is worse than the duplicate it was trying to fix, and nothing
+    /// would tell the user it had happened.
+    ///
+    /// **The identity collision is handled, not avoided.** `book_id` is an
+    /// input to a highlight's `identity_hash`, so every moved row's hash has to
+    /// be recomputed against `dst`; one that then collides with a highlight
+    /// already there is the *same annotation*, and is dropped rather than
+    /// duplicated. Its note anchors and flashcards are repointed at the
+    /// survivor first — dropping them would quietly undo exactly the guarantee
+    /// migration `0004` went to the trouble of keeping.
+    ///
+    /// Field merge is `COALESCE`-style with **`dst` winning**: `dst` is the row
+    /// the user chose to keep, so `src` only fills what `dst` does not have.
+    ///
+    /// Idempotent: a repeat merge finds `src` already gone and returns a report
+    /// with `src_existed == false` and every count zero. A missing `dst` is a
+    /// real error — there is nothing to merge *into*.
+    pub async fn merge_books(&self, src: i64, dst: i64) -> Result<MergeReport> {
+        let mut report = MergeReport::default();
+        if src == dst {
+            // Not an error: "make these two one" is already true. Proceeding
+            // would delete the book.
+            report.src_existed = self.get_book(src).await?.is_some();
+            return Ok(report);
+        }
+
+        // One connection for the whole merge. Nothing below may call back
+        // through `self` — an in-memory Storage caps the pool at one
+        // connection, so a nested acquire would deadlock rather than fail.
+        let mut tx = self.pool().begin().await?;
+
+        // The whole row, not just its cover: which fields `dst` is silent about
+        // is what decides both the fill below and whose provenance travels with
+        // it, and that has to be read *before* the fill changes the answer.
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
+        let dst_row = sqlx::query(&sql).bind(dst).fetch_optional(&mut *tx).await?;
+        let Some(dst_row) = dst_row else {
+            return Err(EngineError::NotFound(format!("book id {dst}")));
+        };
+        let dst_book = row_to_book(&dst_row)?;
+
+        let Some(src_row) = sqlx::query(&sql).bind(src).fetch_optional(&mut *tx).await? else {
+            // Already merged (or never existed). Returning an empty report
+            // rather than an error is what makes merging twice equal merging
+            // once, which the caller — a retry, a re-run, a device screen
+            // firing the same action — has no other way to be sure of.
+            return Ok(report);
+        };
+        let src_book = row_to_book(&src_row)?;
+        report.src_existed = true;
+
+        // ---- highlights: recompute identity against dst, drop collisions ----
+        let rows =
+            sqlx::query(
+                "SELECT id, text, pos0, ko_datetime, identity_hash, origin FROM highlights WHERE book_id = ?",
+            )
+                .bind(src)
+                .fetch_all(&mut *tx)
+                .await?;
+        for r in &rows {
+            let id: i64 = r.try_get("id")?;
+            let text: String = r.try_get("text")?;
+            let pos0: Option<String> = r.try_get("pos0")?;
+            let ko_datetime: Option<String> = r.try_get("ko_datetime")?;
+            // An imported row's hash does not contain `book_id` and is not
+            // KOReader's formula (`imported_highlights.rs`), so it moves as it
+            // is; only KOReader/user rows are re-hashed.
+            let origin: Option<String> = r.try_get("origin")?;
+            let hash = match origin.as_deref() {
+                Some(o) if o != "koreader" && o != "user" => r.try_get("identity_hash")?,
+                _ => identity_hash_of(dst, ko_datetime.as_deref(), pos0.as_deref(), &text),
+            };
+
+            let survivor: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM highlights WHERE book_id = ? AND identity_hash = ?",
+            )
+            .bind(dst)
+            .bind(&hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+            match survivor {
+                Some(keep) => {
+                    // The same annotation under two book ids. Move what hangs
+                    // off the copy we are about to drop before dropping it:
+                    // `flashcards.highlight_id` cascades on delete and
+                    // `notes.highlight_id` nulls, so doing this in the other
+                    // order loses note anchors silently.
+                    sqlx::query("UPDATE notes SET highlight_id = ? WHERE highlight_id = ?")
+                        .bind(keep)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("UPDATE flashcards SET highlight_id = ? WHERE highlight_id = ?")
+                        .bind(keep)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("DELETE FROM highlights WHERE id = ?")
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                    report.highlights_dropped += 1;
+                }
+                None => {
+                    sqlx::query(
+                        "UPDATE highlights SET book_id = ?, identity_hash = ? WHERE id = ?",
+                    )
+                    .bind(dst)
+                    .bind(&hash)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                    report.highlights_moved += 1;
+                }
+            }
+        }
+
+        // ---- notes -------------------------------------------------------
+        report.notes_moved = sqlx::query("UPDATE notes SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
+        // ---- flashcards: UNIQUE(book_id, word) forbids a straight move ----
+        report.flashcards_dropped = sqlx::query(
+            "DELETE FROM flashcards WHERE book_id = ?1
+             AND word IN (SELECT word FROM flashcards WHERE book_id = ?2)",
+        )
+        .bind(src)
+        .bind(dst)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected() as usize;
+        report.flashcards_moved = sqlx::query("UPDATE flashcards SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
+        // ---- readings ------------------------------------------------------
+        // Two open readings would violate `idx_readings_one_open`, so the older
+        // one is closed first — `abandoned`, at its own `last_modified`, because
+        // deleting it would lose a reading that really happened. This runs
+        // before the move (and before `src` is deleted, which would cascade its
+        // readings away entirely).
+        sqlx::query(
+            r#"UPDATE readings SET finished_at = last_modified, status = 'abandoned',
+                                   put_down_at = last_modified
+               WHERE id = (
+                   SELECT id FROM readings
+                    WHERE book_id IN (?1, ?2) AND finished_at IS NULL
+                    ORDER BY COALESCE(started_at, created_at) ASC, id ASC
+                    LIMIT 1)
+                 AND (SELECT count(*) FROM readings
+                       WHERE book_id IN (?1, ?2) AND finished_at IS NULL) > 1"#,
+        )
+        .bind(src)
+        .bind(dst)
+        .execute(&mut *tx)
+        .await?;
+        report.readings_moved = sqlx::query("UPDATE readings SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
+        // ---- device links --------------------------------------------------
+        report.device_links_moved =
+            sqlx::query("UPDATE device_books SET book_id = ? WHERE book_id = ?")
+                .bind(dst)
+                .bind(src)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as usize;
+
+        // ---- copies --------------------------------------------------------
+        copies::repoint_copies(&mut tx, src, dst).await?;
+
+        // ---- owned files ---------------------------------------------------
+        // Same reason as the provenance below: `book_files` cascades on `books`,
+        // so a merge that left it alone would *delete* the rows with `src` — and
+        // the bytes they name would stay on disk, owned by nothing, findable by
+        // nothing, with the book that was folded in showing no files at all.
+        //
+        // A plain `UPDATE`, unlike `book_tags`: the primary key is the sha256,
+        // so `src` and `dst` cannot both hold one file and there is nothing to
+        // ignore.
+        report.files_moved = sqlx::query("UPDATE book_files SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
+        // ---- provenance ----------------------------------------------------
+        // `external_ids` and `book_tags` both cascade on `books`, so a merge
+        // that left them alone would *delete* them with `src` — and losing
+        // `external_ids` is the expensive one: the next Goodreads import would
+        // no longer recognise the row and would recreate the duplicate this
+        // merge just folded in.
+        //
+        // `UPDATE OR IGNORE` for the tags, because their primary key is
+        // `(book_id, tag, source)` and both books being on the same shelf is
+        // ordinary; the losers are dropped by the cascade a moment later.
+        sqlx::query("UPDATE external_ids SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE OR IGNORE book_tags SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?;
+
+        // List entries cascade on `books` as well: repoint them, keeping the
+        // earlier position and joining notes where both were on one list.
+        super::lists::repoint_entries(&mut tx, src, dst).await?;
+
+        // Field provenance cascades too, and moving it wholesale would be worse
+        // than losing it: the fill below is `dst`-wins, so `src`'s claim on a
+        // field `dst` already has a value for would attribute `dst`'s value to
+        // the source of a value that was thrown away. Only the gaps travel.
+        field_provenance::move_claims(&mut tx, src, dst, &gap_fields(&dst_book, &src_book)).await?;
+
+        // `src` goes before `dst` is updated: isbn_10 and isbn_13 are UNIQUE, so
+        // handing `dst` an ISBN `src` still holds would fail the constraint.
+        sqlx::query("DELETE FROM books WHERE id = ?")
+            .bind(src)
+            .execute(&mut *tx)
+            .await?;
+
+        // `dst` keeps its own cover, so `src`'s file is now unreferenced —
+        // **unless another row references it**, which content-addressed cover
+        // names made possible.
+        // Covers are named by content hash, so two books that fetched the same
+        // jacket genuinely share one file, and handing the caller a path it is
+        // about to unlink out from under a surviving book is a blank tile
+        // nothing on screen explains. Asked of the database rather than assumed,
+        // for the reason `book_files` gets to assume the opposite: that table is
+        // keyed on the sha alone, so a second holder is unrepresentable there and
+        // perfectly ordinary here.
+        if dst_book.cover_path.is_some()
+            && let Some(src_cover) = &src_book.cover_path
+        {
+            let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")
+                .bind(src_cover)
+                .fetch_one(&mut *tx)
+                .await?;
+            if others == 0 {
+                report.orphaned_cover = Some(src_cover.clone());
+            }
+        }
+
+        // dst wins: `src` fills only what `dst` does not already have. The
+        // inverse of `upsert_book`'s clause, where the incoming record wins —
+        // there the new data is the authority, here the kept row is.
+        //
+        // Generated from `MERGE_RULES` like the other three, and it did not use
+        // to be: this was sixteen hand-written columns, i.e. a second list that
+        // every new column would have had to remember to extend, in the one
+        // statement
+        // where forgetting a column loses data outright rather than merely
+        // failing to merge it. The user guard is **off** — see `merge_set`; both
+        // books are ours, and `dst` winning already means a corrected field can
+        // only ever be filled when there was nothing to correct.
+        let (modified, id_param) = tail_params();
+        let fill = format!(
+            "UPDATE books SET {}, last_modified = {modified} WHERE id = {id_param}",
+            merge_set(Winner::Stored, false, |i, _| format!("?{}", i + 1))
+        );
+        bind_merge_columns(sqlx::query(&fill), &src_book)?
+            .bind(now_unix())
+            .bind(dst)
+            .execute(&mut *tx)
+            .await?;
+
+        // **The cover metrics travel with the path.** The fill above moves
+        // `cover_path` in exactly one case — `dst` had none and takes `src`'s —
+        // and the four measurements describe *that* file, so they move with it
+        // or the row claims a width belonging to an image it is not pointing at.
+        // They are not `MERGE_RULES` columns precisely so that no generated
+        // statement can move one without the other; this is that rule at the one
+        // place a cover changes hands. Nothing is written when `dst` kept its
+        // own: `src`'s numbers are about a file `dst` is not using.
+        if dst_book.cover_path.is_none() && src_book.cover_path.is_some() {
+            sqlx::query(
+                "UPDATE books SET cover_width = ?1, cover_height = ?2, cover_accent = ?3,
+                        cover_thumb_path = ?4 WHERE id = ?5",
+            )
+            .bind(src_book.cover_width)
+            .bind(src_book.cover_height)
+            .bind(src_book.cover_accent)
+            .bind(src_book.cover_thumb_path.clone())
+            .bind(dst)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // The filing keys travel with the fill for the same reason the cover
+        // metrics do: `dst` may have taken `src`'s title or author list, and a
+        // key describing the row before that is a book filed under a name it no
+        // longer has. Derived from the merged row, so `dst`-wins needs no second
+        // spelling here.
+        refresh_sort_keys(&mut tx, dst).await?;
+
+        tx.commit().await?;
+        Ok(report)
+    }
+
+    /// Backdate a book's `created_at`.
+    ///
+    /// Narrow on purpose: it is for an importer that has *just created* a book
+    /// and knows when the user really added it — Goodreads' `Date Added`. For a
+    /// book we already had, when it arrived here is ours to know and no CSV has
+    /// standing to rewrite it, which is why the caller checks and this function
+    /// does not.
+    pub async fn set_book_created_at(&self, book_id: i64, created_at: i64) -> Result<()> {
+        sqlx::query("UPDATE books SET created_at = ? WHERE id = ?")
+            .bind(created_at)
+            .bind(book_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Record a cover file and everything measured about it — **one statement,
+    /// five columns, or none of them**.
+    ///
+    /// This is the only writer of `cover_width`/`cover_height`/`cover_accent`/
+    /// `cover_thumb_path`, and it writes them beside the `cover_path` they
+    /// describe. That is what makes "the stored dimensions belong to a different
+    /// image" unrepresentable rather than merely guarded against — see migration
+    /// `0014` for why these are deliberately not `MERGE_RULES` columns and why
+    /// `Rule::pair` would not have covered the one case that matters.
+    ///
+    /// **Straight assignment, not the no-clobber merge.** Every other writer of
+    /// `cover_path` `COALESCE`s, which is right for a partial record and wrong
+    /// here: it meant a re-fetch that produced a *different* file left the row
+    /// pointing at the old one, invisibly, because under URL naming the new file
+    /// usually had the same name anyway. Content-addressed names make that
+    /// divergence real, so the dedicated writer replaces.
+    ///
+    /// **`source` claims `cover_path` and nothing else.** The four
+    /// measurements have no origin to name — the engine decoded the file, which
+    /// is not a claim `field_provenance` has vocabulary for or a reader has any
+    /// use for — but the *file* does: whoever supplied the URL it was fetched
+    /// from. `None` is the honest answer for a writer that cannot say, which is
+    /// every caller but enrichment: `download_cover` is handed a `cover_url`
+    /// somebody else put on the record, and the back-fill is measuring a file
+    /// that has been on disk for months. It is a parameter and not a default for
+    /// the reason [`Storage::upsert_book`] gives: a writer that does not answer
+    /// is a field that goes on claiming whatever it claimed last.
+    pub async fn set_cover(
+        &self,
+        book_id: i64,
+        cover: &crate::images::CoverFile,
+        source: Option<Source>,
+    ) -> Result<()> {
+        let metrics = cover.metrics;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "UPDATE books SET cover_path = ?1, cover_thumb_path = ?2, cover_width = ?3,
+                    cover_height = ?4, cover_accent = ?5, last_modified = ?6
+             WHERE id = ?7",
+        )
+        .bind(cover.path.display().to_string())
+        .bind(cover.thumb_path.as_ref().map(|p| p.display().to_string()))
+        .bind(metrics.map(|m| m.width))
+        .bind(metrics.map(|m| m.height))
+        .bind(metrics.map(|m| m.accent))
+        .bind(now_unix())
+        .bind(book_id)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(source) = source {
+            field_provenance::stamp(&mut tx, book_id, &["cover_path"], source).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Every book's stored cover paths, `(id, cover_path, cover_thumb_path)`,
+    /// for the re-root [`crate::Engine::open`] runs.
+    pub async fn cover_paths(&self) -> Result<Vec<(i64, Option<String>, Option<String>)>> {
+        let rows = sqlx::query(
+            "SELECT id, cover_path, cover_thumb_path FROM books
+             WHERE cover_path IS NOT NULL OR cover_thumb_path IS NOT NULL",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get("id")?,
+                    r.try_get("cover_path")?,
+                    r.try_get("cover_thumb_path")?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Point a book's cover paths at where the same files are now. Nothing
+    /// else moves — not `last_modified`, not provenance, not the measured
+    /// dimensions: the bytes are the bytes they were.
+    pub async fn reroot_cover(
+        &self,
+        book_id: i64,
+        cover_path: Option<&str>,
+        cover_thumb_path: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE books SET cover_path = ?1, cover_thumb_path = ?2 WHERE id = ?3")
+            .bind(cover_path)
+            .bind(cover_thumb_path)
+            .bind(book_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// The back-fill's work list: books whose cover is on disk and unmeasured.
+    ///
+    /// `cover_width IS NULL` is *not measured yet*, never *no cover* — the
+    /// two are told apart by `cover_path`, which is why this predicate is
+    /// stated once here rather than in the command that consumes it. Every row
+    /// predating migration `0014` is in this list, and so is every cover whose
+    /// bytes this build could not decode; the second kind is re-attempted on
+    /// each run, which costs one file read and is the honest behaviour when a
+    /// later build learns a new format.
+    pub async fn unmeasured_covers(&self) -> Result<Vec<(i64, String)>> {
+        let rows = sqlx::query(
+            "SELECT id, cover_path FROM books
+              WHERE cover_path IS NOT NULL AND cover_width IS NULL
+              ORDER BY id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get("id")?, r.try_get("cover_path")?)))
+            .collect()
+    }
+
+    /// The sort-key back-fill's work list: books whose filing key has never been
+    /// computed.
+    ///
+    /// `sort_author IS NULL` is *not computed yet* and nothing else — an
+    /// authorless book gets a real key whose rank component files it last, so
+    /// absence here cannot be confused with "no author". Migration `0016`
+    /// argues why the column is nullable rather than defaulted, and it is the
+    /// same shape as [`Storage::unmeasured_covers`]: the predicate lives once,
+    /// here, rather than in the command that consumes it.
+    ///
+    /// `sort_title` rides along rather than having a work list of its own. The
+    /// two keys are written by one statement, so a row missing one is missing
+    /// both — and a `sort_title IS NULL` list would additionally sweep up every
+    /// untitled book for ever, since a blank title has no filing name to
+    /// compute.
+    pub async fn stale_sort_keys(&self) -> Result<Vec<i64>> {
+        Ok(
+            sqlx::query_scalar("SELECT id FROM books WHERE sort_author IS NULL ORDER BY id")
+                .fetch_all(self.pool())
+                .await?,
+        )
+    }
+
+    /// Recompute both filing keys for one book — **the only writer of
+    /// `sort_title` and `sort_author`**, and the back-fill's body.
+    ///
+    /// [`Storage::rebuild_sort_keys`] loops this over
+    /// [`Storage::stale_sort_keys`], which is what makes a back-filled row and a
+    /// freshly-written one the same row rather than two code paths that agree
+    /// today.
+    pub async fn refresh_sort_keys_of(&self, book_id: i64) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        refresh_sort_keys(&mut tx, book_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Recompute the filing keys of every book that has never had them — item
+    /// 34's back-fill, and migration `0016`'s missing half.
+    ///
+    /// Returns how many rows it wrote. **Idempotent**: the work list is "the
+    /// ones that have not got one yet", so a second run does nothing and says so
+    /// — which is what lets `make dev-db` run it unconditionally.
+    ///
+    /// It is a command rather than a clause in the migration for `0014`'s
+    /// reason, one layer over: SQLite cannot decode a PNG and it cannot parse a
+    /// human name either.
+    pub async fn rebuild_sort_keys(&self) -> Result<usize> {
+        let stale = self.stale_sort_keys().await?;
+        for id in &stale {
+            self.refresh_sort_keys_of(*id).await?;
+        }
+        Ok(stale.len())
+    }
+
+    /// Delete a book; returns its cover_path when **no other book is using it**,
+    /// so the caller can clean up the image file.
+    ///
+    /// The qualifier matters because covers are named by content hash, so two
+    /// books that fetched the same jacket point at one file and deleting either
+    /// one used to take the other's cover with it. `book_files` gets to skip
+    /// this check because it is keyed on the sha alone and a second holder is
+    /// unrepresentable there; `books` holds the path in a plain column and a
+    /// second holder is ordinary.
+    pub async fn delete_book(&self, id: i64) -> Result<Option<String>> {
+        let mut tx = self.pool().begin().await?;
+        // The cascade removes the list entries but cannot close the gap they
+        // leave, so note the lists first and renumber them after.
+        let on_lists = super::lists::lists_of_book(&mut tx, id).await?;
+        let cover: Option<Option<String>> =
+            sqlx::query_scalar("DELETE FROM books WHERE id = ? RETURNING cover_path")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(cover) = cover else {
+            return Err(EngineError::NotFound(format!("book id {id}")));
+        };
+        super::lists::compact_lists(&mut tx, &on_lists).await?;
+        let mut orphaned = None;
+        if let Some(path) = cover {
+            let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")
+                .bind(&path)
+                .fetch_one(&mut *tx)
+                .await?;
+            if others == 0 {
+                orphaned = Some(path);
+            }
+        }
+        tx.commit().await?;
+        Ok(orphaned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Book {
+        Book {
+            title: Some("Middlemarch".into()),
+            authors: vec!["George Eliot".into()],
+            isbn_13: Some("9781900000178".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_merges_without_clobbering() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.description = Some("A sweeping saga.".into());
+        let id1 = s.upsert_book(&b, None).await.unwrap();
+
+        // Re-upsert same ISBN with missing description but new page count:
+        // description must survive, page count must land, id must be stable.
+        let mut b2 = sample();
+        b2.page_count = Some(490);
+        let id2 = s.upsert_book(&b2, None).await.unwrap();
+        assert_eq!(id1, id2);
+
+        let got = s.get_book(id1).await.unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("A sweeping saga."));
+        assert_eq!(got.page_count, Some(490));
+        assert_eq!(got.authors, vec!["George Eliot".to_string()]);
+    }
+
+    /// The two statements built from [`MERGE_RULES`] must not be able to
+    /// disagree about what merging a partial record means.
+    ///
+    /// The clause is generated once and rendered twice — `excluded.x` inside the
+    /// upsert, `?n` inside the update — so this is the assertion that the second
+    /// rendering is the same rule and not merely similar SQL. Run against the
+    /// same starting row and the same partial update, both must land in exactly
+    /// the same state.
+    #[tokio::test]
+    async fn enrich_merges_a_partial_record_exactly_as_the_upsert_does() {
+        let mut full = sample();
+        full.description = Some("A sweeping saga.".into());
+        full.publisher = Some("Blackwood".into());
+        full.page_count = Some(490);
+
+        // Partial: a new publish year, an empty title, no authors, and nothing
+        // to say about the three fields already set.
+        let partial = Book {
+            title: None,
+            isbn_13: full.isbn_13.clone(),
+            publish_year: Some(2017),
+            language: Some("en".into()),
+            ..Default::default()
+        };
+
+        let (by_upsert, prov_upsert) = {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&full, Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+            // Same ISBN, so this takes the ON CONFLICT branch.
+            assert_eq!(
+                s.upsert_book(&partial, Some(Source::OpenLibrary))
+                    .await
+                    .unwrap(),
+                id
+            );
+            (
+                s.get_book(id).await.unwrap().unwrap(),
+                sources(&s, id).await,
+            )
+        };
+        let (by_enrich, prov_enrich) = {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&full, Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+            s.enrich_book(id, &partial, Some(Source::OpenLibrary))
+                .await
+                .unwrap();
+            (
+                s.get_book(id).await.unwrap().unwrap(),
+                sources(&s, id).await,
+            )
+        };
+
+        for (name, a, b) in [
+            ("title", by_upsert.title.clone(), by_enrich.title.clone()),
+            (
+                "publisher",
+                by_upsert.publisher.clone(),
+                by_enrich.publisher.clone(),
+            ),
+            (
+                "description",
+                by_upsert.description.clone(),
+                by_enrich.description.clone(),
+            ),
+            (
+                "language",
+                by_upsert.language.clone(),
+                by_enrich.language.clone(),
+            ),
+        ] {
+            assert_eq!(a, b, "{name} merged differently");
+        }
+        assert_eq!(by_upsert.authors, by_enrich.authors);
+        assert_eq!(by_upsert.page_count, by_enrich.page_count);
+        assert_eq!(by_upsert.publish_year, by_enrich.publish_year);
+        // …and both actually merged rather than both blanking everything, which
+        // is the way a same-vs-same assertion passes for the wrong reason.
+        assert_eq!(by_enrich.title.as_deref(), Some("Middlemarch"));
+        assert_eq!(by_enrich.authors, vec!["George Eliot".to_string()]);
+        assert_eq!(by_enrich.page_count, Some(490));
+        assert_eq!(by_enrich.publish_year, Some(2017));
+
+        // …and the third consumer of the same table agrees with both. Two
+        // statements that merge identically while attributing differently is
+        // exactly the drift this arrangement is built to make impossible.
+        assert_eq!(prov_upsert, prov_enrich, "provenance stamped differently");
+        assert!(
+            prov_enrich.contains(&("publish_year".into(), "openlibrary".into())),
+            "the field the partial record supplied is claimed by it: {prov_enrich:?}"
+        );
+        assert!(
+            prov_enrich.contains(&("description".into(), "googlebooks".into())),
+            "a field the partial record is silent about keeps its claim: {prov_enrich:?}"
+        );
+    }
+
+    /// The reason `enrich_book` exists at all: `upsert_book`'s third branch is a
+    /// plain unconditional insert, so a `Book` with no ISBN cannot be updated
+    /// through it however its `id` is set.
+    #[tokio::test]
+    async fn enrich_updates_an_isbn_less_book_where_upsert_would_duplicate_it() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(
+                &Book {
+                    title: Some("Untitled Draft".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        s.enrich_book(
+            id,
+            &Book {
+                publisher: Some("Self".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.list_books(&BookQuery::new(10, BookSort::Title))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.publisher.as_deref(), Some("Self"));
+        assert_eq!(got.title.as_deref(), Some("Untitled Draft"));
+
+        // The contrast, so the claim above is observed rather than asserted:
+        // the same partial record through `upsert_book` makes a second row.
+        s.upsert_book(
+            &Book {
+                id: Some(id),
+                publisher: Some("Self".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.list_books(&BookQuery::new(10, BookSort::Title))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_branches_on_isbn10() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let b = Book {
+            title: Some("X".into()),
+            isbn_10: Some("0306406152".into()),
+            ..Default::default()
+        };
+        let id1 = s.upsert_book(&b, None).await.unwrap();
+        let id2 = s.upsert_book(&b, None).await.unwrap();
+        assert_eq!(id1, id2);
+        let found = s.find_book_by_isbn("0306406152").await.unwrap();
+        assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn progress_and_finish_flow() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        let b = s.update_progress(id, Some(100), None).await.unwrap();
+        assert_eq!(b.current_page, Some(100));
+        assert!(!b.finished);
+        assert!(b.date_started.is_some());
+
+        let b = s.update_progress(id, None, Some(true)).await.unwrap();
+        assert!(b.finished);
+        assert!(b.date_finished.is_some());
+        assert_eq!(b.current_page, Some(100));
+    }
+
+    /// The *absence* of the retired `finished = MAX(excluded.finished,
+    /// books.finished)` clause, pinned.
+    ///
+    /// That clause existed only because reading state lived on `books`, and
+    /// without a test naming it the behaviour comes straight back the next time
+    /// someone "fixes" the upsert to carry a `Book`'s progress fields. A
+    /// provider record cannot know what page you are on: the fields are ignored,
+    /// in both directions — an incoming `finished: true` must not finish a book,
+    /// and an incoming `finished: false` must not un-finish one.
+    #[tokio::test]
+    async fn a_provider_upsert_never_touches_reading_state() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.update_progress(id, Some(100), Some(true)).await.unwrap();
+        let before = s.list_readings(id).await.unwrap();
+
+        // A metadata refresh arriving with the opposite of everything.
+        let refreshed = Book {
+            page_count: Some(490),
+            current_page: Some(1),
+            finished: false,
+            date_started: Some(1),
+            date_finished: Some(2),
+            ..sample()
+        };
+        assert_eq!(s.upsert_book(&refreshed, None).await.unwrap(), id);
+
+        let b = s.get_book(id).await.unwrap().unwrap();
+        assert!(b.finished, "a provider upsert must not un-finish a book");
+        assert_eq!(b.current_page, Some(100));
+        assert_eq!(b.page_count, Some(490), "metadata still lands");
+        assert_eq!(s.list_readings(id).await.unwrap(), before);
+
+        // And the other direction: it must not *start* a reading either.
+        let fresh = s
+            .upsert_book(
+                &Book {
+                    title: Some("Never opened".into()),
+                    current_page: Some(42),
+                    finished: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(s.list_readings(fresh).await.unwrap().is_empty());
+        let b = s.get_book(fresh).await.unwrap().unwrap();
+        assert_eq!(b.current_page, None);
+        assert!(!b.finished);
+    }
+
+    // ---- merge ------------------------------------------------------------
+
+    use crate::storage::{LinkedBy, NewHighlight, Reading};
+
+    fn hl(text: &str, datetime: &str) -> NewHighlight {
+        NewHighlight {
+            text: text.into(),
+            chapter: None,
+            page: Some(1),
+            pos0: Some(format!("/body/p[1]/text().{}", text.len())),
+            pos1: None,
+            ko_datetime: Some(datetime.into()),
+            ko_datetime_updated: None,
+            color: None,
+            note: None,
+            source: "koreader".into(),
+        }
+    }
+
+    async fn book(s: &Storage, title: &str) -> i64 {
+        s.upsert_book(
+            &Book {
+                title: Some(title.into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn count(s: &Storage, sql: &str, id: i64) -> i64 {
+        sqlx::query_scalar(sql)
+            .bind(id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The whole contract in one pass: everything moves, the duplicate is
+    /// dropped rather than doubled, and `src` is gone.
+    #[tokio::test]
+    async fn merge_moves_everything_and_drops_the_identity_collision() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Middlemarch (dupe)").await;
+        let dst = book(&s, "Middlemarch").await;
+
+        // Same annotation on both sides. Its `identity_hash` differs today only
+        // because `book_id` is one of the hash's inputs — recompute against
+        // `dst` and it is plainly the same row.
+        let shared = hl(
+            "We are all of us born in moral stupidity.",
+            "2026-01-05 21:14:08",
+        );
+        let only_on_src = hl("middlemarch", "2026-01-06 08:02:11");
+        s.insert_highlight(dst, &shared).await.unwrap();
+        let src_shared = s.insert_highlight(src, &shared).await.unwrap().unwrap();
+        s.insert_highlight(src, &only_on_src).await.unwrap();
+
+        // Dependents of the copy that is about to be dropped.
+        s.insert_flashcard(src, Some(src_shared), "middlemarch", None)
+            .await
+            .unwrap();
+        s.link_device_book("abc", src, LinkedBy::Auto)
+            .await
+            .unwrap();
+
+        let r = s.merge_books(src, dst).await.unwrap();
+        assert!(r.src_existed);
+        assert_eq!(r.highlights_moved, 1);
+        assert_eq!(r.highlights_dropped, 1, "the collision must not duplicate");
+        assert_eq!(r.flashcards_moved, 1);
+        assert_eq!(r.device_links_moved, 1);
+
+        assert!(s.get_book(src).await.unwrap().is_none(), "src is gone");
+        let texts: Vec<String> = s
+            .list_highlights(dst)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.text)
+            .collect();
+        assert_eq!(texts.len(), 2, "two distinct annotations, got {texts:?}");
+        assert_eq!(
+            s.find_book_by_partial_md5("abc").await.unwrap().unwrap().id,
+            Some(dst)
+        );
+        assert_eq!(
+            count(&s, "SELECT count(*) FROM flashcards WHERE book_id = ?", dst).await,
+            1
+        );
+    }
+
+    /// The dropped copy's note anchors and flashcards have to survive it.
+    /// `flashcards.highlight_id` cascades on delete and `notes.highlight_id`
+    /// nulls, so deleting first and repointing after would lose both — silently,
+    /// and only for books that happened to overlap.
+    #[tokio::test]
+    async fn a_dropped_duplicate_hands_its_dependents_to_the_survivor() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Middlemarch (dupe)").await;
+        let dst = book(&s, "Middlemarch").await;
+
+        let shared = hl("a shared passage", "2026-01-05 21:14:08");
+        let keep = s.insert_highlight(dst, &shared).await.unwrap().unwrap();
+        let doomed = s.insert_highlight(src, &shared).await.unwrap().unwrap();
+        s.insert_flashcard(src, Some(doomed), "shared", None)
+            .await
+            .unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+
+        let anchored: Option<i64> =
+            sqlx::query_scalar("SELECT highlight_id FROM flashcards WHERE word = ?")
+                .bind("shared")
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            anchored,
+            Some(keep),
+            "the flashcard must follow the survivor"
+        );
+    }
+
+    /// `flashcards` is `UNIQUE(book_id, word)`, so a word both books captured
+    /// cannot simply move. It is dropped, and the merge does not fail.
+    #[tokio::test]
+    async fn a_word_both_books_captured_is_dropped_not_a_constraint_error() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Middlemarch (dupe)").await;
+        let dst = book(&s, "Middlemarch").await;
+        s.insert_flashcard(src, None, "middlemarch", None)
+            .await
+            .unwrap();
+        s.insert_flashcard(dst, None, "middlemarch", None)
+            .await
+            .unwrap();
+        s.insert_flashcard(src, None, "ardent", None).await.unwrap();
+
+        let r = s.merge_books(src, dst).await.unwrap();
+        assert_eq!(r.flashcards_dropped, 1);
+        assert_eq!(r.flashcards_moved, 1);
+        assert_eq!(
+            count(&s, "SELECT count(*) FROM flashcards WHERE book_id = ?", dst).await,
+            2
+        );
+    }
+
+    /// `dst` is the row the user chose to keep, so `src` fills only its gaps —
+    /// the inverse of `upsert_book`, where the incoming record wins. The ISBN is
+    /// the one that would blow up if the order were wrong: both columns are
+    /// UNIQUE, so `dst` cannot take `src`'s until `src` is gone.
+    #[tokio::test]
+    async fn dst_wins_and_src_fills_the_gaps() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    isbn_13: Some("9781900000178".into()),
+                    description: Some("from the duplicate".into()),
+                    page_count: Some(490),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        s.update_progress(src, None, Some(true)).await.unwrap();
+        let dst = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch (the keeper)".into()),
+                    description: Some("the one to keep".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.title.as_deref(), Some("Middlemarch (the keeper)"));
+        assert_eq!(got.description.as_deref(), Some("the one to keep"));
+        assert_eq!(got.isbn_13.as_deref(), Some("9781900000178"), "gap filled");
+        assert_eq!(got.page_count, Some(490));
+        // Not a field merge any more: `src`'s reading came with it, and the
+        // projection reads off that.
+        assert!(got.finished, "src's reading survives the fold");
+    }
+
+    /// Provenance travels with the **value**, not with the row.
+    ///
+    /// `field_provenance` cascades on `books`, so a merge that ignored it would
+    /// delete `src`'s claims — but moving them wholesale is worse than losing
+    /// them, and the third case below is why. `dst` wins the fill, so a field
+    /// `dst` already answered keeps `dst`'s claim; only a gap `src` closed hands
+    /// its claim over. And a field `dst` holds *unattributed* — every book older
+    /// than migration `0012` — must stay unattributed rather than quietly
+    /// inheriting the claim attached to a value that was thrown away.
+    #[tokio::test]
+    async fn a_merge_moves_a_claim_only_where_it_moved_the_value() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch (dupe)".into()),
+                    description: Some("from the duplicate".into()),
+                    page_count: Some(490),
+                    publisher: Some("from the duplicate".into()),
+                    ..Default::default()
+                },
+                Some(Source::Goodreads),
+            )
+            .await
+            .unwrap();
+        let dst = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    description: Some("the one to keep".into()),
+                    ..Default::default()
+                },
+                Some(Source::Calibre),
+            )
+            .await
+            .unwrap();
+        // A field `dst` has a value for and no claim on: the state every book
+        // that predates the migration is in.
+        sqlx::query("UPDATE books SET publisher = 'unattributed history' WHERE id = ?")
+            .bind(dst)
+            .execute(s.pool())
+            .await
+            .unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("the one to keep"));
+        assert_eq!(got.page_count, Some(490), "the gap is filled");
+        assert_eq!(got.publisher.as_deref(), Some("unattributed history"));
+
+        assert_eq!(
+            s.field_source(dst, "description").await.unwrap().as_deref(),
+            Some("calibre"),
+            "dst kept its value, so it keeps its claim"
+        );
+        assert_eq!(
+            s.field_source(dst, "page_count").await.unwrap().as_deref(),
+            Some("goodreads"),
+            "src's value arrived, so src's claim arrived with it"
+        );
+        assert_eq!(
+            s.field_source(dst, "publisher").await.unwrap(),
+            None,
+            "an unattributed value must not inherit the claim of a discarded one"
+        );
+    }
+
+    /// **Enrichment's write, and the reason it is not one `UPDATE` per
+    /// provider.**
+    ///
+    /// One record whose fields came from two sources: each is stamped with its
+    /// own, in a single statement, so the values are the federated merge's tuned
+    /// per-field preference rather than whichever provider happened to run
+    /// first.
+    #[tokio::test]
+    async fn an_attributed_merge_stamps_each_field_with_its_own_source() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+
+        s.enrich_book_attributed(
+            id,
+            &Book {
+                page_count: Some(490),
+                description: Some("a sweeping saga".into()),
+                publisher: Some("Blackwood".into()),
+                ..Default::default()
+            },
+            &[
+                ("page_count", Source::OpenLibrary),
+                ("description", Source::GoogleBooks),
+                // A claim for a field the record does not supply: dropped, since
+                // a source can only be the origin of a value it gave us.
+                ("language", Source::OpenLibrary),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.page_count, Some(490));
+        assert_eq!(got.description.as_deref(), Some("a sweeping saga"));
+        assert_eq!(got.publisher.as_deref(), Some("Blackwood"));
+
+        assert_eq!(
+            s.field_source(id, "page_count").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+        assert_eq!(
+            s.field_source(id, "description").await.unwrap().as_deref(),
+            Some("googlebooks")
+        );
+        assert_eq!(
+            s.field_source(id, "language").await.unwrap(),
+            None,
+            "a claim on a field the record is silent about must not be recorded"
+        );
+        assert_eq!(
+            s.field_source(id, "publisher").await.unwrap(),
+            None,
+            "a field written with no claim stays unattributed"
+        );
+    }
+
+    /// The user guard survives the multi-source form. `guards_user` is reached
+    /// through the same predicate rather than re-spelled, so a mixed claim set
+    /// guards — the safe direction — and a field the user owns is neither
+    /// overwritten nor re-claimed.
+    #[tokio::test]
+    async fn an_attributed_merge_still_cannot_take_a_user_field() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.enrich_book(
+            id,
+            &Book {
+                page_count: Some(496),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        s.enrich_book_attributed(
+            id,
+            &Book {
+                page_count: Some(490),
+                description: Some("a sweeping saga".into()),
+                ..Default::default()
+            },
+            &[
+                ("page_count", Source::OpenLibrary),
+                ("description", Source::OpenLibrary),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.page_count, Some(496));
+        assert_eq!(got.description.as_deref(), Some("a sweeping saga"));
+        assert_eq!(
+            s.field_source(id, "page_count").await.unwrap().as_deref(),
+            Some("user")
+        );
+    }
+
+    /// Both books were being read. That is two open readings on one book the
+    /// moment they fold together, which `idx_readings_one_open` forbids — so the
+    /// older is closed as `abandoned` rather than deleted, because it is a
+    /// reading that really happened.
+    #[tokio::test]
+    async fn merging_moves_readings_and_leaves_exactly_one_open() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Middlemarch (dupe)").await;
+        let dst = book(&s, "Middlemarch").await;
+
+        // `src` started first, and finished a reading before this one.
+        s.open_reading(src, Some(1_000), "manual").await.unwrap();
+        s.finish_reading(src).await.unwrap();
+        s.open_reading(src, Some(2_000), "manual").await.unwrap();
+        s.open_reading(dst, Some(3_000), "manual").await.unwrap();
+
+        let r = s.merge_books(src, dst).await.unwrap();
+        assert_eq!(r.readings_moved, 2);
+
+        let readings = s.list_readings(dst).await.unwrap();
+        assert_eq!(readings.len(), 3, "nothing is deleted");
+        let open: Vec<&Reading> = readings
+            .iter()
+            .filter(|r| r.finished_at.is_none())
+            .collect();
+        assert_eq!(open.len(), 1, "the index invariant survives the merge");
+        assert_eq!(open[0].started_at, Some(3_000), "the newer one stays open");
+
+        let closed = readings
+            .iter()
+            .find(|r| r.started_at == Some(2_000))
+            .expect("src's open reading moved");
+        assert_eq!(closed.status, crate::storage::STATUS_ABANDONED);
+        assert!(closed.finished_at.is_some());
+    }
+
+    /// Only one side was being read: nothing has to be closed, and the open
+    /// reading must survive as open. The close is conditional, and a
+    /// close-unconditionally version passes the test above.
+    #[tokio::test]
+    async fn merging_one_open_reading_leaves_it_open() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Middlemarch (dupe)").await;
+        let dst = book(&s, "Middlemarch").await;
+        s.open_reading(src, Some(2_000), "manual").await.unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+        let readings = s.list_readings(dst).await.unwrap();
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].finished_at, None);
+        assert_eq!(readings[0].status, crate::storage::STATUS_READING);
+    }
+
+    /// `src` keeps its cover only when `dst` had none. Otherwise the file is
+    /// unreferenced and the caller is told, the same contract `delete_book` has.
+    #[tokio::test]
+    async fn a_cover_is_adopted_or_reported_as_orphaned() {
+        for (dst_cover, expect_orphan) in [(None, None), (Some("dst.jpg"), Some("src.jpg"))] {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let src = s
+                .upsert_book(
+                    &Book {
+                        title: Some("a".into()),
+                        cover_path: Some("src.jpg".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            let dst = s
+                .upsert_book(
+                    &Book {
+                        title: Some("b".into()),
+                        cover_path: dst_cover.map(str::to_string),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let r = s.merge_books(src, dst).await.unwrap();
+            assert_eq!(r.orphaned_cover.as_deref(), expect_orphan);
+            assert_eq!(
+                s.get_book(dst)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .cover_path
+                    .as_deref(),
+                Some(dst_cover.unwrap_or("src.jpg"))
+            );
+        }
+    }
+
+    /// A missing `dst` is a real error — there is nothing to merge into — while
+    /// a missing `src` is a satisfied postcondition. Merging a book into itself
+    /// must not delete it.
+    #[tokio::test]
+    async fn the_degenerate_cases_are_distinguished() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = book(&s, "Middlemarch").await;
+
+        assert!(matches!(
+            s.merge_books(id, 9999).await,
+            Err(EngineError::NotFound(_))
+        ));
+
+        let gone = s.merge_books(9999, id).await.unwrap();
+        assert!(!gone.src_existed);
+
+        let itself = s.merge_books(id, id).await.unwrap();
+        assert!(itself.src_existed);
+        assert!(
+            s.get_book(id).await.unwrap().is_some(),
+            "must not self-delete"
+        );
+    }
+
+    // ---- covers (migration 0014) -------------------------------------------
+
+    fn cover_at(path: &str) -> crate::images::CoverFile {
+        crate::images::CoverFile {
+            path: path.into(),
+            thumb_path: Some(crate::images::thumb_path_of(std::path::Path::new(path))),
+            metrics: Some(crate::images::CoverMetrics {
+                width: 600,
+                height: 900,
+                accent: 0x00a0_2020,
+            }),
+        }
+    }
+
+    /// The cover metrics are **not** merge columns, and `cover_path` **is** —
+    /// stated by name, so neither half can drift without a failure that says so.
+    ///
+    /// The mirror of `only_our_own_columns_sit_out_the_federated_merge`, and
+    /// here for the same reason: "add a `Rule` for `cover_width`, it compiles,
+    /// nothing notices" is the quiet move, and migration `0014` is three
+    /// paragraphs of why not. The other direction matters as much —
+    /// `invalidate_cover_metrics` is generated from the value expression
+    /// `merge_set` builds for `cover_path`, so a `cover_path` that stopped being
+    /// a merge column would take the invalidation with it and leave nothing in
+    /// its place.
+    #[test]
+    fn the_cover_metrics_sit_outside_the_merge_table_and_the_path_does_not() {
+        let ruled: Vec<&str> = MERGE_RULES.iter().map(|r| r.col).collect();
+        for col in COVER_METRICS {
+            assert!(
+                !ruled.contains(&col),
+                "{col} became a MERGE_RULES column — read migration 0014 before \
+                 deleting this assertion, including why Rule::pair is not the fix"
+            );
+        }
+        assert!(
+            ruled.contains(&"cover_path"),
+            "cover_path left the merge table, and invalidate_cover_metrics is \
+             generated from its value expression"
+        );
+        // …and the clause really does reach every statement the table builds.
+        // Asserted on the SQL, because "one writer" was the claim that turned
+        // out to be false and the guard that replaced it is generated text.
+        for winner in [Winner::Incoming, Winner::Stored] {
+            for guard in [false, true] {
+                let sql = merge_set(winner, guard, |i, _| format!("?{}", i + 1));
+                for col in COVER_METRICS {
+                    assert!(sql.contains(&format!("{col} = CASE WHEN")), "{col}: {sql}");
+                }
+            }
+        }
+    }
+
+    /// **The four measurements are not `MERGE_RULES` columns, and this is the
+    /// assertion of their absence.**
+    ///
+    /// Migration `0014`'s whole argument is that a record-shaped writer able to
+    /// move `cover_width` without moving `cover_path` produces a row whose
+    /// stored dimensions describe a different image — so the fix is not a guard
+    /// but the absence of a path. This is the same shape as
+    /// `a_provider_upsert_never_touches_reading_state`: the failure it catches
+    /// is somebody adding a fifth `Rule` for tidiness, and nothing else would
+    /// notice.
+    #[tokio::test]
+    async fn a_provider_write_never_touches_the_cover_metrics() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.set_cover(id, &cover_at("/img/aaa.jpg"), None)
+            .await
+            .unwrap();
+
+        // Every record-shaped writer, each handed a record that speaks to
+        // everything the merge table governs. `cover_path` is cleared from it
+        // on purpose: a record that *moves* the path is supposed to invalidate
+        // these four, and that is the test below. This one is about a record
+        // that says nothing about the cover and must therefore change nothing
+        // about it.
+        let loud = Book {
+            cover_path: None,
+            ..says_everything(9)
+        };
+        s.enrich_book(id, &loud, Some(Source::GoogleBooks))
+            .await
+            .unwrap();
+        s.fill_book(id, &loud, Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+        // …and a record that speaks to the measurements themselves, from the
+        // one source that outranks every guard. The fields are on `Book`
+        // because they are read there; no statement reads them.
+        s.enrich_book(
+            id,
+            &Book {
+                cover_width: Some(1),
+                cover_height: Some(1),
+                cover_accent: Some(1),
+                cover_thumb_path: Some("/img/lie.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/aaa.thumb.jpg"));
+        assert_eq!((got.cover_width, got.cover_height), (Some(600), Some(900)));
+        assert_eq!(got.cover_accent, Some(0x00a0_2020));
+        assert_eq!(got.cover_path.as_deref(), Some("/img/aaa.jpg"));
+    }
+
+    /// …and where a record **does** move `cover_path`, the measurements do not
+    /// survive it.
+    ///
+    /// The other half of the rule above, and the one a first cut got wrong. One
+    /// dedicated writer is not enough on its own: `cover_path` is a
+    /// `MERGE_RULES` column, `Merge::Coalesce` under `Winner::Incoming` means an
+    /// incoming record's path wins, and a calibre row or an `rb set` carrying a
+    /// cover therefore repointed the row and left a width, a height and an
+    /// accent belonging to the jacket before it. `merge_set` now generates the
+    /// invalidation from the same expression that stores the path.
+    #[tokio::test]
+    async fn moving_the_cover_path_throws_away_what_was_measured_from_the_old_one() {
+        for user in [false, true] {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s.upsert_book(&sample(), None).await.unwrap();
+            s.set_cover(id, &cover_at("/img/aaa.jpg"), None)
+                .await
+                .unwrap();
+
+            let source = user.then_some(Source::User).or(Some(Source::Calibre));
+            s.enrich_book(
+                id,
+                &Book {
+                    cover_path: Some("/img/bbb.jpg".into()),
+                    ..Default::default()
+                },
+                source,
+            )
+            .await
+            .unwrap();
+
+            let got = s.get_book(id).await.unwrap().unwrap();
+            assert_eq!(got.cover_path.as_deref(), Some("/img/bbb.jpg"));
+            assert_eq!(
+                (
+                    got.cover_width,
+                    got.cover_height,
+                    got.cover_accent,
+                    got.cover_thumb_path
+                ),
+                (None, None, None, None),
+                "user={user}: the row kept the old jacket's dimensions"
+            );
+            // And a write that leaves the path alone leaves them alone.
+            s.set_cover(id, &cover_at("/img/bbb.jpg"), None)
+                .await
+                .unwrap();
+            s.enrich_book(
+                id,
+                &Book {
+                    publisher: Some("Blackwood".into()),
+                    ..Default::default()
+                },
+                source,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                s.get_book(id).await.unwrap().unwrap().cover_width,
+                Some(600),
+                "user={user}: a write that did not touch the cover cleared it"
+            );
+        }
+    }
+
+    /// `set_cover` **replaces**, where every other writer of `cover_path`
+    /// fills.
+    ///
+    /// The bug this pins was latent and invisible: `download_cover` went
+    /// through the no-clobber merge, so a re-fetch producing a *different* file
+    /// left the row pointing at the old one. Under URL naming the new file
+    /// usually had the same name, so nothing ever looked wrong; content
+    /// addressing makes the divergence real.
+    #[tokio::test]
+    async fn refetching_a_cover_repoints_the_row() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.set_cover(id, &cover_at("/img/old.jpg"), None)
+            .await
+            .unwrap();
+        s.set_cover(id, &cover_at("/img/new.jpg"), Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/new.jpg"));
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/new.thumb.jpg"));
+        // The one field with an origin is claimed; the measurements are not.
+        assert_eq!(
+            s.field_source(id, "cover_path").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
+    /// **Two books may now share one file**, which is what content addressing
+    /// bought and what nothing in the delete path used to allow for.
+    ///
+    /// `book_files` gets to skip this check because it is keyed on the sha
+    /// alone and a second holder is unrepresentable there. `books` holds the
+    /// path in a plain column, so a second holder is ordinary — and handing the
+    /// caller a path it unlinks out from under the survivor is a blank tile
+    /// nothing on screen explains.
+    #[tokio::test]
+    async fn a_shared_cover_survives_deleting_one_of_its_books() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+        let a = s.upsert_book(&mk("a"), None).await.unwrap();
+        let b = s.upsert_book(&mk("b"), None).await.unwrap();
+        let shared = cover_at("/img/shared.jpg");
+        s.set_cover(a, &shared, None).await.unwrap();
+        s.set_cover(b, &shared, None).await.unwrap();
+
+        assert_eq!(
+            s.delete_book(a).await.unwrap(),
+            None,
+            "the surviving book is still using this file"
+        );
+        assert_eq!(
+            s.delete_book(b).await.unwrap(),
+            Some("/img/shared.jpg".to_string()),
+            "the last holder is gone; now it is an orphan"
+        );
+    }
+
+    /// The cover and its measurements change hands **together**, or not at all.
+    ///
+    /// Three cases, and the middle one is the reason this is not left to the
+    /// generated fill: a `dst` that kept its own jacket must not inherit `src`'s
+    /// dimensions, which describe an image it is not pointing at. That row is
+    /// the cover-shaped version of *Dune #2* under a different series' name.
+    #[tokio::test]
+    async fn a_cover_and_its_measurements_change_hands_together() {
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+
+        // 1. `dst` has no cover: the whole group moves.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        s.set_cover(src, &cover_at("/img/src.jpg"), None)
+            .await
+            .unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/src.jpg"));
+        assert_eq!(got.cover_width, Some(600));
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/src.thumb.jpg"));
+        assert_eq!(report.orphaned_cover, None, "the file is in use by dst");
+
+        // 2. `dst` has its own: nothing moves, and src's file is the orphan.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        s.set_cover(src, &cover_at("/img/src.jpg"), None)
+            .await
+            .unwrap();
+        // A `dst` whose cover predates migration `0014`: a path, no metrics.
+        // This is the row that would have inherited src's width.
+        s.enrich_book(
+            dst,
+            &Book {
+                cover_path: Some("/img/dst.jpg".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/dst.jpg"));
+        assert_eq!(
+            (got.cover_width, got.cover_height, got.cover_accent),
+            (None, None, None),
+            "dst kept its own jacket and took src's dimensions for it"
+        );
+        assert_eq!(got.cover_thumb_path, None);
+        assert_eq!(report.orphaned_cover.as_deref(), Some("/img/src.jpg"));
+
+        // 3. Both point at the same file — ordinary since covers are named by
+        //    content — so there is nothing to orphan.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        let shared = cover_at("/img/same.jpg");
+        s.set_cover(src, &shared, None).await.unwrap();
+        s.set_cover(dst, &shared, None).await.unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        assert_eq!(
+            report.orphaned_cover, None,
+            "unlinking this would take the surviving book's cover with it"
+        );
+        assert_eq!(
+            s.get_book(dst).await.unwrap().unwrap().cover_width,
+            Some(600)
+        );
+    }
+
+    /// The back-fill's work list says *unmeasured*, which is not the same
+    /// question as "has a cover".
+    #[tokio::test]
+    async fn the_backfill_list_is_covers_on_disk_without_measurements() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+        let none = s.upsert_book(&mk("no cover at all"), None).await.unwrap();
+        let old = s.upsert_book(&mk("pre-0014"), None).await.unwrap();
+        let fresh = s.upsert_book(&mk("measured"), None).await.unwrap();
+        s.enrich_book(
+            old,
+            &Book {
+                cover_path: Some("/img/old.jpg".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        s.set_cover(fresh, &cover_at("/img/fresh.jpg"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            s.unmeasured_covers().await.unwrap(),
+            vec![(old, "/img/old.jpg".to_string())]
+        );
+        assert!(
+            !s.unmeasured_covers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|(id, _)| { *id == none || *id == fresh })
+        );
+    }
+
+    // ---- pages, filters and counts -----------------------------------------
+
+    use crate::book::ReadingState;
+    use crate::storage::query::StatusFilter;
+
+    /// Five books whose sort keys collide on purpose: two share a title
+    /// case-insensitively, two share a year, all five are written in the same
+    /// second. Ties are what breaks offset pagination, so the fixture is made of
+    /// them.
+    async fn shelf(s: &Storage) -> Vec<i64> {
+        let mut ids = Vec::new();
+        for (title, author, year, lang) in [
+            ("Dune", "Frank Herbert", Some(1965), "en"),
+            ("dune", "Frank Herbert", Some(1965), "en"),
+            ("Kindred", "Octavia E. Butler", Some(1979), "en"),
+            ("Solaris", "Stanisław Lem", Some(1961), "pl"),
+            ("Ubik", "Philip K. Dick", None, "en"),
+        ] {
+            ids.push(
+                s.upsert_book(
+                    &Book {
+                        title: Some(title.into()),
+                        authors: vec![author.into()],
+                        publish_year: year,
+                        language: Some(lang.into()),
+                        page_count: Some(300),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        ids
+    }
+
+    fn all(sort: BookSort) -> BookQuery {
+        BookQuery {
+            sort,
+            ..Default::default()
+        }
+    }
+
+    const EVERY_SORT: [BookSort; 5] = [
+        BookSort::LastModified,
+        BookSort::Title,
+        BookSort::Progress,
+        BookSort::Year,
+        BookSort::Author,
+    ];
+
+    /// **The keystone of offset pagination**, and the requirement easiest to
+    /// forget.
+    ///
+    /// Walking a library one page at a time must visit every book exactly once,
+    /// in the same order a single unpaged read would. The fixture is built out
+    /// of ties, since ties are the only thing that can break it.
+    ///
+    /// Note what this does and does not cover, because it was measured rather
+    /// than assumed: deleting the `books.id` tie-break from every SQL arm leaves
+    /// this **green**, because SQLite's sorter is deterministic for one plan over
+    /// one set of rows. So this test covers the arithmetic — the `Author` arm's
+    /// skip-and-truncate in Rust especially, which is the only arm where the
+    /// slicing is ours — and `order_by_is_a_total_order` covers the ordering.
+    #[tokio::test]
+    async fn a_page_and_its_successor_partition_the_list() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for sort in EVERY_SORT {
+            let whole: Vec<Option<i64>> = s
+                .list_books(&all(sort))
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect();
+            assert_eq!(whole.len(), ids.len(), "{sort:?}");
+            for page in 1..=ids.len() as i64 + 1 {
+                let mut walked = Vec::new();
+                let mut offset = 0;
+                loop {
+                    let got = s
+                        .list_books(&BookQuery::new(page, sort).at_offset(offset))
+                        .await
+                        .unwrap();
+                    if got.is_empty() {
+                        break;
+                    }
+                    assert!(got.len() as i64 <= page, "{sort:?} overran its limit");
+                    walked.extend(got.iter().map(|b| b.id));
+                    offset += page;
+                }
+                assert_eq!(walked, whole, "{sort:?} at page size {page}");
+            }
+        }
+    }
+
+    /// The two filing keys of one row, straight out of the database.
+    ///
+    /// Read with SQL rather than through [`Book`] on purpose: `sort_author` is
+    /// deliberately not a field on the domain type, and a test that could reach
+    /// it there would be testing a shape the engine chose not to have.
+    async fn keys(s: &Storage, id: i64) -> (Option<String>, Option<String>) {
+        let row = sqlx::query("SELECT sort_title, sort_author FROM books WHERE id = ?")
+            .bind(id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        (
+            row.try_get("sort_title").unwrap(),
+            row.try_get("sort_author").unwrap(),
+        )
+    }
+
+    fn titled(title: &str, authors: &[&str]) -> Book {
+        Book {
+            title: Some(title.to_string()),
+            authors: authors.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// **The trap migration `0016` exists to close.** `sort_title` was in the
+    /// schema
+    /// from `0001_init.sql` and no statement had ever written it, so it was NULL
+    /// on every row of every database — a sort-key column that looked answered
+    /// and was not.
+    #[tokio::test]
+    async fn a_written_book_files_under_both_keys_immediately() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(&titled("The Overstory", &["Richard Powers"]), None)
+            .await
+            .unwrap();
+        let (title, author) = keys(&s, id).await;
+        assert_eq!(
+            title.as_deref(),
+            Some("Overstory"),
+            "the article is dropped"
+        );
+        assert_eq!(
+            author,
+            Some(crate::sort::author_key(&["Richard Powers".into()]))
+        );
+    }
+
+    /// **Every write path that can move a title or an author list moves the
+    /// keys with it**, and there are four statements that can.
+    ///
+    /// Enumerated rather than sampled, because the failure mode is a *writer*
+    /// that forgot — the same shape as the cover metrics left behind by a path
+    /// that moved `cover_path`, a bug that shipped once and had to be fixed
+    /// after the fact. A key describing a title the row no longer has is
+    /// indistinguishable from a correct one at every call site downstream.
+    #[tokio::test]
+    async fn every_writer_that_moves_a_title_moves_the_key() {
+        // 1. `upsert_book`'s ON CONFLICT arm.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut seed = titled("A Wizard of Earthsea", &["Ursula K. Le Guin"]);
+        seed.isbn_13 = Some("9780553383041".into());
+        let id = s.upsert_book(&seed, None).await.unwrap();
+        assert_eq!(keys(&s, id).await.0.as_deref(), Some("Wizard of Earthsea"));
+        let mut again = seed.clone();
+        again.title = Some("The Tombs of Atuan".into());
+        assert_eq!(s.upsert_book(&again, None).await.unwrap(), id);
+        assert_eq!(keys(&s, id).await.0.as_deref(), Some("Tombs of Atuan"));
+
+        // 2. `enrich_book`'s UPDATE.
+        s.enrich_book(id, &titled("An Ordinary Title", &[]), None)
+            .await
+            .unwrap();
+        assert_eq!(keys(&s, id).await.0.as_deref(), Some("Ordinary Title"));
+
+        // 3. `fill_book` — the stored row wins, so the key must *not* move
+        //    unless the gap was real. The title above survives; the authors,
+        //    which the enrich record was silent about, are still Le Guin's.
+        let before = keys(&s, id).await;
+        s.fill_book(id, &titled("Something Else", &["Nobody At All"]), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            keys(&s, id).await,
+            before,
+            "a fill that filled nothing must not move a key"
+        );
+
+        // 4. `merge_books`' dst-wins fill, in the one case it moves a title:
+        //    `dst` had none.
+        let src = s
+            .upsert_book(
+                &titled("The Left Hand of Darkness", &["Ursula K. Le Guin"]),
+                None,
+            )
+            .await
+            .unwrap();
+        let dst = s.upsert_book(&Book::default(), None).await.unwrap();
+        s.merge_books(src, dst).await.unwrap();
+        assert_eq!(
+            keys(&s, dst).await.0.as_deref(),
+            Some("Left Hand of Darkness"),
+            "dst took src's title and must take its filing name with it"
+        );
+    }
+
+    /// An authorless book files **last**, and its key is a real value rather
+    /// than absence — which is what makes `sort_author IS NULL` mean *not
+    /// computed yet* and nothing else, i.e. what makes the back-fill's work list
+    /// exact.
+    #[tokio::test]
+    async fn an_authorless_book_has_a_key_and_files_last() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let lonely = s.upsert_book(&titled("Beowulf", &[]), None).await.unwrap();
+        let known = s
+            .upsert_book(&titled("Zuleika Dobson", &["Max Beerbohm"]), None)
+            .await
+            .unwrap();
+        let (_, lonely_key) = keys(&s, lonely).await;
+        assert!(lonely_key.is_some(), "absence must not be spelled as NULL");
+        assert!(lonely_key > keys(&s, known).await.1);
+
+        assert!(
+            s.stale_sort_keys().await.unwrap().is_empty(),
+            "a book written through the engine is never in the back-fill's list"
+        );
+
+        let order: Vec<Option<i64>> = s
+            .list_books(&BookQuery::new(-1, BookSort::Author))
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(order, vec![Some(known), Some(lonely)]);
+    }
+
+    /// The back-fill is the migration's missing half, and it is idempotent —
+    /// which is what lets `make dev-db` run it unconditionally.
+    ///
+    /// The fixture is a row written the way the `gen-devdb` seed writes one:
+    /// straight SQL, past every engine writer, which is exactly the state
+    /// migration `0016` leaves a pre-existing library in.
+    #[tokio::test]
+    async fn the_back_fill_files_a_row_no_writer_touched_and_then_does_nothing() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO books (title, authors, created_at, last_modified)
+             VALUES ('The Dispossessed', '[\"Ursula K. Le Guin\"]', 0, 0) RETURNING id",
+        )
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+        assert_eq!(keys(&s, id).await, (None, None));
+        assert_eq!(s.stale_sort_keys().await.unwrap(), vec![id]);
+
+        assert_eq!(s.rebuild_sort_keys().await.unwrap(), 1);
+        let filed = keys(&s, id).await;
+        assert_eq!(filed.0.as_deref(), Some("Dispossessed"));
+
+        // Idempotent, and identical: a back-filled row and a freshly-written one
+        // are the same row, which is the property a second code path would have
+        // quietly given up.
+        assert_eq!(s.rebuild_sort_keys().await.unwrap(), 0);
+        assert_eq!(keys(&s, id).await, filed);
+        let fresh = s
+            .upsert_book(&titled("The Dispossessed", &["Ursula K. Le Guin"]), None)
+            .await
+            .unwrap();
+        assert_eq!(keys(&s, fresh).await, filed);
+    }
+
+    /// An un-back-filled row degrades to its own raw title rather than piling at
+    /// the top — the reason `BookSort::Title` orders by `COALESCE`, and the
+    /// reason migration `0016` needed no SQL back-fill of `sort_title`.
+    #[tokio::test]
+    async fn a_row_the_writer_never_reached_still_files_under_its_title() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for title in ["Middlemarch", "Zuleika Dobson"] {
+            sqlx::query("INSERT INTO books (title, created_at, last_modified) VALUES (?, 0, 0)")
+                .bind(title)
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
+        let titles: Vec<String> = s
+            .list_books(&BookQuery::new(-1, BookSort::Title))
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.display_title().to_string())
+            .collect();
+        assert_eq!(titles, vec!["Middlemarch", "Zuleika Dobson"]);
+    }
+
+    /// The outer query's own plan lines, in order: `EXPLAIN QUERY PLAN` rows
+    /// whose `parent` is 0.
+    ///
+    /// The filter matters. `BOOK_FROM`'s correlated subquery has an `ORDER BY`
+    /// of its own and therefore a temp b-tree of its own, for ever and by
+    /// design — asserting over the whole tree would either pass vacuously or
+    /// fail on a line that has nothing to do with the sort key.
+    async fn outer_plan(s: &Storage, sql: &str) -> Vec<String> {
+        sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .fetch_all(s.pool())
+            .await
+            .expect("query plan")
+            .iter()
+            .filter(|r| r.try_get::<i64, _>("parent").unwrap_or(-1) == 0)
+            .map(|r| r.try_get::<String, _>("detail").unwrap_or_default())
+            .collect()
+    }
+
+    /// The exact statement `list_books` builds, for one sort and no filter.
+    fn list_sql(sort: BookSort) -> String {
+        format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM}  ORDER BY {} LIMIT 20 OFFSET 40",
+            super::order_by(sort)
+        )
+    }
+
+    /// **Migration `0016`'s only claim, asserted: the planner reaches the
+    /// index.**
+    ///
+    /// A behavioural test cannot see an index — every one of these sorts
+    /// returned the right rows the day before the migration and returns the
+    /// same rows now. This is `0008`'s rule (`the_note_link_indexes_are_the_plan
+    /// _the_planner_picks`) applied to the sort keys, and it reads the SQL
+    /// `list_books` actually issues rather than a hand-written approximation of
+    /// it, because the thing most likely to go wrong is a *mismatch* between the
+    /// clause and the index — a `COLLATE` dropped, a `COALESCE` spelled
+    /// differently — and an approximation is exactly what cannot catch that.
+    ///
+    /// Two assertions per sort, and the second is the one with teeth:
+    /// the index is named, **and** the outer query no longer says
+    /// `USE TEMP B-TREE FOR ORDER BY`. An index that is scanned for its rows and
+    /// then sorted anyway is an index that bought nothing.
+    #[tokio::test]
+    async fn the_sort_key_indexes_are_the_plan_the_planner_picks() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for (sort, index) in [
+            (BookSort::LastModified, "idx_books_last_modified"),
+            (BookSort::Title, "idx_books_sort_title"),
+            (BookSort::Year, "idx_books_publish_year"),
+            (BookSort::Author, "idx_books_sort_author"),
+        ] {
+            let plan = outer_plan(&s, &list_sql(sort)).await.join("; ");
+            assert!(
+                plan.contains(index),
+                "{sort:?} must scan {index}, got: {plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+                "{sort:?} reached {index} and sorted anyway, which buys nothing: {plan}"
+            );
+        }
+    }
+
+    /// The control that makes the test above evidence rather than ceremony.
+    ///
+    /// `BookSort::Progress` is a computed ratio across a `LEFT JOIN` and is the
+    /// one sort migration `0016` could not index. Its plan therefore still says
+    /// `USE TEMP B-TREE FOR ORDER BY` — on the same database, through the same
+    /// helper, against a statement in production — which proves the assertion
+    /// above is one this suite is capable of failing. `0008` bought that proof
+    /// by running the plan before the migration; a live control is stronger,
+    /// because it goes on being true.
+    #[tokio::test]
+    async fn the_one_sort_that_cannot_be_indexed_still_says_so() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let plan = outer_plan(&s, &list_sql(BookSort::Progress))
+            .await
+            .join("; ");
+        assert!(
+            plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "a computed ratio has no index to reach; if this passes, the plan \
+             filter above is wrong rather than the sort being fast: {plan}"
+        );
+    }
+
+    /// Every SQL arm orders by something unique, so a page is the successor of
+    /// the one before it by construction rather than by the query planner's
+    /// current mood.
+    ///
+    /// Structural on purpose: the behavioural test above passes with the
+    /// tie-breaks removed, so this is the one that fails.
+    #[test]
+    fn order_by_is_a_total_order() {
+        // No arm is skipped any more. `BookSort::Author` used to have no
+        // `ORDER BY` at all and closed its own base read in Rust; since migration
+        // `0016` it is an ordinary indexed clause and is held to the same rule.
+        for sort in EVERY_SORT {
+            let clause = super::order_by(sort);
+            assert!(
+                clause.trim_end().ends_with("books.id ASC")
+                    || clause.trim_end().ends_with("books.id DESC"),
+                "{sort:?} orders by `{clause}`, which ties — and a tie under \
+                 LIMIT/OFFSET is a book on two pages and another on none"
+            );
+        }
+    }
+
+    /// A count and a page are the same question asked two ways, which is the
+    /// whole reason one function writes the clause.
+    #[tokio::test]
+    async fn the_count_agrees_with_the_page_for_every_filter() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        s.update_progress(ids[0], Some(100), None).await.unwrap();
+        s.update_progress(ids[1], None, Some(true)).await.unwrap();
+        s.add_book_tags(ids[2], "goodreads", &[("sf".to_string(), "SF".to_string())])
+            .await
+            .unwrap();
+
+        for filter in [
+            BookFilter::default(),
+            BookFilter {
+                status: Some(StatusFilter::NoReading),
+                ..Default::default()
+            },
+            BookFilter {
+                status: Some(StatusFilter::Is(ReadingState::Reading)),
+                ..Default::default()
+            },
+            BookFilter {
+                status: Some(StatusFilter::Is(ReadingState::Finished)),
+                ..Default::default()
+            },
+            BookFilter {
+                title: Some("dun".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                title: Some("nothing here".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                author: Some("herbert".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                year: Some(1965),
+                ..Default::default()
+            },
+            BookFilter {
+                language: Some("PL".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                tag: Some("SF".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                has_cover: Some(false),
+                ..Default::default()
+            },
+            BookFilter {
+                author: Some("herbert".into()),
+                year: Some(1965),
+                language: Some("en".into()),
+                ..Default::default()
+            },
+            // `title` joining the others rather than replacing them is the
+            // whole reason it is a predicate here and not a seventh endpoint.
+            BookFilter {
+                title: Some("dun".into()),
+                author: Some("herbert".into()),
+                year: Some(1965),
+                ..Default::default()
+            },
+        ] {
+            let count = s.count_books(&filter).await.unwrap();
+            for sort in EVERY_SORT {
+                let rows = s
+                    .list_books(&all(sort).with_filter(filter.clone()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    count,
+                    rows.len() as i64,
+                    "{filter:?} counted {count} and listed {} under {sort:?}",
+                    rows.len()
+                );
+            }
+        }
+    }
+
+    /// `title` is a predicate and not a seventh endpoint, which means it has to
+    /// survive the three things an endpoint would have had to reimplement: the
+    /// shared count, the offset paging, and case.
+    #[tokio::test]
+    async fn a_title_filter_pages_and_counts_like_every_other_predicate() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+
+        let dunes = BookFilter {
+            // `Dune` and `dune` are both on the shelf: LIKE is
+            // case-insensitive for ASCII, exactly as `author` relies on.
+            title: Some("DUNE".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.count_books(&dunes).await.unwrap(), 2);
+
+        let query = BookQuery::new(1, BookSort::Title).with_filter(dunes.clone());
+        let first = s.list_books(&query).await.unwrap();
+        let second = s.list_books(&query.clone().at_offset(1)).await.unwrap();
+        let third = s.list_books(&query.at_offset(2)).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert!(third.is_empty(), "there is no third page of two books");
+        assert_ne!(first[0].id, second[0].id, "the pages partition the answer");
+
+        // A search with no hits is an answer, not an error and not a badge.
+        let none = BookFilter {
+            title: Some("thermodynamics".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.count_books(&none).await.unwrap(), 0);
+        assert!(
+            s.list_books(&BookQuery::default().with_filter(none))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // LIKE's own wildcards are literals — a filter for `%` is not a filter
+        // for everything.
+        assert_eq!(
+            s.count_books(&BookFilter {
+                title: Some("%".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+            0
+        );
+    }
+
+    /// The four status cases, and the one that is absence.
+    ///
+    /// A book with no reading is not `finished: false` and not a state — it is
+    /// the join coming back empty. Asserted here so that adding a
+    /// `ReadingState::NeverOpened` to make this tidier would have to break a
+    /// test that says why it must not exist.
+    #[tokio::test]
+    async fn a_status_filter_has_four_cases_and_one_of_them_is_absence() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        s.update_progress(ids[0], Some(100), None).await.unwrap();
+        s.update_progress(ids[1], None, Some(true)).await.unwrap();
+        s.open_reading(ids[2], None, "local").await.unwrap();
+        s.abandon_reading(ids[2]).await.unwrap();
+
+        let of = |st: StatusFilter| BookFilter {
+            status: Some(st),
+            ..Default::default()
+        };
+        let mut counted = 0;
+        for (case, want) in [
+            (StatusFilter::Is(ReadingState::Reading), vec![ids[0]]),
+            (StatusFilter::Is(ReadingState::Finished), vec![ids[1]]),
+            (StatusFilter::Is(ReadingState::Abandoned), vec![ids[2]]),
+            (StatusFilter::NoReading, vec![ids[3], ids[4]]),
+        ] {
+            let mut got: Vec<i64> = s
+                .list_books(&all(BookSort::Title).with_filter(of(case.clone())))
+                .await
+                .unwrap()
+                .iter()
+                .filter_map(|b| b.id)
+                .collect();
+            got.sort();
+            let mut want = want;
+            want.sort();
+            assert_eq!(got, want, "{case:?}");
+            counted += s.count_books(&of(case)).await.unwrap();
+        }
+        // The four cases partition the library: nothing is in two of them and
+        // nothing is in none.
+        assert_eq!(counted, ids.len() as i64);
+    }
+
+    /// The `limit` contract, now that a page exists: `limit` selects along the
+    /// sort key. The first two books alphabetically, not two arbitrary books
+    /// shown alphabetically.
+    #[tokio::test]
+    async fn a_limit_selects_along_the_sort_key() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+        let titles: Vec<String> = s
+            .list_books(&BookQuery::new(2, BookSort::Title))
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.title.clone())
+            .collect();
+        assert_eq!(titles, vec!["Dune".to_string(), "dune".to_string()]);
+        let authors: Vec<String> = s
+            .list_books(&BookQuery::new(2, BookSort::Author))
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.authors[0].clone())
+            .collect();
+        assert_eq!(
+            authors,
+            vec![
+                "Octavia E. Butler".to_string(),
+                "Philip K. Dick".to_string()
+            ],
+            "Butler and Dick by last name, not whatever the recency order was"
+        );
+    }
+
+    /// The filter reaches the arm SQL cannot order, and the slice still happens
+    /// after the Rust sort — which is the only place it can happen and still
+    /// mean "the first N by this key".
+    #[tokio::test]
+    async fn the_author_arm_filters_and_pages_like_the_others() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+        let q = all(BookSort::Author).with_filter(BookFilter {
+            language: Some("en".into()),
+            ..Default::default()
+        });
+        let names: Vec<String> = s
+            .list_books(&q)
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.authors[0].clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Octavia E. Butler".to_string(),
+                "Philip K. Dick".to_string(),
+                "Frank Herbert".to_string(),
+                "Frank Herbert".to_string(),
+            ]
+        );
+        let second = s
+            .list_books(&BookQuery::new(1, BookSort::Author).at_offset(1))
+            .await
+            .unwrap();
+        assert_eq!(second[0].authors[0], "Philip K. Dick");
+    }
+
+    /// A negative limit is the whole library, in both arms. Two arms meaning
+    /// different things by the same number would be a bug invisible from a call
+    /// site.
+    #[tokio::test]
+    async fn a_negative_limit_is_the_whole_library_in_every_arm() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for sort in EVERY_SORT {
+            assert_eq!(
+                s.list_books(&BookQuery::new(-1, sort)).await.unwrap().len(),
+                ids.len(),
+                "{sort:?}"
+            );
+        }
+    }
+
+    /// One call for a page, one row per id **in the order asked**, zeros
+    /// included — so a caller can zip it against the page it just fetched.
+    #[tokio::test]
+    async fn the_summary_counts_what_is_behind_a_book() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for text in ["one", "two", "three"] {
+            s.insert_highlight(
+                ids[1],
+                &crate::NewHighlight {
+                    text: text.into(),
+                    chapter: None,
+                    page: None,
+                    pos0: None,
+                    pos1: None,
+                    ko_datetime: None,
+                    ko_datetime_updated: None,
+                    color: None,
+                    note: None,
+                    source: "manual".into(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        s.insert_note(
+            crate::storage::NewNoteMeta {
+                book_id: Some(ids[1]),
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "vault/a.md",
+                title: "a thought",
+                kind: "note",
+            },
+            "a body",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let got = s.book_summaries(&[ids[0], ids[1]]).await.unwrap();
+        assert_eq!(got[0].book_id, ids[0], "the order asked for is kept");
+        assert_eq!(
+            (got[0].highlights, got[0].notes, got[0].files),
+            (0, 0, 0),
+            "nothing behind a book is an answer, not a missing row"
+        );
+        assert!(!got[0].has());
+        assert_eq!((got[1].highlights, got[1].notes, got[1].files), (3, 1, 0));
+        assert!(got[1].has());
+        assert!(
+            s.book_summaries(&[]).await.unwrap().is_empty(),
+            "no ids is no rows, not every row"
+        );
+    }
+
+    // ---- provenance --------------------------------------------------------
+
+    use super::tests_support::{PROBES, columns, probes_cover_the_merge_table, says_everything};
+
+    async fn sources(s: &Storage, id: i64) -> Vec<(String, String)> {
+        s.field_provenance(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.field, f.source))
+            .collect()
+    }
+
+    /// `show` and `says` are two readings of one question, and they have to
+    /// agree on every column.
+    ///
+    /// `says` decides what the SQL moves and what may be claimed; `show` is what
+    /// enrichment's report prints for a field a provider offered and was not
+    /// allowed to write. A column where they disagree is either a field that is
+    /// claimed and unprintable — a held-back value the user is told about by
+    /// name and never shown — or one that is printable and unclaimed.
+    ///
+    /// Swept over `PROBES`, so a seventeenth rule is covered by arriving rather
+    /// than by being remembered.
+    #[test]
+    fn show_and_says_agree_on_every_column() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let mut book = Book::default();
+            // Silent about this column: neither may speak.
+            assert!(!MERGE_RULES.iter().any(|r| r.col == col && (r.says)(&book)));
+            assert_eq!(field_value(&book, col), None, "{col} printed from nothing");
+
+            set(&mut book, 7);
+            let rule = MERGE_RULES
+                .iter()
+                .find(|r| r.col == col)
+                .expect("probes cover the table");
+            assert!(
+                (rule.says)(&book),
+                "{col}: says nothing about a value it has"
+            );
+            assert!(
+                field_value(&book, col).is_some(),
+                "{col}: claimed but unprintable"
+            );
+        }
+    }
+
+    /// `field_value` on a name the table does not govern is `None`, not a panic.
+    /// Every caller is downstream of `merge_columns`, but the function is the
+    /// wrong place to enforce that.
+    #[test]
+    fn an_unknown_column_prints_nothing() {
+        assert_eq!(field_value(&says_everything(1), "ko_percent"), None);
+        assert_eq!(
+            merge_columns().count(),
+            MERGE_RULES.len(),
+            "merge_columns must be the whole table"
+        );
+    }
+
+    /// **The three consumers of `MERGE_RULES` cannot disagree.**
+    ///
+    /// `the_two_statements_cannot_disagree` (above, as
+    /// `enrich_merges_a_partial_record_exactly_as_the_upsert_does`) pins the two
+    /// SQL renderings against each other. This pins the *third* consumer — the
+    /// provenance stamp — against the SQL, column by column, and it is the
+    /// assertion that stops the failure this arrangement exists to prevent: a
+    /// field the merge writes and the stamp forgets, or the reverse.
+    ///
+    /// For each column: a record that speaks only to that column must move
+    /// exactly that column, and claim exactly that field. A wrong `says`
+    /// predicate shows up as a missing or extra claim; a wrong bind order shows
+    /// up as the *neighbouring* column moving.
+    #[tokio::test]
+    async fn a_record_claims_exactly_the_fields_it_supplies() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&says_everything(1), Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+            let before = columns(&s, id).await;
+
+            let mut partial = Book::default();
+            set(&mut partial, 2);
+            s.enrich_book(id, &partial, Some(Source::OpenLibrary))
+                .await
+                .unwrap();
+
+            let after = columns(&s, id).await;
+            for ((name, was), (_, now)) in before.iter().zip(after.iter()) {
+                if name == col {
+                    assert_ne!(
+                        was, now,
+                        "{col}: the record said something and nothing moved"
+                    );
+                } else {
+                    assert_eq!(was, now, "a {col} record moved {name}");
+                }
+            }
+            for (name, _) in PROBES {
+                let want = if name == col {
+                    "openlibrary"
+                } else {
+                    "googlebooks"
+                };
+                assert_eq!(
+                    s.field_source(id, name).await.unwrap().as_deref(),
+                    Some(want),
+                    "a {col} record claimed {name}"
+                );
+            }
+        }
+    }
+
+    /// **The fourth consumer cannot disagree either.**
+    ///
+    /// `search::merge_into` was the one place this table did not reach, and a
+    /// column added without it compiled cleanly and was silently dropped from
+    /// every federated search result — adding `subjects` did exactly that, and
+    /// only
+    /// `every_claimed_field_is_a_merge_column` noticed, by accident, on the
+    /// claim rather than on the value. `Rule::federated` closes that, and this
+    /// is what stops it being closed in name only: for **every** column, a
+    /// record speaking to it either merges and is claimed, or is
+    /// [`Federated::Local`] — and the `Local` set is pinned by name below, so
+    /// "make it `Local` and move on" is not a quiet option.
+    #[test]
+    fn every_provider_column_survives_a_federated_merge() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let rule = MERGE_RULES.iter().find(|r| r.col == col).unwrap();
+            let mut src = Book::default();
+            set(&mut src, 2);
+            let mut dst = Book::default();
+            let claimed = merge_provider_record(&mut dst, &src, Source::OpenLibrary);
+
+            match rule.federated {
+                Federated::Local => assert!(
+                    claimed.is_empty() && !(rule.says)(&dst),
+                    "{col} is Local and merged anyway: {claimed:?}"
+                ),
+                // `series_index` alone is never taken — the pair moves with the
+                // name, never before it.
+                Federated::WithPair(_) => assert!(
+                    claimed.is_empty(),
+                    "{col} moves with its pair and was taken on its own: {claimed:?}"
+                ),
+                Federated::Fill(_) | Federated::Prefer(..) => {
+                    assert!(
+                        (rule.says)(&dst),
+                        "{col} was supplied and did not reach the merged record"
+                    );
+                    assert!(
+                        claimed.contains(&col),
+                        "{col} moved without being claimed, which is how a \
+                         federated field loses its origin: {claimed:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The one column no provider supplies, named — so a second one is a
+    /// decision somebody makes here rather than a `Federated::Local` typed to
+    /// make a new rule compile.
+    ///
+    /// It was two until migration `0016`. `sort_title` sat here saying "ours, derived"
+    /// while nothing derived it, and once something did it stopped belonging
+    /// to this table at all — a filing key is not a value a record carries.
+    /// `Federated::Local` is the right answer for `cover_path`, which a
+    /// record genuinely does carry and which a provider genuinely does not
+    /// supply; it was the wrong answer for a derived column, and the
+    /// difference is worth one shrinking list.
+    #[test]
+    fn only_our_own_columns_sit_out_the_federated_merge() {
+        let local: Vec<&str> = MERGE_RULES
+            .iter()
+            .filter(|r| matches!(r.federated, Federated::Local))
+            .map(|r| r.col)
+            .collect();
+        assert_eq!(local, ["cover_path"]);
+    }
+
+    /// The pair moves **whole**: an index without a name is not merged, and a
+    /// name arriving without an index clears whatever index was there — a stale
+    /// `#2` under a different series is the row `Rule::pair` exists to prevent.
+    #[test]
+    fn a_series_index_travels_with_the_name_or_not_at_all() {
+        let mut dst = Book::default();
+        let orphan = Book {
+            series_index: Some(7.0),
+            ..Default::default()
+        };
+        assert!(merge_provider_record(&mut dst, &orphan, Source::GoogleBooks).is_empty());
+        assert_eq!(dst.series_index, None);
+
+        let both = Book {
+            series: Some("Dune".into()),
+            series_index: Some(2.0),
+            ..Default::default()
+        };
+        let claimed = merge_provider_record(&mut dst, &both, Source::GoogleBooks);
+        assert_eq!(claimed, ["series", "series_index"]);
+        assert_eq!(dst.series_index, Some(2.0));
+
+        // A different provider's series loses (the field is filled), so nothing
+        // moves — including the index, which must not be taken alone.
+        let other = Book {
+            series: Some("Other".into()),
+            series_index: Some(9.0),
+            ..Default::default()
+        };
+        assert!(merge_provider_record(&mut dst, &other, Source::OpenLibrary).is_empty());
+        assert_eq!(dst.series.as_deref(), Some("Dune"));
+        assert_eq!(dst.series_index, Some(2.0));
+
+        // …and a namer with no index of its own clears the index rather than
+        // leaving one series' number under another's name.
+        let mut fresh = Book::default();
+        let nameless = Book {
+            series: Some("Dune".into()),
+            ..Default::default()
+        };
+        let claimed = merge_provider_record(&mut fresh, &nameless, Source::OpenLibrary);
+        assert_eq!(claimed, ["series"]);
+        assert_eq!(fresh.series_index, None);
+    }
+
+    /// **A field the user owns is not overwritten by a provider merge**, for
+    /// every column and every source. Without this, the first re-enrichment
+    /// silently replaces every hand correction in the library.
+    ///
+    /// Both guards are asserted together on purpose: the value must survive
+    /// *and* the claim must, because either one alone is a half-protected field
+    /// that the next writer finishes off.
+    #[tokio::test]
+    async fn a_user_owned_field_survives_every_provider_merge() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&says_everything(1), Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+
+            let mut mine = Book::default();
+            set(&mut mine, 2);
+            s.enrich_book(id, &mine, Some(Source::User)).await.unwrap();
+            let corrected = columns(&s, id).await;
+
+            for source in Source::ALL.into_iter().filter(|s| *s != Source::User) {
+                let mut theirs = Book::default();
+                set(&mut theirs, 3);
+                s.enrich_book(id, &theirs, Some(source)).await.unwrap();
+                // And an unattributed writer, which is the one that would
+                // otherwise slip past a rule that keyed on the incoming source.
+                s.enrich_book(id, &theirs, None).await.unwrap();
+            }
+
+            assert_eq!(columns(&s, id).await, corrected, "{col} was overwritten");
+            assert_eq!(
+                s.field_source(id, col).await.unwrap().as_deref(),
+                Some("user"),
+                "{col} lost the user's claim"
+            );
+        }
+    }
+
+    /// A pair that only guards one way guards nothing: the write it exists to
+    /// stop is the one to the *other* half.
+    #[test]
+    fn pairs_are_symmetric() {
+        for rule in MERGE_RULES.iter() {
+            let Some(other) = rule.pair else { continue };
+            let back = MERGE_RULES
+                .iter()
+                .find(|r| r.col == other)
+                .unwrap_or_else(|| panic!("{}: pair names no column", rule.col));
+            assert_eq!(
+                back.pair,
+                Some(rule.col),
+                "{} pairs with {other}, which does not pair back",
+                rule.col
+            );
+        }
+    }
+
+    /// **Owning half a pair holds the whole pair.**
+    ///
+    /// This is the second instance of the bug enrichment first ran into: a
+    /// user-owned `isbn_13` with an unowned `isbn_10` landing from a different
+    /// edition, so one row carries two ISBNs of two books. `series` +
+    /// `series_index` has exactly that shape and is worse to read — "Dune #2"
+    /// is a claim about which book this is.
+    ///
+    /// Both instances are asserted here, because they are one rule.
+    #[tokio::test]
+    async fn owning_half_a_pair_holds_the_other_half() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+
+        // The user names the series and never says which number it is.
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+        // …and the ISBN of the edition they actually hold.
+        s.enrich_book(
+            id,
+            &Book {
+                isbn_13: Some("9780441013593".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        // A provider that knows a *different* series, and a different edition.
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune Chronicles".into()),
+                series_index: Some(2.0),
+                isbn_10: Some("0441013597".into()),
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.series.as_deref(), Some("Dune"));
+        assert_eq!(
+            got.series_index, None,
+            "an index from a series the user did not name is not this book's"
+        );
+        assert_eq!(got.isbn_13.as_deref(), Some("9780441013593"));
+        assert_eq!(
+            got.isbn_10, None,
+            "the other edition's isbn_10 landed beside the user's isbn_13"
+        );
+        // And the held halves stay unattributed rather than being claimed by a
+        // provider whose value was never written.
+        assert_eq!(s.field_source(id, "series_index").await.unwrap(), None);
+        assert_eq!(s.field_source(id, "isbn_10").await.unwrap(), None);
+    }
+
+    /// The pair guard is *only* about the user. Two providers merging into an
+    /// unowned pair is the ordinary case and must still fill it.
+    #[tokio::test]
+    async fn an_unowned_pair_still_fills() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune".into()),
+                series_index: Some(0.5),
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.series.as_deref(), Some("Dune"));
+        // Half-numbered novellas are why the column is REAL.
+        assert_eq!(got.series_index, Some(0.5));
+    }
+
+    /// A subject set is a value like `authors`: it round-trips as JSON, an empty
+    /// one means "this record does not say", and a provider with one replaces
+    /// the stored set rather than growing it.
+    #[tokio::test]
+    async fn subjects_are_replaced_whole_and_an_empty_set_says_nothing() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.subjects = vec!["Fiction / Literary".into(), "Historical".into()];
+        let id = s.upsert_book(&b, Some(Source::GoogleBooks)).await.unwrap();
+        assert_eq!(
+            s.get_book(id).await.unwrap().unwrap().subjects,
+            vec!["Fiction / Literary", "Historical"]
+        );
+
+        // A record with nothing to say leaves them alone…
+        s.enrich_book(id, &Book::default(), Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+        assert_eq!(
+            s.get_book(id).await.unwrap().unwrap().subjects.len(),
+            2,
+            "an empty set must read as silence, not as 'no subjects'"
+        );
+
+        // …and one with a set replaces it, rather than unioning two
+        // vocabularies into a list neither provider published.
+        s.enrich_book(
+            id,
+            &Book {
+                subjects: vec!["Provincial England".into()],
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.subjects, vec!["Provincial England"]);
+        assert_eq!(
+            s.field_source(id, "subjects").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
+    /// The guard is in the clause, so it is in **both** statements the clause
+    /// generates. The sweep above goes through `enrich_book`; this is the upsert
+    /// half, through the `ON CONFLICT DO UPDATE` branch.
+    #[tokio::test]
+    async fn the_upsert_honours_the_user_guard_too() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.description = Some("what the provider said".into());
+        let id = s.upsert_book(&b, Some(Source::GoogleBooks)).await.unwrap();
+
+        s.enrich_book(
+            id,
+            &Book {
+                description: Some("what I actually think".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        // Same ISBN, so this is the conflict branch of the upsert.
+        let mut refreshed = sample();
+        refreshed.description = Some("the provider, again".into());
+        refreshed.publisher = Some("Blackwood".into());
+        assert_eq!(
+            s.upsert_book(&refreshed, Some(Source::OpenLibrary))
+                .await
+                .unwrap(),
+            id
+        );
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("what I actually think"));
+        assert_eq!(
+            got.publisher.as_deref(),
+            Some("Blackwood"),
+            "one held field must not hold the rest of the record"
+        );
+        assert_eq!(
+            s.field_source(id, "description").await.unwrap().as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            s.field_source(id, "publisher").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
+    /// `fill_book` is the mirror: the stored row wins, so the incoming record
+    /// may only claim what it actually filled. A source that claimed a field
+    /// whose value it lost would attribute somebody else's value to itself,
+    /// which is the failure mode this whole table exists to prevent.
+    #[tokio::test]
+    async fn a_fallback_record_claims_only_the_gaps_it_filled() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    description: Some("from the provider".into()),
+                    ..Default::default()
+                },
+                Some(Source::GoogleBooks),
+            )
+            .await
+            .unwrap();
+
+        s.fill_book(
+            id,
+            &Book {
+                title: Some("MIDDLEMARCH (epub metadata)".into()),
+                description: Some("from the file".into()),
+                language: Some("en".into()),
+                ..Default::default()
+            },
+            Some(Source::Epub),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.title.as_deref(), Some("Middlemarch"), "stored wins");
+        assert_eq!(got.description.as_deref(), Some("from the provider"));
+        assert_eq!(got.language.as_deref(), Some("en"), "the gap is filled");
+
+        let mut got = sources(&s, id).await;
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("description".to_string(), "googlebooks".to_string()),
+                ("language".to_string(), "epub".to_string()),
+                ("title".to_string(), "googlebooks".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_returns_cover_path() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.cover_path = Some("database/images/x.jpg".into());
+        let id = s.upsert_book(&b, None).await.unwrap();
+        let cover = s.delete_book(id).await.unwrap();
+        assert_eq!(cover.as_deref(), Some("database/images/x.jpg"));
+        assert!(s.get_book(id).await.unwrap().is_none());
+        assert!(matches!(
+            s.delete_book(id).await,
+            Err(EngineError::NotFound(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod props {
+    use super::tests_support::*;
+    use super::{Book, BookFilter, BookQuery, Storage};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Merging `src` into `dst` twice equals merging it once.
+        ///
+        /// Stated as a property rather than an example because the interesting
+        /// input is the *overlap*: which annotations and which flashcard words
+        /// the two books happen to share is exactly what decides whether a row
+        /// moves, is dropped, or collides — and picking three overlaps by hand
+        /// is picking the three that work.
+        ///
+        /// It matters because the caller retries. A device screen firing the
+        /// same merge twice, a re-run after a crash, a user pressing the key
+        /// again: none of those should be able to leave the library different
+        /// from one clean run.
+        #[test]
+        fn merging_twice_equals_merging_once(
+            src_texts in proptest::collection::vec("[a-c]{1,3}", 0..6),
+            dst_texts in proptest::collection::vec("[a-c]{1,3}", 0..6),
+            src_words in proptest::collection::vec("[x-z]{1,2}", 0..4),
+            dst_words in proptest::collection::vec("[x-z]{1,2}", 0..4),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let s = fixture(&src_texts, &dst_texts, &src_words, &dst_words).await;
+                let (src, dst) = (s.src, s.dst);
+
+                let first = s.storage.merge_books(src, dst).await.unwrap();
+                prop_assert!(first.src_existed);
+                let after_one = snapshot(&s.storage, dst).await;
+
+                let second = s.storage.merge_books(src, dst).await.unwrap();
+                prop_assert!(!second.src_existed, "src is gone; there is nothing left to do");
+                prop_assert_eq!(second, super::MergeReport::default());
+                prop_assert_eq!(after_one, snapshot(&s.storage, dst).await);
+                Ok(())
+            })?;
+        }
+
+        /// **Paging is a partition.** For any library, any sort and any page
+        /// size, walking the pages visits every book exactly once and in the
+        /// order one unpaged read would give.
+        ///
+        /// A property rather than more examples because the interesting input is
+        /// the *tie structure*, and picking three libraries by hand is picking
+        /// the three whose ties happen to fall between page boundaries. The
+        /// generators here deliberately draw titles and years from tiny
+        /// alphabets, so collisions are the common case rather than the corner.
+        ///
+        /// This is what `books.id` on the end of every `ORDER BY` buys. Remove
+        /// it and this fails at some page size for some seed, which is exactly
+        /// how the bug would have reached a shelf: intermittently, and looking
+        /// fine.
+        #[test]
+        fn paging_partitions_the_library(
+            titles in proptest::collection::vec("[a-c]", 1..7),
+            years in proptest::collection::vec(proptest::option::of(1960i64..1963), 1..7),
+            page in 1usize..5,
+            sort in 0usize..5,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let sort = [
+                    super::BookSort::LastModified,
+                    super::BookSort::Title,
+                    super::BookSort::Progress,
+                    super::BookSort::Year,
+                    super::BookSort::Author,
+                ][sort];
+                let s = Storage::connect("sqlite::memory:").await.unwrap();
+                for (i, title) in titles.iter().enumerate() {
+                    s.upsert_book(
+                        &Book {
+                            title: Some(title.clone()),
+                            authors: vec![title.clone()],
+                            publish_year: *years.get(i).unwrap_or(&None),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                let whole: Vec<Option<i64>> = s
+                    .list_books(&BookQuery { sort, ..Default::default() })
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.id)
+                    .collect();
+
+                let mut walked = Vec::new();
+                let mut offset = 0i64;
+                loop {
+                    let got = s
+                        .list_books(&BookQuery::new(page as i64, sort).at_offset(offset))
+                        .await
+                        .unwrap();
+                    if got.is_empty() {
+                        break;
+                    }
+                    walked.extend(got.iter().map(|b| b.id));
+                    offset += page as i64;
+                }
+                prop_assert_eq!(&walked, &whole, "{:?} at page size {}", sort, page);
+                // And the count is the same question: it must agree with the
+                // number of rows the walk produced.
+                prop_assert_eq!(
+                    s.count_books(&BookFilter::default()).await.unwrap(),
+                    walked.len() as i64
+                );
+                Ok(())
+            })?;
+        }
+    }
+}
+
+/// Shared setup for the merge property. Lives outside `mod tests` because
+/// `mod props` needs it too, and duplicating the fixture is how the two would
+/// drift into testing different things.
+#[cfg(test)]
+mod tests_support {
+    use super::*;
+    use crate::storage::NewHighlight;
+
+    pub struct Fixture {
+        pub storage: Storage,
+        pub src: i64,
+        pub dst: i64,
+    }
+
+    /// One writer per [`MERGE_RULES`] column, so a test can say "a record that
+    /// speaks to *this* field" once per column without naming the column
+    /// twice.
+    ///
+    /// It is a second list, and it is the only one: the first assertion of every
+    /// test that uses it is that its column names are `MERGE_RULES`'s, in order.
+    /// A seventeenth rule therefore fails these tests loudly rather than
+    /// silently going uncovered — which is the whole reason the probes are here
+    /// rather than inlined into one test that happens to name four fields.
+    ///
+    /// `n` distinguishes one record from another. Nothing validates these
+    /// values — `upsert_book` does not check ISBNs, `normalize_isbn` guards the
+    /// door much earlier — so they only have to differ.
+    #[allow(clippy::type_complexity)]
+    pub const PROBES: [(&str, fn(&mut Book, u32)); 19] = [
+        ("title", |b, n| b.title = Some(format!("title-{n}"))),
+        ("authors", |b, n| b.authors = vec![format!("author-{n}")]),
+        ("translators", |b, n| {
+            b.translators = vec![format!("translator-{n}")]
+        }),
+        ("publisher", |b, n| b.publisher = Some(format!("pub-{n}"))),
+        ("publish_year", |b, n| {
+            b.publish_year = Some(1900 + i64::from(n))
+        }),
+        ("first_published", |b, n| {
+            b.first_published = Some(1800 + i64::from(n))
+        }),
+        ("language", |b, n| b.language = Some(format!("l{n}"))),
+        ("isbn_10", |b, n| b.isbn_10 = Some(format!("isbn10-{n}"))),
+        ("isbn_13", |b, n| b.isbn_13 = Some(format!("isbn13-{n}"))),
+        ("openlibrary_key", |b, n| {
+            b.openlibrary_key = Some(format!("/works/OL{n}W"))
+        }),
+        ("googlebooks_id", |b, n| {
+            b.googlebooks_id = Some(format!("gb-{n}"))
+        }),
+        ("cover_url", |b, n| {
+            b.cover_url = Some(format!("https://example.invalid/{n}.jpg"))
+        }),
+        ("cover_path", |b, n| {
+            b.cover_path = Some(format!("database/images/{n}.jpg"))
+        }),
+        ("page_count", |b, n| b.page_count = Some(100 + i64::from(n))),
+        ("description", |b, n| {
+            b.description = Some(format!("description-{n}"))
+        }),
+        ("first_sentence", |b, n| {
+            b.first_sentence = Some(format!("first-{n}"))
+        }),
+        ("subjects", |b, n| b.subjects = vec![format!("subject-{n}")]),
+        ("series", |b, n| b.series = Some(format!("series-{n}"))),
+        // Fractional, so the probe also pins that the REAL column round-trips a
+        // half-numbered novella rather than truncating it to book two.
+        ("series_index", |b, n| {
+            b.series_index = Some(f64::from(n) + 0.5)
+        }),
+    ];
+
+    /// A record that speaks to every column, all of it distinguishable by `n`.
+    pub fn says_everything(n: u32) -> Book {
+        let mut b = Book::default();
+        for (_, set) in PROBES {
+            set(&mut b, n);
+        }
+        b
+    }
+
+    /// Every `MERGE_RULES` column of one row, as text, keyed by column name.
+    ///
+    /// `CAST(… AS TEXT)` so the two integer columns come back comparably;
+    /// the point is only whether a value moved, never what type it is.
+    pub async fn columns(storage: &Storage, id: i64) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        for (col, _) in PROBES {
+            let v: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT CAST({col} AS TEXT) FROM books WHERE id = ?"
+            ))
+            .bind(id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+            out.push((col.to_string(), v));
+        }
+        out
+    }
+
+    /// The probes cover the merge table exactly. Called first by every test that
+    /// sweeps them, so "somebody added a column" is a failure with a name.
+    pub fn probes_cover_the_merge_table() {
+        let probed: Vec<&str> = PROBES.iter().map(|(c, _)| *c).collect();
+        let ruled: Vec<&str> = super::MERGE_RULES.iter().map(|r| r.col).collect();
+        assert_eq!(
+            probed, ruled,
+            "PROBES must name every MERGE_RULES column, in order: a column with \
+             no probe is a column no provenance test covers"
+        );
+    }
+
+    /// Highlights are keyed on their text, so a text appearing in both lists is
+    /// an identity collision and one appearing once is a plain move. Flashcard
+    /// words work the same way against `UNIQUE(book_id, word)`.
+    pub async fn fixture(
+        src_texts: &[String],
+        dst_texts: &[String],
+        src_words: &[String],
+        dst_words: &[String],
+    ) -> Fixture {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        let mk = |title: &str| Book {
+            title: Some(title.to_string()),
+            ..Default::default()
+        };
+        let src = storage.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = storage.upsert_book(&mk("dst"), None).await.unwrap();
+
+        for (book_id, texts) in [(src, src_texts), (dst, dst_texts)] {
+            for t in texts {
+                let h = NewHighlight {
+                    text: t.clone(),
+                    chapter: None,
+                    page: Some(1),
+                    pos0: Some(format!("/body/p[1]/text().{t}")),
+                    pos1: None,
+                    ko_datetime: Some("2026-01-01 00:00:00".into()),
+                    ko_datetime_updated: None,
+                    color: None,
+                    note: None,
+                    source: "koreader".into(),
+                };
+                storage.insert_highlight(book_id, &h).await.unwrap();
+            }
+        }
+        for (book_id, words) in [(src, src_words), (dst, dst_words)] {
+            for w in words {
+                storage.insert_flashcard(book_id, None, w, None).await.ok();
+            }
+        }
+        Fixture { storage, src, dst }
+    }
+
+    /// Everything the merge could plausibly disturb, in a comparable shape.
+    pub async fn snapshot(storage: &Storage, dst: i64) -> (Vec<String>, Vec<String>, i64) {
+        let mut texts: Vec<String> = storage
+            .list_highlights(dst)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.text)
+            .collect();
+        texts.sort();
+        let mut words: Vec<String> = storage
+            .list_flashcards_for_book(dst)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| f.word)
+            .collect();
+        words.sort();
+        let books: i64 = sqlx::query_scalar("SELECT count(*) FROM books")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        (texts, words, books)
+    }
+}

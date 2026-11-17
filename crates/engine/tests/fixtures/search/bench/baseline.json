@@ -1,0 +1,71 @@
+{
+  "measured": "bench_search: Engine::search as a frontend's add-a-book box calls it (an ISBN typed into the same box), a search session run to done and flattened to each work's default edition, with the offline index's correction, notability and author names; you-already-have-it read off each work's Held (certain or likely)",
+  "figures": {
+    "author_only": {
+      "n": 15,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "held": {
+      "n": 18,
+      "at1": 0.9444,
+      "top5": 0.9444,
+      "mrr": 0.9444
+    },
+    "isbn": {
+      "n": 21,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "non_english": {
+      "n": 29,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "overall": {
+      "n": 206,
+      "at1": 0.9854,
+      "top5": 0.9951,
+      "mrr": 0.9895
+    },
+    "partial": {
+      "n": 20,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "recent": {
+      "n": 23,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "series": {
+      "n": 15,
+      "at1": 0.9333,
+      "top5": 1.0,
+      "mrr": 0.9556
+    },
+    "title_author": {
+      "n": 20,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    },
+    "translations": {
+      "n": 20,
+      "at1": 0.95,
+      "top5": 1.0,
+      "mrr": 0.975
+    },
+    "typos": {
+      "n": 25,
+      "at1": 1.0,
+      "top5": 1.0,
+      "mrr": 1.0
+    }
+  }
+}

@@ -1,0 +1,184 @@
+name: Scheduled
+
+# The things that must not gate a PR, because they fail for reasons a PR author
+# cannot fix: a newly-published advisory, a new clippy lint on floating stable.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+    # A second entry, Mondays only, at a time nothing else here runs — the
+    # `mutants` job below gates on this exact string so it fires once a week
+    # rather than every night the first cron entry does.
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+# Read-only unless a job says otherwise; none here writes.
+permissions:
+  contents: read
+
+jobs:
+  # The tier-2 corpus, regenerated from its seed and tested with every skip
+  # turned into a failure.
+  #
+  # The epubs and the generated layers are committed, so the ordinary test
+  # suite reads them everywhere. This job is the proof that the committed bytes
+  # are still what the generator produces: `make corpus` verifies the epubs
+  # against the manifest's checksums (fetching any that are missing), runs the
+  # generator, and runs tests/corpus.rs with REQUIRE_FIXTURES set. Before the
+  # corpus was committed every test there took its `SKIPPED:` path on a runner,
+  # which is how a corpus convergence bug once stayed invisible to CI for
+  # weeks, until someone ran `make corpus` by hand.
+  #
+  # It belongs here and not on the PR gate for the usual reason: a missing epub
+  # is fetched from Project Gutenberg, and Gutenberg being slow or down is not
+  # something a PR author can fix.
+  corpus:
+    name: tier-2 corpus
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Keyed on the manifest, which carries the ids AND the sha256s — so a
+      # re-issued text changes the key and gets re-fetched rather than being
+      # served stale from the cache and then failing checksum verification.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: corpus/epub
+          key: corpus-epub-${{ hashFiles('corpus/manifest.json') }}
+
+      # REQUIRE_FIXTURES is the switch that turns every `SKIPPED:` into a
+      # failure. It is scoped to this job deliberately: set globally it would
+      # fail on `tests/fixtures/koreader/real/`, which is gitignored and is
+      # never present on a runner by design, and on the engine's other
+      # opportunistic checks against a developer's own local files.
+      - run: make corpus
+        env:
+          BOOKMOLE_REQUIRE_FIXTURES: "1"
+
+  advisories:
+    name: security advisories
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo-deny on the runner itself, not EmbarkStudios/cargo-deny-action:
+      # that action runs in an Alpine container whose only toolchain is
+      # 1.85.0-musl, so every run opened with rustup's "error: override
+      # toolchain '1.97.1-x86_64-unknown-linux-musl' is not installed". It was
+      # harmless (rustup installed the pin on the next line), but an `error:`
+      # line in a log that is only ever read when it is red is a false lead.
+      # On the runner, `cargo` reads rust-toolchain.toml and installs the pin
+      # quietly. The database is fetched fresh each run, which is the point.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny
+      - run: cargo deny check advisories
+
+  # Mutation testing, and deliberately not on the PR gate: a full sweep of the
+  # engine is 2566 mutants, measured at ~10 minutes for 34 mutants of one
+  # file, which puts the whole thing in the hours range — nobody should be
+  # waiting on that to merge. `--in-diff` against a week-old main is what makes
+  # a *scheduled* run mean something rather than nothing: this repo commits
+  # straight to main (no long-lived feature branches), so there is no "PR
+  # diff" to scope against the way `make mutants-diff` scopes a local one —
+  # the closest equivalent is a rolling week of unreviewed survivors, which is
+  # also a sensible size to read in one sitting. `continue-on-error: true`
+  # because a surviving mutant is a finding to act on, not a build failure,
+  # and a report nobody looked at should not read as the workflow being broken.
+  mutants:
+    name: mutation testing (engine, week-old diff)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    continue-on-error: true
+    if: github.event.schedule == '37 6 * * 1' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # `git rev-list --before` and the diff against it both need history
+          # past the default shallow clone.
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Explicit `tool:` on each, not the `@cargo-mutants` tool-name tag — the
+      # tag form stopped resolving for cargo-fuzz (fuzz.yml's own comment) and
+      # installed nothing while reporting success, so it is avoided here too.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-mutants
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: nextest
+
+      # No system-headers step: `-p bookmole` is the engine only, the same
+      # scope the macOS test leg runs on a bare runner.
+      #
+      # Bounded by time, not by the size of the week. A busy week is far more
+      # than 90 minutes: 2026-11-10's diff was 843 mutants at ~2 minutes each,
+      # and the job reached 43 before GitHub cancelled it — and a *cancelled*
+      # job turns the whole run red, because `continue-on-error` covers a
+      # failure, not a timeout. So the run stops itself at 75 minutes (SIGINT,
+      # which cargo-mutants handles by writing out what it has), says so, and
+      # exits clean; the upload below still has time to run. `--shuffle` makes
+      # that partial run a sample of the whole week rather than always the
+      # first files in source order. PROPTEST_CASES=32 is `make test-fast`'s
+      # count: a mutant is caught or it is not, and the full 256 cases per
+      # property per mutant only buys fewer mutants per run.
+      - name: mutants against the last 7 days of main
+        env:
+          PROPTEST_CASES: "32"
+        run: |
+          base=$(git rev-list -1 --before='7 days ago' origin/main)
+          git diff "$base...HEAD" > /tmp/week.diff
+          set +e
+          timeout --signal=INT --kill-after=3m 75m \
+            cargo mutants -p bookmole --test-tool nextest --shuffle \
+              --in-diff /tmp/week.diff
+          status=$?
+          set -e
+          # 124: stopped by the budget; 137: it ignored the INT and was killed.
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "::notice::mutation testing stopped at its 75-minute budget; mutants.out holds the shuffled sample it reached"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: mutants.out
+          path: mutants.out
+          if-no-files-found: ignore
+
+  floating-stable:
+    name: clippy on floating stable
+    runs-on: ubuntu-26.04
+    timeout-minutes: 50
+    # Advisory only. This exists so a new lint is *visible* before the pinned
+    # toolchain in rust-toolchain.toml is bumped — never so it blocks anything.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain has no version tags, only branches named for
+      # toolchains, so it is pinned at master and told the toolchain outright.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-11-13
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # RUSTUP_TOOLCHAIN is what overrides rust-toolchain.toml's pin — this is
+      # the one job that deliberately ignores it.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          RUSTUP_TOOLCHAIN: stable

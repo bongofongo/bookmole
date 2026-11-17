@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">47</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">cf8fb3b3-e15b-4617-8a21-571b4e2bb093</dc:identifier>
+        <dc:title>Κύρου Ανάβασις Τόμος 2</dc:title>
+        <dc:creator opf:file-as="Xenophon" opf:role="aut">Xenophon</dc:creator>
+        <dc:contributor opf:file-as="calibre" opf:role="bkp">calibre (9.11.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>2012-06-22T00:00:00+00:00</dc:date>
+        <dc:identifier opf:scheme="URI">http://www.gutenberg.org/40061</dc:identifier>
+        <dc:language>ell</dc:language>
+        <dc:subject>Iran -- History -- To 640</dc:subject>
+        <dc:subject>Cyrus</dc:subject>
+        <dc:subject>the Younger</dc:subject>
+        <dc:subject>approximately 423 B.C.-401 B.C.</dc:subject>
+        <dc:subject>Greece -- History -- Expedition of Cyrus</dc:subject>
+        <dc:subject>401 B.C.</dc:subject>
+        <meta name="calibre:timestamp" content="2026-11-17T08:56:23.694829+00:00"/>
+        <meta name="calibre:title_sort" content="Κύρου Ανάβασις Τόμος 2"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="Cover" href="cover.jpg"/>
+    </guide>
+</package>

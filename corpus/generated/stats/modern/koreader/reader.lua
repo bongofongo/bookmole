@@ -1,0 +1,1 @@
+-- generated KOReader install marker

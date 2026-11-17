@@ -1,0 +1,5 @@
+# GitHub's runner image list moves faster than actionlint's. Every label here is
+# a hosted runner GitHub already runs our jobs on.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

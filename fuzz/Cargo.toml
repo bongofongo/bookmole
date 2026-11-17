@@ -1,0 +1,43 @@
+# NOT a workspace member — see `exclude` in the root Cargo.toml. libfuzzer-sys
+# needs nightly and `-Z sanitizer=address`; inside the workspace it would break
+# `cargo build --workspace` on stable for everyone.
+[package]
+name = "bookmole-fuzz"
+version = "0.0.0"
+publish = false
+license = "MPL-2.0"
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+bookmole = { path = "../crates/engine" }
+epubkit = { path = "../crates/epubkit" }
+tempfile = "3"
+
+[[bin]]
+name = "parse_sidecar"
+path = "fuzz_targets/parse_sidecar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "epub_info"
+path = "fuzz_targets/epub_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "epubkit_package"
+path = "fuzz_targets/epubkit_package.rs"
+test = false
+doc = false
+bench = false
+
+# An empty table here is what detaches this crate from the parent workspace.
+[workspace]

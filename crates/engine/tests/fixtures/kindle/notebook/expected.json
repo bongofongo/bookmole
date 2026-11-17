@@ -1,0 +1,64 @@
+{
+  "remains": {
+    "authors": [
+      "Ishiguro, Kazuo"
+    ],
+    "bookmarks": 1,
+    "chapters": [
+      "Prologue: July 1956",
+      "Prologue: July 1956",
+      "Day One • Evening",
+      "Day One • Evening",
+      "Day One • Evening"
+    ],
+    "colors": [
+      "yellow",
+      "blue",
+      "pink",
+      null,
+      "orange"
+    ],
+    "highlights": 5,
+    "locations": [
+      "75",
+      "120",
+      null,
+      "160",
+      "170"
+    ],
+    "lone": [
+      "a note standing alone"
+    ],
+    "lone_notes": 1,
+    "notes": [
+      {
+        "highlight": "A journey would do the house good, he said.",
+        "note": "pairs with the yellow one"
+      }
+    ],
+    "pages": [
+      3,
+      null,
+      null,
+      null,
+      20
+    ],
+    "rows": 6,
+    "texts": [
+      "A journey would do the house good, he said.",
+      "Don’t & won’t stop",
+      "First line\nsecond line\nthird line",
+      "No colour on this one.",
+      "The last <highlight> in the book."
+    ],
+    "title": "The Remains of the Day",
+    "unparsed": 1
+  },
+  "unowned": {
+    "authors": [
+      "Nobody, A."
+    ],
+    "rows": 1,
+    "title": "A Book Nobody Owns"
+  }
+}

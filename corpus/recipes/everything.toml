@@ -1,0 +1,50 @@
+# The whole corpus, in the order a real reader's library accretes: the Goodreads
+# history first (the oldest data a reader has, and the only place the shelf's
+# ISBNs come from — files and device rows then match onto it, so a verb that
+# names a book by that ISBN finds it), then files, then a device, then its
+# timing data, then what the reader typed. Every other recipe is a part of this one.
+name = "everything"
+description = "Every layer this branch can build, applied to one library through the CLI."
+
+[[step]]
+kind = "goodreads-import"
+csv = "corpus/generated/reader/physical.csv"
+
+[[step]]
+kind = "epubs"
+dir = "corpus/epub"
+reapply = false
+reapply_why = "epub import without an ISBN is not idempotent (duplicate book); reported as an engine bug"
+
+[[step]]
+kind = "calibre-import"
+library = "corpus/generated/calibre/library"
+
+[[step]]
+kind = "ko-sync"
+root = "corpus/generated/modern"
+
+[[step]]
+kind = "ko-stats"
+mount = "corpus/generated/stats/modern"
+
+[[step]]
+kind = "verbs"
+file = "corpus/generated/reader/verbs.jsonl"
+
+[[step]]
+kind = "sort-keys"
+
+[[step]]
+kind = "covers"
+
+[[step]]
+kind = "refill"
+
+# Observed 2026-10-20: `progress <book> -- -12` exits 0 and stores
+# current_page = -12. hostile.json declares page-negative `rejected`; the
+# declaration stands and the divergence is reported as an engine bug.
+[[known]]
+case = "page-negative"
+why = "progress accepts and stores a negative page (engine bug)"
+

@@ -1,0 +1,9 @@
+{
+  "file": "wellknown.tsv.gz",
+  "format": 1,
+  "sha256": "5c55a900e5151cdadc22557bdc37cca1566c93e8f3ad88981b6c986ea49d7e24",
+  "built": "2026-11-12",
+  "works": 162793,
+  "bytes": 6224558,
+  "source": "Wikidata, CC0 1.0"
+}

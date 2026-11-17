@@ -1,0 +1,33 @@
+# Applied migrations whose comments were amended after they shipped (the SQL of
+# each is byte-identical). The append-only check in ci.yml and `make
+# migrations-check` skips exactly these; crates/engine/src/storage/mod.rs's
+# AMENDED table repairs their recorded checksums and pins their current text,
+# and `the_amended_list_matches_the_repair_table` keeps this file and that
+# table in step.
+crates/engine/migrations/0003_device_books.sql
+crates/engine/migrations/0004_highlight_ownership.sql
+crates/engine/migrations/0008_note_link_index.sql
+crates/engine/migrations/0009_goodreads.sql
+crates/engine/migrations/0011_reading_events.sql
+crates/engine/migrations/0012_field_provenance.sql
+crates/engine/migrations/0013_subjects_series.sql
+crates/engine/migrations/0014_cover_metrics.sql
+crates/engine/migrations/0015_highlight_search.sql
+crates/engine/migrations/0016_sort_key_indexes.sql
+crates/engine/migrations/0017_moments.sql
+crates/engine/migrations/0018_reading_sort_indexes.sql
+crates/engine/migrations/0019_paired_devices.sql
+crates/engine/migrations/0020_device_sync_record.sql
+crates/engine/migrations/0021_device_wireless_contact.sql
+crates/engine/migrations/0022_reading_card_passage.sql
+crates/engine/migrations/0023_note_parts.sql
+crates/engine/migrations/0024_settings.sql
+crates/engine/migrations/0025_put_down_at.sql
+crates/engine/migrations/0026_quarter_ratings.sql
+crates/engine/migrations/0027_copies.sql
+crates/engine/migrations/0028_lists.sql
+crates/engine/migrations/0029_first_published.sql
+crates/engine/migrations/0030_highlight_origin.sql
+crates/engine/migrations/0031_copy_place_files.sql
+crates/engine/migrations/0032_search_cache.sql
+crates/engine/migrations/0033_books_search_index.sql

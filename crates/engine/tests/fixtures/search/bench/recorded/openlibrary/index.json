@@ -1,0 +1,1408 @@
+{
+  "recordings": {
+    "https://openlibrary.org/authors/OL1926056A.json": {
+      "file": "3b62769d5b0574d4.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/authors/OL2830895A.json": {
+      "file": "0238fda2325dcb3c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/authors/OL79034A.json": {
+      "file": "d7ff13b79d3644c7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/0099590085.json": {
+      "file": "e20910fec16cd365.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/030758836X.json": {
+      "file": "2632e87dc5551f57.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/0316556335.json": {
+      "file": "177f9c3e95920ce3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/075640407X.json": {
+      "file": "a3ff083a4c748fcb.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/0804139024.json": {
+      "file": "979fe1ad536df377.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/1444738208.json": {
+      "file": "54bfa3e0dabd2b04.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/1786330512.json": {
+      "file": "57cbff6b28fd22a6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9780099590088.json": {
+      "file": "853caade3535b011.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9780307588364.json": {
+      "file": "d806df0a9e4417e2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9780316556330.json": {
+      "file": "0ecb02f91df7a6f4.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9780756404079.json": {
+      "file": "b4c2eeb3d517d21a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9780804139021.json": {
+      "file": "a5fd413ab4f294d6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9781444738209.json": {
+      "file": "edb74e619815aed5.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/isbn/9781786330512.json": {
+      "file": "2c51300b1252d135.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?author=fyodor+dostoevsky&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0fe1a443caa7dba0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?author=haruki+murakami&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "3eb856ef6015037c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?author=jane+eyer&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "465be659aeac2113.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?author=tom+lake&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8b395e1c82c06f94.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?author=un+mundo+feliz&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "6a44f28bbbefe683.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%C3%A0+la+recherche+du+temps+perdu&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5343938dfe9563dd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%D0%B0%D0%BD%D0%BD%D0%B0+%D0%BA%D0%B0%D1%80%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9dbff594de13ea31.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%D0%B2%D0%BE%D0%B9%D0%BD%D0%B0+%D0%B8+%D0%BC%D0%B8%D1%80&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "13245990388bf3b9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80+%D0%B8+%D0%BC%D0%B0%D1%80%D0%B3%D0%B0%D1%80%D0%B8%D1%82%D0%B0&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0a1ba2fed4186fc9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%D0%BC%D1%8B+%D0%B7%D0%B0%D0%BC%D1%8F%D1%82%D0%B8%D0%BD&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5a6f3f69e7b07f44.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%D0%BF%D1%80%D0%B5%D1%81%D1%82%D1%83%D0%BF%D0%BB%D0%B5%D0%BD%D0%B8%D0%B5+%D0%B8+%D0%BD%D0%B0%D0%BA%D0%B0%D0%B7%D0%B0%D0%BD%D0%B8%D0%B5&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9296af51dec98441.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%E3%83%8E%E3%83%AB%E3%82%A6%E3%82%A7%E3%82%A4%E3%81%AE%E6%A3%AE&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7d697d071c65c82d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%E4%BA%BA%E9%96%93%E5%A4%B1%E6%A0%BC&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ebfe10f04ee3fe16.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=%EC%B1%84%EC%8B%9D%EC%A3%BC%EC%9D%98%EC%9E%90&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "59c67825cc7b9fc2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=Kafka+on+the+Shore+by+Haruki+Murakami&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f8062197a6cf716c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=a+clash+of+kings&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "773396fa439eb4b6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=a+confederacy+of&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "870a098682090527.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=a+portrait+of+the+artist&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "89f5e5b116535ade.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=a+tree+grows+in&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2b9587310eca682e.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=agatha+christie&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2087b0b2f91414ca.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=all+fours&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2dd14cf2463e7ef3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=anna+karenia&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "44459bac4f841c54.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=atonement+ian+mcewan&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a5f1dd94c076129a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=beloved+toni+morison&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "25d5ded48b3903c8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=blindness+saramago&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "081cc83fcc682d50.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=brandon+sanderson&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b975e5d759219ef3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=brave+new+wrold&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0ecaca220611f085.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=catcher+in+the+ry&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8fbdfe5b420a5032.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=cem+anos+de+solid%C3%A3o&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "801c1c53261fc408.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=children+of+dune&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1fd5b903544f8709.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=cien+a%C3%B1os+de+soledad&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "95df8278a46ce410.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=circe+madeline+miller&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0c72e6b60f524a0a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=creation+lake&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "861652c8619b48c0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=crime+and+punishmnet&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f5924559926945b1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=de+avonden&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d440153af7264877.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=de+hobbit&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a1b626bfbabc69e8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=der+f%C3%A4nger+im+roggen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9855456078b4886b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=der+richter+und+sein+henker&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b73cf1d6412c53b7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=der+schatten+des+windes&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "366067a4ebb4ff46.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=der+vorleser&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b9cf1933291107d7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=der+zauberberg&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8b11673baffd0912.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=die+blechtrommel&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1f8bbcf41ba32abe.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=dispossessed&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b2c875b64a20d70f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=dnue+herbrt&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "fe1c7b6a1d7d0615.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=do+androids+dream&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d926c8c84e9b89fb.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=dom+casmurro&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2ed7838f66091ee7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=draculla&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "6b2aad5cb437ece2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=dune+2&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f99d3a9cc65912e3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=dune+messiah&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b8e19e39e3e02b9d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=earthsea+book+2&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c22ced5df35385e1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=el+amor+en+los+tiempos+del+colera&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "69d330810a52627b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=ferdydurke&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "6d837f35d8e412a3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=foundation+and+empire&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2f4468076f6ec8ed.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=fourth+wing&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c590748c048d0692.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=frankenstien&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b44b1165b9be5f20.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=funny+story&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "87640d88c4443321.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=fyodor+dostoevsky&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "97009629c92ae539.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=gabriel+garcia+marquez&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7eec59bb73f465e8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=harry+poter+and+the+philosophers+stone&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "556595b476e7feef.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=harry+potter+3&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9733240b2b532822.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=harry+potter+and+the+philosopher%27s+stone&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b0b70efd49e7e1d1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=harry+potter+und+der+stein+der+weisen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "03f374daee122fd5.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=haruki+murakami&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "481f6c0ce6bf88d3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=het+achterhuis&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4b2c376f073cc970.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=het+diner&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9afcf5b0f681a1eb.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=his+dark+materials+subtle+knife&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d8228e7b4702be43.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=hitchhiker%27s+guide&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8af6fb67db97e292.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=hunger+games+2&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0fd4d85c7f80cbb8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=if+on+a+winter%27s+night&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c6fb7fff19a45aa8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=il+gattopardo&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b438f313dc9d60ff.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=il+grande+gatsby&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "27d9a745a977896d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=intermezzo&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "023b80e736e04962.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=isaac+asimov&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5e769c95cecbd10d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=ishiguro+klara+and+the+sun&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0b572823aa5a5ead.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=it+stephen+king&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "776afcc225a2d8c2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=james+percival+everett&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b5c324a3969e276f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=jane+austen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f451f77a9ecc972a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=jane+eyer&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0862a1e7b85a93bd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=kafka+on+the+shroe&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "18e5a9c18d5e41c3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=kallocain&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4a5260362f2c73dd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=katabasis&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a98ab9a8d5c851fc.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=kazuo+ishiguro&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "6688c7a5ef987562.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=l%27%C3%A9cume+des+jours&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "43e1785ed634f279.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=l%27elegance+du+herisson&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "3293b58240e0923f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=la+casa+de+los+esp%C3%ADritus&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "297b7c88c80d2942.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=la+coscienza+di+zeno&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5044fb0fe4b8257b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=la+sombra+del+viento&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ad52f27f069c5005.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=lalka+prus&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4d5c3df0b14f5c7d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=le+rouge+et+le+noir&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d6b762a1e19ab1df.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=le+seigneur+des+anneaux&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ff31c070dab8753f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=le+vieil+homme+et+la+mer&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1a07e9aa5a00d0e0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=les+miserables&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1da7d96115b053d4.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=lord+of+the+rngs&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "bc24e47df21fddf2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=love+in+the+time+of+cholera&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f9ae05a0ee3ac118.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=m%C3%A4n+som+hatar+kvinnor&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2cbafa02898390c1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=margaret+atwood&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0953282569ad5240.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=matar+a+un+ruise%C3%B1or&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5a32b1edaa3b1465.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=middlemarch&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "099fd5718401cd4b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=midlemarch&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "69cf2e22619d63dd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=mistborn+2&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b1aaf07cab766bda.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=moby+dik&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "908c1be8085daffd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=my+brilliant+friend&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1ce1a093b541703a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=neil+gaiman&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "637885166bc7c057.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=neuromancr&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "571f3a4f60979022.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=never+let+me+go+ishiguro&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "29d5191d5051ca18.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=night+elie+wiesel&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a5d7cb9a629f4abe.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=north+woods&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c107aac4b92e9a11.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=norwegain+wood+murakmi&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "49452e9fdb53b00c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=o+alquimista&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "df2e9e4aae58b25f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=octavia+butler&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "32a098009a81bb2a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=one+flew+over&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5ffe842ddf70222d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=one+hundred+years+of&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ccfeafe3d2cb04d2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=onyx+storm&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c938ec3e550502dd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=orbital+samantha+harvey&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1163497e8460b989.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=orlando+virginia+woolf&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5c7cf27497a125d1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=pan+tadeusz&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "975450f15286e79e.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=perfume+the+story+of+a+murderer&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "865e6266589ea996.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=pippi+l%C3%A5ngstrump&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "3a82e125a666d2b6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=piranesi&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "898b84c7f3b067dc.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=pride+and+prejudce&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b64b659311ae5775.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=prophet+song&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f8f75e90d3c778cf.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=rayuela&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "96100b47e0d3bd24.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=remains+of+the+day&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "65b891231eba1ed6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=se+una+notte+d%27inverno+un+viaggiatore&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1e5016b658d88d61.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=slaughterhous+five&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "169126e94c3ce3aa.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=stolz+und+vorurteil&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c0fad52330fd8a87.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=stormlight+archive+book+two&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "08d2e8c7e55a898e.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=sunrise+on+the+reaping&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7af2d485f613f7c7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=terry+pratchett&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "e214e9939e885565.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+bee+sting&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "905abb3957f6422a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+brief+wondrous+life&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d0a93ac44c1a4cad.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+brothrs+karamazov&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2cdb4ea42b810bde.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+covenant+of+water&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b7978185e6f89402.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+curious+incident&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "01a5b2e8a46400da.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+dispossessed&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "cdb20af277b83811.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+emperor+of+gladness&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "00e7e81ef8866a33.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+expanse+book+3&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "3c59ede2a5dc82bf.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+fellowship+of+the+ring&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "688be762e6fa5d72.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+god+of+the+woods&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8706877819164da2.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+great+gatbsy&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f86c6dc75d8ec7e9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+heart+is+a+lonely&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9f10caf5438e3d6f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+heaven+earth+grocery+store&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a84f6cbde2c2d31c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+hobit&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9650fb8bdcec4c06.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+left+hand+of&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "34e15e727f7bd7ef.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+left+hand+of+darkness&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "42c6beced70b1da8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+little+prince&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "e16f8ce3519bd86c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+man+who+mistook+his+wife&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "5bad7aebaff53f54.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+master+and+margarita&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b1c38cae304b269c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+metamorphosis&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4b2b2c31cb21334b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+ministry+of+time&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "cd3ce62c3d33b530.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+name+of+the+rose&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "670509767fc978df.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+name+of+the+wind&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4ee0697f7ff4e1e5.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+perks+of+being&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ec692f4efdc930bb.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+plague+camus&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "03cc4fdd4626cf74.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+road+cormac+mccarthey&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a9365c4f0ea0aaab.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+safekeep&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4d79d2a955bfa331.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+sea+john+banville&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2638db2cf82376a9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+secret+history+donna+tartt&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "fc651c9e9366add7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+shadow+of+the+wind&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c0cf5e65a89faed6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+silmarilion&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "446d8605fcaeff4e.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+strange+case+of+dr+jekyll&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "e949ba9fc0363f38.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+stranger+camus&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b6857269dba4be06.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+two+towers&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f2b9aa79a798cd80.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+unbearable+lightness&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "01d3f78c17fae414.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+wise+man%27s+fear&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a710715ac89644fd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=the+women+kristin+hannah&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0bf2810eaec51827.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=to+kil+a+mockingbird&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "e095deeefc422269.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=tom+lake&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a10d426f9c158768.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=toni+morrison&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b87b9997e3dac86a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=un+mundo+feliz&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0913ea179c10cfe6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=ursula+le+guin&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2dfac9747a1f4f05.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=virginia+woolf&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9c8277da9ab64e2c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=watchmen+alan+moore&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "49f92491174600b0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=western+lane&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "538f50c288818d8b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=wheel+of+time+1&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4b3f06290e055405.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=where+the+crawdads&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "6133c05e281612d9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=white+teeth+zadie+smith&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "2a95101133e24adb.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=wuthering+hieghts&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "c29c3afacd2cdff6.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=yellowface&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "05adf0da828790f1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?q=zen+and+the+art&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "4f9941d7a1ceaebf.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=%E4%B8%89%E4%BD%93&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "d8b6ed171c55aee0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=%E9%9B%AA%E5%9B%BD&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "39ca910c409e6ff8.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Anna+Karenina&author=Leo+Tolstoy&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f9bfa79a18f48171.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Beloved&author=Toni+Morrison&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0e213be0c72be00f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Brave+New+World&author=Aldous+Huxley&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8951974f323cffce.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Catcher+in+the+Rye&author=J.+D.+Salinger&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a3cf0de4ee985cff.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Crime+and+Punishment&author=Fyodor+Dostoyevsky&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7d1fb75b5b793629.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Dracula&author=Bram+Stoker&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "67da927574e2d971.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Dune&author=Frank+Herbert&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8f992d160f5e6a33.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Frankenstein&author=Mary+Shelley&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7027c460555bd5e3.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Jane+Eyre&author=Charlotte+Bront%C3%AB&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "0580091c844ce77b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Kafka+on+the+Shore&author=Haruki+Murakami&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "51ce839d0b80df0a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Lord+of+the+Rings&author=J.+R.+R.+Tolkien&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "bca6609d8a4ee85d.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Middlemarch&author=George+Eliot&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a8b7c1dcaa841823.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Neuromancer&author=William+Gibson&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "8dcd65a2920e8b03.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Norwegian+Wood&author=Haruki+Murakami&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "902054e1264661d1.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Pride+and+Prejudice&author=Jane+Austen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7498eb91ac579825.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Slaughterhouse-Five&author=Kurt+Vonnegut&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "a93cb126bc909fa9.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=The+Brothers+Karamazov&author=Fyodor+Dostoyevsky&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "110e36945333d1a5.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=The+Road&author=Cormac+McCarthy&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f4e577667dbf3ebc.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=The+Silmarillion&author=J.+R.+R.+Tolkien&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "9978d7cb15afb17c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=To+Kill+a+Mockingbird&author=Harper+Lee&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "323e56c4b7a37a4b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=Wuthering+Heights&author=Emily+Bront%C3%AB&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "7c59d84a4dedcbf0.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=emma&author=jane+austen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "439561452365094a.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=persuasion&author=austen&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "b9c5d220adc4e3ee.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=solaris&author=stanislaw+lem&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "286bcca0ca1412bd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=the+bell+jar&author=sylvia+plath&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "ef269c9afb10506e.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=the+road&author=mccarthy&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "cc8381077d587267.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=the+stand&author=stephen+king&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "1589432dd4b54658.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/search.json?title=the+trial&author=franz+kafka&limit=20&fields=key%2Ctitle%2Csubtitle%2Cauthor_name%2Clanguage%2Cfirst_sentence%2Cfirst_publish_year%2Ccover_edition_key%2Cnumber_of_pages_median%2Cedition_count%2Cseries_key%2Cseries_name%2Cseries_position%2Ceditions%2Ceditions.key%2Ceditions.title%2Ceditions.subtitle%2Ceditions.isbn%2Ceditions.language%2Ceditions.publisher": {
+      "file": "f853bca8e2097acd.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL16239762W.json": {
+      "file": "b31f66d1a27b7be7.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL17075811W.json": {
+      "file": "9cfdef21c00fef3b.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL17091839W.json": {
+      "file": "354f3086637d2b77.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL18012166W.json": {
+      "file": "0f982a5fe42e658f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL18139176W.json": {
+      "file": "8caf4414c1de5a5c.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL8479867W.json": {
+      "file": "fd4b1f5777769ac5.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    },
+    "https://openlibrary.org/works/OL893414W.json": {
+      "file": "60ff25d28857232f.json",
+      "status": 200,
+      "content_type": "application/json",
+      "recorded": "2026-11-12"
+    }
+  }
+}

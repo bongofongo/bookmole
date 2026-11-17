@@ -1,0 +1,100 @@
+{
+  "appended": {
+    "book": {
+      "books": [
+        {
+          "bookmarks": 1,
+          "highlights": 3,
+          "lone_notes": 1,
+          "notes": [
+            {
+              "highlight": "The house had kept its own counsel for a hundred years.",
+              "note": "first thought, third draft"
+            }
+          ],
+          "rows": 4,
+          "title_line": "Kindred (Butler, Octavia E.)"
+        },
+        {
+          "bookmarks": 0,
+          "highlights": 3,
+          "lone_notes": 0,
+          "notes": [
+            {
+              "highlight": "<You have reached the clipping limit for this item>",
+              "note": "limit, of course"
+            }
+          ],
+          "rows": 3,
+          "title_line": "Gödel, Escher, Bach: an Eternal Golden Braid (20th Anniversary Edition) (Hofstadter, Douglas R.)"
+        },
+        {
+          "bookmarks": 0,
+          "highlights": 3,
+          "lone_notes": 0,
+          "notes": [],
+          "rows": 3,
+          "title_line": "Middlemarch (Eliot, George)"
+        },
+        {
+          "bookmarks": 0,
+          "highlights": 2,
+          "lone_notes": 0,
+          "notes": [],
+          "rows": 2,
+          "title_line": "An Unowned Book (Nobody, A.)"
+        }
+      ],
+      "unparsed": 2
+    },
+    "inserted": 2,
+    "updated": 1
+  },
+  "base": {
+    "books": [
+      {
+        "bookmarks": 1,
+        "highlights": 3,
+        "lone_notes": 1,
+        "notes": [
+          {
+            "highlight": "The house had kept its own counsel for a hundred years.",
+            "note": "first thought, revised"
+          }
+        ],
+        "rows": 4,
+        "title_line": "Kindred (Butler, Octavia E.)"
+      },
+      {
+        "bookmarks": 0,
+        "highlights": 2,
+        "lone_notes": 0,
+        "notes": [
+          {
+            "highlight": "<You have reached the clipping limit for this item>",
+            "note": "limit, of course"
+          }
+        ],
+        "rows": 2,
+        "title_line": "Gödel, Escher, Bach: an Eternal Golden Braid (20th Anniversary Edition) (Hofstadter, Douglas R.)"
+      },
+      {
+        "bookmarks": 0,
+        "highlights": 2,
+        "lone_notes": 0,
+        "notes": [],
+        "rows": 2,
+        "title_line": "Middlemarch (Eliot, George)"
+      },
+      {
+        "bookmarks": 0,
+        "highlights": 2,
+        "lone_notes": 0,
+        "notes": [],
+        "rows": 2,
+        "title_line": "An Unowned Book (Nobody, A.)"
+      }
+    ],
+    "unparsed": 2
+  }
+}

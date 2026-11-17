@@ -1,0 +1,50 @@
+# cargo-nextest configuration.
+
+[profile.default]
+# The longest legitimate test on this machine is ~21s (the reading_events
+# proptests, which each open a fresh in-memory SQLite per case). A hung test
+# must not hang the whole run — 30s with 4 strikes kills it well past that
+# margin but long before someone starts wondering whether CI is stuck.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[test-groups]
+# calibredb refuses to open a library another calibredb has open ("Another
+# calibre program such as calibre-server ... is running", exit 1). The tests
+# that drive the real calibredb against corpus/generated/calibre guard that
+# with an in-process mutex, which nextest's one-process-per-test defeats — so
+# they run one at a time here, across both binaries. Measured 2026-10-20:
+# three parallel processes, two of them failed at the import.
+calibredb = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(calibre_corpus) | binary(recipes)'
+test-group = 'calibredb'
+
+# The first recipe test to run builds the library through the real binary —
+# the whole corpus, imported twice — and the rest read what it built
+# (`crates/cli/tests/recipes.rs`, the on-disk cache). On CI's ubuntu runner
+# that build took 100 s on 2026-11-09, inside 120 s only by luck; a hung build
+# is still killed, a slow one is not.
+[[profile.default.overrides]]
+filter = 'binary(recipes)'
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The search benchmark replays every recorded provider answer and loads the
+# offline title index in a debug build: ~70 s for its three tests on a laptop,
+# past 120 s on CI's ubuntu runner (it timed out there on 2026-11-13). Same
+# treatment as the recipes: a slow run finishes, a hung one is still killed.
+[[profile.default.overrides]]
+filter = 'binary(search_bench)'
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci]
+# Keep going past the first failure — the point of a CI run is the whole
+# picture in one pass, not the first red test.
+fail-fast = false
+# Every run gets its own attempt. A test that only passes on a retry is a
+# flaky test, and retries would hide that rather than report it.
+retries = 0
+# ci.yml does not currently consume this, but it costs nothing to emit and
+# saves a second trip through the workflow the day something wants to publish
+# a test-results annotation.
+junit = { path = "junit.xml" }

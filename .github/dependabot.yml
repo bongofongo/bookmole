@@ -1,0 +1,22 @@
+# Every action is pinned to a commit hash (the repository requires it), so a
+# pin only moves when this opens a pull request for it. Each pin's comment is
+# its exact version (`# v5.1.0`), which is the form Dependabot rewrites along
+# with the hash. Actions only: crates stay hand-updated, because the lockfile
+# is `--locked` everywhere and a new crate needs `make deny` first.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Branches named for toolchains, no version tags: Dependabot reads the
+      # `stable` and `nightly` pins as one action and moves both to one hash.
+      # It is pinned at master with an explicit `toolchain:` instead.
+      - dependency-name: dtolnay/rust-toolchain
+    groups:
+      # Minor and patch moves arrive together; a major version is a pull
+      # request of its own, read before it is merged.
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

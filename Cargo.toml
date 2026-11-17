@@ -1,0 +1,150 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/engine",
+    "crates/api",
+    "crates/daemon",
+    "crates/cli",
+    "crates/tui",
+    "crates/book3d",
+    "crates/corpus",
+    # The EPUB reader, a standalone library the engine adapts (it replaced the
+    # GPL-3.0 `epub` crate). Knows nothing of bookmole.
+    "crates/epubkit",
+]
+# cargo-fuzz needs nightly and a sanitizer flag; leaving it in would break
+# `cargo build --workspace` on stable. (fuzz/Cargo.toml also carries its own
+# empty [workspace] — belt and braces.)
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Edition 2024 needs 1.85; the let-chains in `lib.rs` need 1.88. Declaring it
+# buys a clear cargo error instead of a syntax error on an older toolchain.
+rust-version = "1.88"
+# Not going to crates.io. Also what lets cargo-deny's `private.ignore` skip the
+# "unlicensed crate" check on the workspace's own crates.
+publish = false
+
+# A release backtrace is bare addresses without this, which makes the crash log
+# worthless.
+#
+# This used to say it cost "a few MB of binary and nothing else". Measured when
+# the release pipeline went in, the line tables are 90 MB of the TUI's 112 MB —
+# free on this machine, and not free over a network, which is what `dist` below
+# is for.
+[profile.release]
+debug = "line-tables-only"
+strip = "none"
+
+# What .github/workflows/release.yml ships, and the only difference from
+# `release` is what the download costs: 22 MB against 112, ~15 MB of archive
+# against 53.
+#
+# `strip = "debuginfo"` and NOT `"symbols"`. The symbol table is the cheap half
+# — dropping the line tables is where the 90 MB goes — and it is what keeps a
+# crash log naming `bookmole_tui::app::draw` instead of `0x55f3a1c04e20`.
+# A frame without a line number still says which function; a bare address says
+# nothing, which is exactly what the profile above exists to prevent.
+#
+# Local builds are untouched: `cargo build --release` still carries everything,
+# so a crash on the dev machine is diagnosed with the file and line it has
+# always had.
+[profile.dist]
+inherits = "release"
+strip = "debuginfo"
+
+[workspace.dependencies]
+# `default-features = false` is load-bearing: the defaults pull native-tls ->
+# openssl-sys, which a CI runner then needs libssl-dev for. sqlx already speaks
+# rustls, so this drops a C dependency rather than adding one. Note rustls-tls
+# bundles webpki-roots and ignores the system trust store — swap to
+# rustls-tls-native-roots if a TLS-intercepting proxy ever gets in the way.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "http2",
+    "charset",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = { version = "2.5.7", features = ["serde"] }
+# The PDF metadata reader, and the licence gate was run before a line was
+# written against it. **MIT**, and its whole transitive tree is
+# permissive, so no new `deny.toml` exception. That mattered more here than
+# anywhere else: when it arrived the engine still linked the GPL-3.0 `epub`
+# crate (since replaced by `crates/epubkit`), and a second copyleft reader would
+# have made that situation worse rather than merely unchanged.
+# Evaluated beside `pdf` 0.10 (pdf-rs, also MIT), which lost on weight — it
+# drags in `jpeg-decoder`, `fax`, `snafu`, the unmaintained `md5` 0.7 and a
+# second `syn 1.0`, all to answer two fields.
+#
+# Pinned EXACTLY, not caret, and not out of superstition: this crate is read
+# for *metadata*, and metadata is the surface the old `epub` crate broke in a
+# *patch* release (2.1.5 changed its metadata map's value type, which a caret
+# constraint happily accepts). That reader has since been replaced by
+# `crates/epubkit`; the lesson stands, since a wrong page count is a false
+# denominator nothing downstream can tell from a right one.
+#
+# `default-features = false` drops chrono, jiff, rayon and `time` — date
+# parsing and parallelism, for a page count and a title. What is left still
+# includes an AES/RustCrypto stack (PDF encryption is not feature-gated
+# upstream), which is where the new duplicate-version warnings come from: lopdf
+# is on the `digest` 0.11 line and the engine is on 0.10.
+lopdf = { version = "=0.44.0", default-features = false }
+tokio = { version = "1" }
+sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls", "json", "time"] }
+anyhow = "1.0.100"
+time = { version = "0.3.44", features = ["macros", "formatting", "parsing"] }
+futures = "0.3.31"
+thiserror = "2"
+# 0.1.92 is the floor: earlier releases emit a bare `#[must_use]` that clippy
+# 1.99's `double_must_use` flags on every `#[async_trait]` trait.
+async-trait = "0.1.92"
+strsim = "0.11"
+mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
+sha2 = "0.10"
+# KOReader's `util.partialMD5` is MD5 and nothing else, so agreeing with the
+# device means MD5. RustCrypto, sibling of `sha2` above, same `digest` traits —
+# MIT OR Apache-2.0, already inside deny.toml's allow list.
+md-5 = "0.10"
+regex = "1"
+# Goodreads' interface is a CSV file, both directions (their API died in
+# December 2020). Quoting, embedded newlines and CRLF are exactly the parts a
+# hand-rolled splitter gets wrong on the first real export. Unlicense OR MIT.
+csv = "1"
+# The engine emits only — it must never install a subscriber, or it would be
+# deciding I/O policy for its frontends. tracing-subscriber lives in cli/tui.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
+tracing-appender = "0.2"
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+rpassword = "7"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# Already in the lock tree via `image`; promoted to direct deps for the kitty
+# graphics path (zlib-compressed, base64-armoured image payloads).
+flate2 = "1.1"
+base64 = "0.22"
+libc = "0.2"
+# Noticing a reader arriving, rather than being told about it. Only the thin
+# adapter in `watch.rs` touches it — the debounce it feeds is driven by a
+# channel, so the part with the logic in it is testable without hardware.
+# CC0-1.0, which is a deliberate entry in deny.toml's allow list.
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
+
+# RUSTSEC-2026-0459 (CVE-2026-119375): SQLite before 3.54.0 can return
+# uninitialised page-cache memory when a database is opened beside a `-wal`
+# whose page size differs — and `ko_statistics.rs` opens exactly that pair, off
+# a reader's volume. The fix is `libsqlite3-sys` 0.39 (SQLite 3.54), and no
+# `sqlx` release can take it: 0.8.6 pins `=0.30.1`-compatible and 0.9.0 caps
+# `<0.38`. So `vendor/libsqlite3-sys` is 0.30.1's own crate with its bundled
+# amalgamation replaced by SQLite 3.54.1 (sha3-256 verified against
+# sqlite.org); `vendor/libsqlite3-sys/VENDORED.md` says how to refresh it and
+# when to delete it. Remove this patch the day `sqlx` accepts 0.39.
+[patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }

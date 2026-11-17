@@ -1,0 +1,2455 @@
+{
+  "$comment": [
+    "Semantic lock for the calibre layer (see crates/corpus/src/calibre_lib.rs).",
+    "calibredb writes metadata.db, minting uuids, timestamps and last_modified that",
+    "no seed controls, and it renders pubdate through the local timezone. So this",
+    "lock records what the engine must SEE, never bytes: per row the calibre id, title,",
+    "authors as calibredb reports them, format extensions, tags, series, series_index,",
+    "cover presence, isbn, identifier keys and the publication year. It is a function",
+    "of (seed, generator_version, corpus/manifest.json); the database bytes are not.",
+    "`salted` names the hostile.json case a row carries; `calibre_reported` is what",
+    "calibre made of it and `calibre_rejected` is calibredb's own refusal, if any.",
+    "Never resolve a change here by regenerating it blind: read the diff."
+  ],
+  "counts": {
+    "format_azw3": 1,
+    "format_epub": 49,
+    "format_mobi": 1,
+    "format_pdf": 1,
+    "formatless": 71,
+    "in_series": 16,
+    "rows": 120,
+    "salted": 5,
+    "undated": 35,
+    "with_cover": 49,
+    "with_isbn": 47
+  },
+  "generator_version": 2,
+  "rows": [
+    {
+      "authors": "Lewis Carroll",
+      "calibre_id": 1,
+      "formats": [
+        "epub",
+        "mobi"
+      ],
+      "gutenberg": 11,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Philosophy",
+        "editor's pick",
+        "gift"
+      ],
+      "title": "Alice's Adventures in Wonderland"
+    },
+    {
+      "authors": "Lewis Carroll",
+      "calibre_id": 2,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 12,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1851,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "Through the Looking-Glass"
+    },
+    {
+      "authors": "L. Frank Baum",
+      "calibre_id": 3,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 55,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9787427540289",
+      "pubdate_year": 1818,
+      "publisher": "NYRB Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "editor's pick"
+      ],
+      "title": "The Wonderful Wizard of Oz"
+    },
+    {
+      "authors": "Mark Twain",
+      "calibre_id": 4,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 74,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1844,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction"
+      ],
+      "title": "The Adventures of Tom Sawyer"
+    },
+    {
+      "authors": "Mark Twain",
+      "calibre_id": 5,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 76,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1902,
+      "publisher": "New Directions",
+      "series": "Northern Lights Cycle",
+      "series_index": 3.0,
+      "tags": [
+        "gift"
+      ],
+      "title": "Adventures of Huckleberry Finn"
+    },
+    {
+      "authors": "Mary Wollstonecraft Shelley",
+      "calibre_id": 6,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 84,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1824,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "history",
+        "to-read"
+      ],
+      "title": "Frankenstein; Or, The Modern Prometheus"
+    },
+    {
+      "authors": "Charles Dickens",
+      "calibre_id": 7,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 98,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1853,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "Fiction",
+        "Philosophy"
+      ],
+      "title": "A Tale of Two Cities"
+    },
+    {
+      "authors": "William Shakespeare",
+      "calibre_id": 8,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 100,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9784395288830",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "2024",
+        "book club"
+      ],
+      "title": "The Complete Works of William Shakespeare"
+    },
+    {
+      "authors": "Oscar Wilde",
+      "calibre_id": 9,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 174,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9785107779479",
+      "pubdate_year": 1879,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift"
+      ],
+      "title": "The Picture of Dorian Gray"
+    },
+    {
+      "authors": "Joseph Conrad",
+      "calibre_id": 10,
+      "formats": [
+        "azw3",
+        "epub"
+      ],
+      "gutenberg": 219,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1910,
+      "publisher": "Vintage",
+      "series": "The Harbour Quartet",
+      "series_index": 5.0,
+      "tags": [],
+      "title": "Heart of Darkness"
+    },
+    {
+      "authors": "Rudyard Kipling",
+      "calibre_id": 11,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 236,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1897,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "Fiction",
+        "to-read"
+      ],
+      "title": "The Jungle Book"
+    },
+    {
+      "authors": "Bram Stoker",
+      "calibre_id": 12,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 345,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9787272279990",
+      "pubdate_year": 1835,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "editor's pick",
+        "gift"
+      ],
+      "title": "Dracula"
+    },
+    {
+      "authors": "Oscar Wilde",
+      "calibre_id": 13,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 844,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1886,
+      "publisher": null,
+      "series": "Northern Lights Cycle",
+      "series_index": 2.5,
+      "tags": [
+        "2024",
+        "book club"
+      ],
+      "title": "The Importance of Being Earnest: A Trivial Comedy for Serious People"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "calibre_id": 14,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1065,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9784547606369",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics",
+        "science fiction"
+      ],
+      "title": "The Raven"
+    },
+    {
+      "authors": "Jonathan Swift",
+      "calibre_id": 15,
+      "formats": [
+        "epub",
+        "pdf"
+      ],
+      "gutenberg": 1080,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "gift"
+      ],
+      "title": "A Modest Proposal"
+    },
+    {
+      "authors": "Charlotte Brontë",
+      "calibre_id": 16,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1260,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1835,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Philosophy",
+        "editor's pick",
+        "history"
+      ],
+      "title": "Jane Eyre: An Autobiography"
+    },
+    {
+      "authors": "Walt Whitman",
+      "calibre_id": 17,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1322,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9784169805829",
+      "pubdate_year": 1864,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "classics",
+        "history"
+      ],
+      "title": "Leaves of Grass"
+    },
+    {
+      "authors": "Jane Austen",
+      "calibre_id": 18,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1342,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9785435555929",
+      "pubdate_year": 1924,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics"
+      ],
+      "title": "Pride and Prejudice"
+    },
+    {
+      "authors": "Alexander Hamilton & John Jay & James Madison",
+      "calibre_id": 19,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1404,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9783513209689",
+      "pubdate_year": 1832,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Federalist Papers"
+    },
+    {
+      "authors": "William Shakespeare",
+      "calibre_id": 20,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1513,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9784342642340",
+      "pubdate_year": 1840,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "Romeo and Juliet"
+    },
+    {
+      "authors": "Confucius",
+      "calibre_id": 21,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1656,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1840,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "論語"
+    },
+    {
+      "authors": "Arthur Conan Doyle",
+      "calibre_id": 22,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1661,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1884,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "signed copy"
+      ],
+      "title": "The Adventures of Sherlock Holmes"
+    },
+    {
+      "authors": "Charlotte Perkins Gilman",
+      "calibre_id": 23,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 1952,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1861,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Yellow Wallpaper"
+    },
+    {
+      "authors": "Miguel de Cervantes Saavedra",
+      "calibre_id": 24,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2000,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1911,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "2024",
+        "book club"
+      ],
+      "title": "Don Quijote"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "calibre_id": 25,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2147,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1814,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "Philosophy",
+        "classics"
+      ],
+      "title": "The Works of Edgar Allan Poe — Volume 1"
+    },
+    {
+      "authors": "Edgar Allan Poe",
+      "calibre_id": 26,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2148,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "editor's pick"
+      ],
+      "title": "The Works of Edgar Allan Poe — Volume 2"
+    },
+    {
+      "authors": "Johann Wolfgang von Goethe",
+      "calibre_id": 27,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2229,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9785267627221",
+      "pubdate_year": 1815,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "2024",
+        "book club"
+      ],
+      "title": "Faust: Der Tragödie erster Teil"
+    },
+    {
+      "authors": "Fyodor Dostoyevsky",
+      "calibre_id": 28,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2554,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "Crime and Punishment"
+    },
+    {
+      "authors": "Jacob Grimm & Wilhelm Grimm",
+      "calibre_id": 29,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2591,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1848,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "science fiction"
+      ],
+      "title": "Grimms' Fairy Tales"
+    },
+    {
+      "authors": "Leo Tolstoy",
+      "calibre_id": 30,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2600,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn",
+        "uri"
+      ],
+      "isbn": "9782038464085",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "War and Peace"
+    },
+    {
+      "authors": "Herman Melville",
+      "calibre_id": 31,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 2701,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1844,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift"
+      ],
+      "title": "Moby Dick; Or, The Whale"
+    },
+    {
+      "authors": "James Joyce",
+      "calibre_id": 32,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 4300,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1879,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "classics"
+      ],
+      "title": "Ulysses"
+    },
+    {
+      "authors": "Mrs. Beeton",
+      "calibre_id": 33,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 10136,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1870,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Book of Household Management"
+    },
+    {
+      "authors": "Antoine de Saint-Exupéry",
+      "calibre_id": 34,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 13951,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "classics",
+        "signed copy"
+      ],
+      "title": "Le Petit Prince"
+    },
+    {
+      "authors": "Gustave Flaubert",
+      "calibre_id": 35,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 14155,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "gift",
+        "science fiction"
+      ],
+      "title": "Madame Bovary"
+    },
+    {
+      "authors": "Unknown",
+      "calibre_id": 36,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 16328,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9787330182279",
+      "pubdate_year": 1904,
+      "publisher": "Vintage",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "Beowulf: An Anglo-Saxon Epic Poem"
+    },
+    {
+      "authors": "Victor Hugo",
+      "calibre_id": 37,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 17489,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1833,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "Les Misérables"
+    },
+    {
+      "authors": "Heinrich Hoffmann",
+      "calibre_id": 38,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 21000,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1854,
+      "publisher": "Oxford World's Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "Der Struwwelpeter"
+    },
+    {
+      "authors": "Franz Kafka",
+      "calibre_id": 39,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 22367,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9788155605790",
+      "pubdate_year": 1843,
+      "publisher": "Faber & Faber",
+      "series": "Northern Lights Cycle",
+      "series_index": 1.5,
+      "tags": [
+        "Poetry"
+      ],
+      "title": "Die Verwandlung"
+    },
+    {
+      "authors": "夏目 漱石",
+      "calibre_id": 40,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 24039,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9787957284059",
+      "pubdate_year": 1853,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "to-read"
+      ],
+      "title": "こころ"
+    },
+    {
+      "authors": "Nathaniel Hawthorne",
+      "calibre_id": 41,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 25344,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1876,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "editor's pick"
+      ],
+      "title": "The Scarlet Letter"
+    },
+    {
+      "authors": "Fyodor Dostoyevsky",
+      "calibre_id": 42,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 28054,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9781895069815",
+      "pubdate_year": 101,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "science fiction"
+      ],
+      "title": "Братья Карамазовы"
+    },
+    {
+      "authors": "Lewis Carroll",
+      "calibre_id": 43,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 28885,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "Fiction",
+        "Philosophy"
+      ],
+      "title": "Alice's Adventures in Wonderland"
+    },
+    {
+      "authors": "Giovanni Boccaccio",
+      "calibre_id": 44,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 30235,
+      "has_cover": true,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9789601263533",
+      "pubdate_year": 1848,
+      "publisher": null,
+      "series": "Northern Lights Cycle",
+      "series_index": 1.0,
+      "tags": [
+        "editor's pick",
+        "history",
+        "to-read"
+      ],
+      "title": "Il Decamerone"
+    },
+    {
+      "authors": "Aeschylus",
+      "calibre_id": 45,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 39536,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1891,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "Poetry",
+        "history"
+      ],
+      "title": "Αγαμέμνων"
+    },
+    {
+      "authors": "Xenophon",
+      "calibre_id": 46,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 39764,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9787166110538",
+      "pubdate_year": 101,
+      "publisher": "Picador",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "editor's pick"
+      ],
+      "title": "Κύρου Ανάβασις Τόμος 1"
+    },
+    {
+      "authors": "Xenophon",
+      "calibre_id": 47,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 40061,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1816,
+      "publisher": null,
+      "series": "The Harbour Quartet",
+      "series_index": 3.0,
+      "tags": [
+        "history"
+      ],
+      "title": "Κύρου Ανάβασις Τόμος 2"
+    },
+    {
+      "authors": "Jane Austen",
+      "calibre_id": 48,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 42671,
+      "has_cover": true,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift"
+      ],
+      "title": "Pride and Prejudice"
+    },
+    {
+      "authors": "Gautier of Metz",
+      "calibre_id": 49,
+      "formats": [
+        "epub"
+      ],
+      "gutenberg": 61024,
+      "has_cover": true,
+      "identifier_keys": [
+        "uri"
+      ],
+      "isbn": "",
+      "pubdate_year": 1864,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "צל העולם"
+    },
+    {
+      "authors": "Fyodor Dostoyevsky",
+      "calibre_id": 50,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9780140449136",
+      "pubdate_year": 2003,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics"
+      ],
+      "title": "Crime and Punishment",
+      "why": "second edition of Gutenberg 2554 — duplicate detection"
+    },
+    {
+      "authors": "Kwame Whitlock",
+      "calibre_id": 51,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1959,
+      "publisher": "Granta",
+      "salted": {
+        "calibre_rejected": null,
+        "calibre_reported": [
+          "Robert'); DROP TABLE books;--"
+        ],
+        "case": "sql-quote-drop",
+        "expect": "verbatim",
+        "field": "tag",
+        "input": "Robert'); DROP TABLE books;--",
+        "normal": null
+      },
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Robert'); DROP TABLE books;--"
+      ],
+      "title": "A Weather in the Hebrides"
+    },
+    {
+      "authors": "Samuel Brennan",
+      "calibre_id": 52,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1970,
+      "publisher": null,
+      "salted": {
+        "calibre_rejected": null,
+        "calibre_reported": 1970,
+        "case": "date-epoch",
+        "expect": "no-crash",
+        "field": "date",
+        "input": "1970-01-01",
+        "normal": null
+      },
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics",
+        "science fiction"
+      ],
+      "title": "A Garden in Odessa"
+    },
+    {
+      "authors": "Mateo Hale",
+      "calibre_id": 53,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9789291641185",
+      "pubdate_year": 1953,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "The Northern Harbour"
+    },
+    {
+      "authors": "Mateo Brennan",
+      "calibre_id": 54,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9787452437240",
+      "pubdate_year": 2011,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics"
+      ],
+      "title": "The Drowned Archive"
+    },
+    {
+      "authors": "Pieter Brennan",
+      "calibre_id": 55,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Picador",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Salt Bridge"
+    },
+    {
+      "authors": "Helen Brennan",
+      "calibre_id": 56,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1958,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Paper Kitchen"
+    },
+    {
+      "authors": "Mateo Achebe",
+      "calibre_id": 57,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9784174430252",
+      "pubdate_year": 1980,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "The Salt Kitchen"
+    },
+    {
+      "authors": "Elena Castellanos & Rosalind Varga",
+      "calibre_id": 58,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift",
+        "science fiction"
+      ],
+      "title": "A Garden in Kyoto"
+    },
+    {
+      "authors": "Clara Rasmussen",
+      "calibre_id": 59,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "2024",
+        "Fiction",
+        "book club"
+      ],
+      "title": "The Small Harbour"
+    },
+    {
+      "authors": "Ada Castellanos",
+      "calibre_id": 60,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9784509049883",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "classics",
+        "history"
+      ],
+      "title": "A Clockmaker in Patagonia"
+    },
+    {
+      "authors": "Margit Castellanos & Mateo Moreau",
+      "calibre_id": 61,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1985,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "classics",
+        "gift"
+      ],
+      "title": "An Atlas in the Fens"
+    },
+    {
+      "authors": "Yusuf Quill",
+      "calibre_id": 62,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift"
+      ],
+      "title": "The Hidden Ledger"
+    },
+    {
+      "authors": "Elena Fairbairn",
+      "calibre_id": 63,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 2003,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "Poetry"
+      ],
+      "title": "The Paper Clockmaker"
+    },
+    {
+      "authors": "Ada Abernathy",
+      "calibre_id": 64,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9783868923650",
+      "pubdate_year": 1997,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "Fiction"
+      ],
+      "title": "The Borrowed Archive"
+    },
+    {
+      "authors": "Elena Novak",
+      "calibre_id": 65,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1998,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Glass Atlas"
+    },
+    {
+      "authors": "Rosalind Fairbairn",
+      "calibre_id": 66,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2017,
+      "publisher": null,
+      "salted": {
+        "calibre_rejected": null,
+        "calibre_reported": "the great gatsby",
+        "case": "duplicate-by-case",
+        "expect": "no-crash",
+        "field": "title",
+        "input": "the great gatsby",
+        "normal": null
+      },
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "2024",
+        "Philosophy",
+        "book club"
+      ],
+      "title": "the great gatsby"
+    },
+    {
+      "authors": "Clara Whitlock & Ines Sato",
+      "calibre_id": 67,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1996,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "to-read"
+      ],
+      "title": "The Glass Clockmaker"
+    },
+    {
+      "authors": "Clara Abernathy",
+      "calibre_id": 68,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9780101379274",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction"
+      ],
+      "title": "The Northern Atlas"
+    },
+    {
+      "authors": "Mateo Abernathy",
+      "calibre_id": 69,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9786680750954",
+      "pubdate_year": 1977,
+      "publisher": "NYRB Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "classics",
+        "science fiction"
+      ],
+      "title": "The Lost Lantern"
+    },
+    {
+      "authors": "Mateo Lindqvist",
+      "calibre_id": 70,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2017,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Silver Inheritance"
+    },
+    {
+      "authors": "Ingrid Sato",
+      "calibre_id": 71,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9789082899344",
+      "pubdate_year": 1973,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "A Harbour in the Fens"
+    },
+    {
+      "authors": "Margit Hale",
+      "calibre_id": 72,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9786437000028",
+      "pubdate_year": 2006,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "history"
+      ],
+      "title": "A Lighthouse in Lagos"
+    },
+    {
+      "authors": "Ada Brennan",
+      "calibre_id": 73,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1993,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "editor's pick",
+        "gift"
+      ],
+      "title": "The Glass Orchard"
+    },
+    {
+      "authors": "Clara Fairbairn",
+      "calibre_id": 74,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9784408852034",
+      "pubdate_year": 2009,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "Poetry"
+      ],
+      "title": "The Quiet Library"
+    },
+    {
+      "authors": "Rafael Lindqvist",
+      "calibre_id": 75,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9786936127882",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "A Library in Patagonia"
+    },
+    {
+      "authors": "Samuel Hale",
+      "calibre_id": 76,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9788364668951",
+      "pubdate_year": 1983,
+      "publisher": "NYRB Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "signed copy"
+      ],
+      "title": "A River in Trieste"
+    },
+    {
+      "authors": "Noor Whitlock",
+      "calibre_id": 77,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9781230457185",
+      "pubdate_year": 1977,
+      "publisher": null,
+      "series": "Northern Lights Cycle",
+      "series_index": 5.0,
+      "tags": [
+        "Fiction",
+        "Poetry"
+      ],
+      "title": "A Bridge in Patagonia"
+    },
+    {
+      "authors": "Helen Varga",
+      "calibre_id": 78,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1984,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "2024",
+        "Philosophy",
+        "book club",
+        "history"
+      ],
+      "title": "The Silver Harbour"
+    },
+    {
+      "authors": "Yusuf Achebe",
+      "calibre_id": 79,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1955,
+      "publisher": "Oxford World's Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "editor's pick",
+        "gift",
+        "signed copy"
+      ],
+      "title": "The Borrowed Weather"
+    },
+    {
+      "authors": "Kwame Sato",
+      "calibre_id": 80,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1957,
+      "publisher": null,
+      "series": "Northern Lights Cycle",
+      "series_index": 2.0,
+      "tags": [
+        "\"favourite\"",
+        "classics"
+      ],
+      "title": "The Patient River"
+    },
+    {
+      "authors": "Ada Okafor & Samuel Rasmussen",
+      "calibre_id": 81,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1951,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "Poetry"
+      ],
+      "title": "The Patient Atlas"
+    },
+    {
+      "authors": "Mateo Okafor",
+      "calibre_id": 82,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1985,
+      "publisher": "Penguin Classics",
+      "series": "Northern Lights Cycle",
+      "series_index": 3.5,
+      "tags": [
+        "editor's pick",
+        "gift",
+        "signed copy"
+      ],
+      "title": "A Lighthouse in Patagonia"
+    },
+    {
+      "authors": "Tomas Varga",
+      "calibre_id": 83,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9789690862211",
+      "pubdate_year": 2014,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry",
+        "science fiction",
+        "signed copy"
+      ],
+      "title": "The Winter Weather"
+    },
+    {
+      "authors": "Pieter Novak",
+      "calibre_id": 84,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 2022,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Iron Archive"
+    },
+    {
+      "authors": "Helen Novak",
+      "calibre_id": 85,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9785052322614",
+      "pubdate_year": 1983,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift",
+        "science fiction"
+      ],
+      "title": "A Library in Lisbon"
+    },
+    {
+      "authors": "Samuel Abernathy & Pieter Okafor",
+      "calibre_id": 86,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1982,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Poetry"
+      ],
+      "title": "A Weather in the Fens"
+    },
+    {
+      "authors": "Ingrid Moreau",
+      "calibre_id": 87,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction"
+      ],
+      "title": "The Iron Orchard"
+    },
+    {
+      "authors": "Yusuf Sato",
+      "calibre_id": 88,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2007,
+      "publisher": "Vintage",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "editor's pick",
+        "science fiction"
+      ],
+      "title": "The Distant Orchard"
+    },
+    {
+      "authors": "Ada Sato",
+      "calibre_id": 89,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1965,
+      "publisher": "Vintage",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics",
+        "signed copy"
+      ],
+      "title": "The Small Ledger"
+    },
+    {
+      "authors": "Wаr & Peаce",
+      "calibre_id": 90,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1966,
+      "publisher": null,
+      "salted": {
+        "calibre_rejected": null,
+        "calibre_reported": "Wаr & Peаce",
+        "case": "homoglyph-cyrillic",
+        "expect": "verbatim",
+        "field": "author",
+        "input": "Wаr and Peаce",
+        "normal": null
+      },
+      "series": "Northern Lights Cycle",
+      "series_index": 4.5,
+      "tags": [
+        "Fiction"
+      ],
+      "title": "The Quiet River"
+    },
+    {
+      "authors": "Tomas Novak & Tomas Whitlock",
+      "calibre_id": 91,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9782481379752",
+      "pubdate_year": 1990,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\""
+      ],
+      "title": "The Northern Lantern"
+    },
+    {
+      "authors": "Pieter Rasmussen",
+      "calibre_id": 92,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Winter Library"
+    },
+    {
+      "authors": "Kwame Abernathy",
+      "calibre_id": 93,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9786481931620",
+      "pubdate_year": 101,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "science fiction"
+      ],
+      "title": "The Drowned Clockmaker"
+    },
+    {
+      "authors": "Noor Fairbairn & Rosalind Varga",
+      "calibre_id": 94,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9781397545299",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "2024",
+        "Fiction",
+        "book club",
+        "science fiction"
+      ],
+      "title": "The Patient Lantern"
+    },
+    {
+      "authors": "Rafael Achebe",
+      "calibre_id": 95,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9789104255363",
+      "pubdate_year": 1971,
+      "publisher": "Picador",
+      "series": "Northern Lights Cycle",
+      "series_index": 2.0,
+      "tags": [
+        "science fiction"
+      ],
+      "title": "A Ledger in the Fens"
+    },
+    {
+      "authors": "Clara Castellanos",
+      "calibre_id": 96,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1995,
+      "publisher": "Faber & Faber",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history",
+        "to-read"
+      ],
+      "title": "The Drowned Lighthouse"
+    },
+    {
+      "authors": "Samuel Rasmussen",
+      "calibre_id": 97,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9780299885410",
+      "pubdate_year": 2018,
+      "publisher": null,
+      "series": "Collected Works",
+      "series_index": 3.0,
+      "tags": [
+        "classics"
+      ],
+      "title": "A Bridge in Lisbon"
+    },
+    {
+      "authors": "Ada Sato",
+      "calibre_id": 98,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9782517643826",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "A Lighthouse in Trieste"
+    },
+    {
+      "authors": "Noor Okafor",
+      "calibre_id": 99,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "editor's pick"
+      ],
+      "title": "The Paper Inheritance"
+    },
+    {
+      "authors": "Mateo Dunmore",
+      "calibre_id": 100,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1999,
+      "publisher": "Penguin Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "signed copy"
+      ],
+      "title": "An Orchard in Lisbon"
+    },
+    {
+      "authors": "Kwame Quill & Noor Fairbairn",
+      "calibre_id": 101,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9780184011863",
+      "pubdate_year": 101,
+      "publisher": "NYRB Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "The Borrowed Orchard"
+    },
+    {
+      "authors": "Mateo Novak",
+      "calibre_id": 102,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": "Granta",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics"
+      ],
+      "title": "An Island in Trieste"
+    },
+    {
+      "authors": "Rafael Achebe",
+      "calibre_id": 103,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9780306406158",
+      "pubdate_year": 1996,
+      "publisher": null,
+      "salted": {
+        "calibre_rejected": null,
+        "calibre_reported": "9780306406158",
+        "case": "isbn-bad-checksum",
+        "expect": "rejected",
+        "field": "isbn",
+        "input": "9780306406158",
+        "normal": null
+      },
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Quiet Island"
+    },
+    {
+      "authors": "Mateo Castellanos",
+      "calibre_id": 104,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9787277835542",
+      "pubdate_year": 101,
+      "publisher": "New Directions",
+      "series": "Collected Works",
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\""
+      ],
+      "title": "The Hidden River"
+    },
+    {
+      "authors": "Noor Rasmussen & Rosalind Fairbairn",
+      "calibre_id": 105,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9782258334670",
+      "pubdate_year": 1958,
+      "publisher": "Oxford World's Classics",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "science fiction",
+        "to-read"
+      ],
+      "title": "An Archive in Lagos"
+    },
+    {
+      "authors": "Margit Achebe",
+      "calibre_id": 106,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2002,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Paper Lantern"
+    },
+    {
+      "authors": "Ines Hale",
+      "calibre_id": 107,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "\"favourite\"",
+        "2024",
+        "book club"
+      ],
+      "title": "The Paper Library"
+    },
+    {
+      "authors": "Rafael Dunmore",
+      "calibre_id": 108,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2016,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "history"
+      ],
+      "title": "The Distant Atlas"
+    },
+    {
+      "authors": "Tomas Okafor",
+      "calibre_id": 109,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 1959,
+      "publisher": "Vintage",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "classics",
+        "signed copy"
+      ],
+      "title": "The Salt Archive"
+    },
+    {
+      "authors": "Ada Quill",
+      "calibre_id": 110,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1954,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "science fiction"
+      ],
+      "title": "A River in the Fens"
+    },
+    {
+      "authors": "Margit Rasmussen",
+      "calibre_id": 111,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Borrowed Clockmaker"
+    },
+    {
+      "authors": "Tomas Lindqvist",
+      "calibre_id": 112,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1963,
+      "publisher": null,
+      "series": "The Harbour Quartet",
+      "series_index": 1.0,
+      "tags": [
+        "to-read"
+      ],
+      "title": "A River in Kyoto"
+    },
+    {
+      "authors": "Mateo Okafor",
+      "calibre_id": 113,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Borrowed Bridge"
+    },
+    {
+      "authors": "Kwame Moreau",
+      "calibre_id": 114,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9788621897803",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "editor's pick"
+      ],
+      "title": "A Bridge in Kyoto"
+    },
+    {
+      "authors": "Clara Sato",
+      "calibre_id": 115,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "isbn"
+      ],
+      "isbn": "9785851620515",
+      "pubdate_year": 2003,
+      "publisher": "Vintage",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Salt Inheritance"
+    },
+    {
+      "authors": "Noor Dunmore",
+      "calibre_id": 116,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 2005,
+      "publisher": "Granta",
+      "series": "Collected Works",
+      "series_index": 2.5,
+      "tags": [],
+      "title": "The Silver River"
+    },
+    {
+      "authors": "Pieter Whitlock",
+      "calibre_id": 117,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9780463453490",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "gift",
+        "history"
+      ],
+      "title": "The Last Atlas"
+    },
+    {
+      "authors": "Ingrid Hale",
+      "calibre_id": 118,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads"
+      ],
+      "isbn": "",
+      "pubdate_year": 101,
+      "publisher": null,
+      "series": "The Harbour Quartet",
+      "series_index": 2.0,
+      "tags": [
+        "Fiction",
+        "editor's pick",
+        "to-read"
+      ],
+      "title": "The Silver Ledger"
+    },
+    {
+      "authors": "Helen Brennan",
+      "calibre_id": 119,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [
+        "goodreads",
+        "isbn"
+      ],
+      "isbn": "9782722217621",
+      "pubdate_year": 2004,
+      "publisher": null,
+      "series": null,
+      "series_index": 1.0,
+      "tags": [
+        "Fiction",
+        "to-read"
+      ],
+      "title": "The Winter River"
+    },
+    {
+      "authors": "Margit Quill",
+      "calibre_id": 120,
+      "formats": [],
+      "gutenberg": null,
+      "has_cover": false,
+      "identifier_keys": [],
+      "isbn": "",
+      "pubdate_year": 1980,
+      "publisher": "New Directions",
+      "series": null,
+      "series_index": 1.0,
+      "tags": [],
+      "title": "The Northern Inheritance"
+    }
+  ],
+  "seed": 42
+}

@@ -1,0 +1,27 @@
+# A reader with files and a KOReader device: epubs, then the device's sidecars,
+# then its reading-time statistics (the `stats/` layer gen-corpus writes).
+name = "device-reader"
+description = "Every Gutenberg epub, the modern-layout KOReader sidecars, and a statistics database."
+
+[[step]]
+kind = "epubs"
+dir = "corpus/epub"
+reapply = false
+reapply_why = "epub import without an ISBN is not idempotent (duplicate book); reported as an engine bug"
+
+[[step]]
+kind = "ko-sync"
+root = "corpus/generated/modern"
+
+[[step]]
+kind = "ko-stats"
+mount = "corpus/generated/stats/modern"
+
+[[step]]
+kind = "sort-keys"
+
+[[step]]
+kind = "covers"
+
+[[step]]
+kind = "refill"

@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">49</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">50d4ab6c-bba5-4066-b274-4388f177deab</dc:identifier>
+        <dc:title>צל העולם</dc:title>
+        <dc:creator opf:file-as="Gautier, of Metz, active 1245" opf:role="aut">active 1245 of Metz Gautier</dc:creator>
+        <dc:contributor opf:file-as="calibre" opf:role="bkp">calibre (9.11.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>2019-12-26T00:00:00+00:00</dc:date>
+        <dc:identifier opf:scheme="URI">http://www.gutenberg.org/61024</dc:identifier>
+        <dc:language>heb</dc:language>
+        <dc:subject>Encyclopedias and dictionaries -- Early works to 1600</dc:subject>
+        <meta name="calibre:timestamp" content="2026-11-17T08:56:25.058369+00:00"/>
+        <meta name="calibre:title_sort" content="צל העולם"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="Cover" href="cover.jpg"/>
+    </guide>
+</package>

@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">9</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">87958706-3e94-4743-8bc9-678789d35de0</dc:identifier>
+        <dc:title>The Picture of Dorian Gray</dc:title>
+        <dc:creator opf:file-as="Wilde, Oscar" opf:role="aut">Oscar Wilde</dc:creator>
+        <dc:contributor opf:file-as="calibre" opf:role="bkp">calibre (9.11.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>1994-10-01T00:00:00+00:00</dc:date>
+        <dc:identifier opf:scheme="URI">http://www.gutenberg.org/174</dc:identifier>
+        <dc:identifier opf:scheme="ISBN">9785107779479</dc:identifier>
+        <dc:language>eng</dc:language>
+        <dc:subject>Didactic fiction</dc:subject>
+        <dc:subject>Supernatural -- Fiction</dc:subject>
+        <dc:subject>Conduct of life -- Fiction</dc:subject>
+        <dc:subject>Portraits -- Fiction</dc:subject>
+        <dc:subject>Great Britain -- History -- Victoria</dc:subject>
+        <dc:subject>1837-1901 -- Fiction</dc:subject>
+        <dc:subject>London (England) -- History -- 1800-1950 -- Fiction</dc:subject>
+        <dc:subject>Appearance (Philosophy) -- Fiction</dc:subject>
+        <dc:subject>Paranormal fiction</dc:subject>
+        <meta name="calibre:timestamp" content="2026-11-17T08:55:52.199156+00:00"/>
+        <meta name="calibre:title_sort" content="Picture of Dorian Gray, The"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="Cover" href="cover.jpg"/>
+    </guide>
+</package>

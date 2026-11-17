@@ -1,0 +1,28 @@
+[package]
+name = "epubkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+description = "A bounded, read-only EPUB 2/3 package reader over zip + quick-xml."
+
+# A general EPUB library, deliberately free of bookmole: no engine types,
+# no ISBN rules, no logging. The engine's `epub.rs` is a thin adapter over it.
+# It replaces the GPL-3.0 `epub` crate, so everything it links must stay
+# permissively licensed — every dependency below was already in Cargo.lock.
+
+[dependencies]
+# The same `zip` 9 the corpus generator uses, at the same feature set: deflate
+# is the only method an EPUB may use (OCF 3.3 allows stored and deflated).
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# The same version the corpus crate uses. No `encoding` feature: the reader
+# decodes UTF-8 / UTF-16 / Latin-1 itself, before quick-xml sees the text.
+quick-xml = "0.41"
+thiserror.workspace = true
+# Already resolved in Cargo.lock (via `url`); the old crate's own decoder.
+percent-encoding = "2"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

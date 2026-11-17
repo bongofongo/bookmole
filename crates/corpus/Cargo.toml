@@ -1,0 +1,46 @@
+[package]
+name = "corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+[[bin]]
+name = "corpus"
+path = "src/main.rs"
+
+# Deliberately does NOT depend on `bookmole`. A generator that reused the
+# engine's own normalize_isbn to build fixtures would bless a bug in
+# normalize_isbn into every golden — the generator has to stay an independent
+# oracle.
+[dependencies]
+clap.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate"] }
+serde = { workspace = true }
+serde_json.workspace = true
+sha2.workspace = true
+# ChaCha8, specifically. NOT rand's StdRng, whose algorithm is explicitly
+# permitted to change between versions — which is the classic way a
+# "reproducible" corpus quietly stops being reproducible.
+rand_chacha = "0.9"
+rand_core = "0.9"
+# epub XHTML is well-formed XML, so a pull parser is enough; a full HTML5
+# parser would be a much larger dependency for no gain.
+quick-xml = "0.41"
+# Dev-library covers. Already in the graph for the TUI's `--dump-png`, so this
+# costs no new dependency — and a hand-rolled PNG writer would be a deflate
+# implementation in a fixture generator.
+png = "0.18"
+# Goodreads fixtures are a CSV file; the generator writes one the same way the
+# engine reads one, and neither borrows the other's code.
+csv.workspace = true
+# Recipes are TOML; already a workspace dependency (the CLI and TUI read
+# their config with it), so nothing new enters the tree.
+toml.workspace = true
+# `gen-wellknown` only: the one live generator (Wikidata's query service) and
+# the gzip it writes. Both already in `Cargo.lock` (the engine's HTTP client;
+# the TUI's kitty path), so nothing new enters the tree. Blocking, because
+# this crate is synchronous and the pull is one request at a time anyway.
+reqwest = { workspace = true, features = ["blocking"] }
+flate2.workspace = true

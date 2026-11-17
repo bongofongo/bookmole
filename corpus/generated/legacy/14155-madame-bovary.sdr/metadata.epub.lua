@@ -1,0 +1,504 @@
+-- GENERATED from a Project Gutenberg epub by `corpus gen-corpus`.
+-- Legacy `highlight` + `bookmarks` layout. Do not hand-edit.
+return {
+    ["highlight"] = {
+        [14] = {
+            [1] = {
+                ["chapter"] = "II",
+                ["datetime"] = "2026-03-03 19:45:54",
+                ["pos0"] = "/body/DocFragment[2]/body/p[75]/text().119",
+                ["pos1"] = "/body/DocFragment[2]/body/p[75]/text().127",
+                ["text"] = "disparut",
+            },
+        },
+        [20] = {
+            [1] = {
+                ["chapter"] = "II",
+                ["datetime"] = "2026-03-03 19:50:57",
+                ["pos0"] = "/body/DocFragment[2]/body/p[100]/text().186",
+                ["pos1"] = "/body/DocFragment[2]/body/p[100]/text().506",
+                ["text"] = "Héloïse, il est vrai, possédait encore, outre une part de bateau évaluée six mille francs, sa maison de la rue Saint-François; et cependant, de toute cette fortune que l’on avait fait sonner si haut, rien, si ce n’est un peu de mobilier et quelques nippes, n’avait paru dans le ménage. Il fallut tirer la chose au clair.",
+            },
+        },
+        [21] = {
+            [1] = {
+                ["chapter"] = "II",
+                ["datetime"] = "2026-03-03 19:57:03",
+                ["pos0"] = "/body/DocFragment[2]/body/p[102]/text().0",
+                ["pos1"] = "/body/DocFragment[2]/body/p[102]/text().306",
+                ["text"] = "Quand tout fut fini au cimetière, Charles rentra chez lui. Il ne trouva personne en bas; il monta au premier, dans la chambre, vit sa robe encore accrochée au pied de l’alcôve; alors, s’appuyant contre le secrétaire, il resta jusqu’au soir perdu dans une rêverie douloureuse. Elle l’avait aimé, après tout.",
+            },
+        },
+        [55] = {
+            [1] = {
+                ["chapter"] = "VIII",
+                ["datetime"] = "2026-03-03 20:05:57",
+                ["pos0"] = "/body/DocFragment[3]/body/p[76]/text().0",
+                ["pos1"] = "/body/DocFragment[3]/body/p[76]/text().51",
+                ["text"] = "— Les sous-pieds vont me gêner pour danser, dit-il.",
+            },
+        },
+        [56] = {
+            [1] = {
+                ["chapter"] = "VIII",
+                ["datetime"] = "2026-03-06 20:01:05",
+                ["pos0"] = "/body/DocFragment[3]/body/p[84]/text().60",
+                ["pos1"] = "/body/DocFragment[3]/body/p[84]/text().109",
+                ["text"] = "Elle descendit l’escalier, se retenant de courir.",
+            },
+        },
+        [60] = {
+            [1] = {
+                ["chapter"] = "VIII",
+                ["datetime"] = "2026-03-06 20:06:05",
+                ["pos0"] = "/body/DocFragment[3]/body/p[102]/text().0",
+                ["pos1"] = "/body/DocFragment[3]/body/p[102]/text().190",
+                ["text"] = "Charles se traînait à la rampe, les genoux lui rentraient dans le corps. Il avait passé cinq heures de suite, tout debout devant les tables, à regarder jouer au whist sans y rien comprendre.",
+            },
+        },
+        [68] = {
+            [1] = {
+                ["chapter"] = "IX",
+                ["datetime"] = "2026-03-06 20:13:09",
+                ["pos0"] = "/body/DocFragment[4]/body/p[26]/text().8",
+                ["pos1"] = "/body/DocFragment[4]/body/p[26]/text().16",
+                ["text"] = "charmait",
+            },
+        },
+        [71] = {
+            [1] = {
+                ["chapter"] = "IX",
+                ["datetime"] = "2026-03-06 20:20:02",
+                ["pos0"] = "/body/DocFragment[4]/body/p[36]/text().113",
+                ["pos1"] = "/body/DocFragment[4]/body/p[36]/text().206",
+                ["text"] = "Les autres existences, si plates qu’elles fussent, avaient du moins la chance d’un événement.",
+            },
+        },
+        [85] = {
+            [1] = {
+                ["chapter"] = "DEUXIÈME PARTIE",
+                ["datetime"] = "2026-03-08 20:05:22",
+                ["pos0"] = "/body/DocFragment[4]/body/p[91]/text().0",
+                ["pos1"] = "/body/DocFragment[4]/body/p[91]/text().264",
+                ["text"] = "— Jamais il ne cause davantage, répondit-elle; il est venu ici, la semaine dernière, deux voyageurs en draps, des garçons pleins d’esprit qui contaient, le soir, un tas de farces que j’en pleurais de rire; eh bien, il restait là, comme une alose, sans dire un mot.",
+            },
+        },
+        [91] = {
+            [1] = {
+                ["chapter"] = "II",
+                ["datetime"] = "2026-03-08 20:12:57",
+                ["pos0"] = "/body/DocFragment[4]/body/p[128]/text().0",
+                ["pos1"] = "/body/DocFragment[4]/body/p[128]/text().201",
+                ["text"] = "— Et puis ne vous semble-t-il pas, répliqua madame Bovary, que l’esprit vogue plus librement sur cette étendue sans limites, dont la contemplation vous élève l’âme et donne des idées d’infini, d’idéal?",
+            },
+        },
+        [92] = {
+            [1] = {
+                ["chapter"] = "II",
+                ["datetime"] = "2026-03-08 20:21:02",
+                ["pos0"] = "/body/DocFragment[4]/body/p[136]/text().0",
+                ["pos1"] = "/body/DocFragment[4]/body/p[136]/text().52",
+                ["text"] = "— Oh! la musique allemande, celle qui porte à rêver.",
+            },
+        },
+        [115] = {
+            [1] = {
+                ["chapter"] = "V",
+                ["datetime"] = "2026-03-08 20:28:43",
+                ["pos0"] = "/body/DocFragment[5]/body/p[111]/text().476",
+                ["pos1"] = "/body/DocFragment[5]/body/p[111]/text().607",
+                ["text"] = "Poli jusqu’à l’obséquiosité, il se tenait toujours les reins à demi courbés, dans la position de quelqu’un qui salue ou qui invite.",
+            },
+        },
+        [118] = {
+            [1] = {
+                ["chapter"] = "V",
+                ["datetime"] = "2026-03-09 20:17:21",
+                ["pos0"] = "/body/DocFragment[5]/body/p[152]/text().80",
+                ["pos1"] = "/body/DocFragment[5]/body/p[152]/text().195",
+                ["text"] = "On la vit prendre à cœur son ménage, retourner à l’église régulièrement et tenir sa servante avec plus de sévérité.",
+            },
+        },
+        [128] = {
+            [1] = {
+                ["chapter"] = "VI",
+                ["datetime"] = "2026-03-09 20:22:25",
+                ["pos0"] = "/body/DocFragment[6]/body/p[74]/text().0",
+                ["pos1"] = "/body/DocFragment[6]/body/p[74]/text().131",
+                ["text"] = "— Puisque je t’assure que ce ne sera rien, dit-il en la baisant au front; ne te tourmente pas, pauvre chérie, tu te rendras malade!",
+            },
+        },
+        [141] = {
+            [1] = {
+                ["chapter"] = "VII",
+                ["datetime"] = "2026-03-09 20:29:23",
+                ["pos0"] = "/body/DocFragment[6]/body/p[187]/text().0",
+                ["pos1"] = "/body/DocFragment[6]/body/p[187]/text().88",
+                ["text"] = "Bovary commanda donc d’apporter une bande et une cuvette, et pria Justin de la soutenir.",
+            },
+        },
+        [144] = {
+            [1] = {
+                ["chapter"] = "VII",
+                ["datetime"] = "2026-03-09 20:35:22",
+                ["pos0"] = "/body/DocFragment[6]/body/p[225]/text().0",
+                ["pos1"] = "/body/DocFragment[6]/body/p[225]/text().59",
+                ["text"] = "Et aussitôt il examina la partie politique de l’entreprise.",
+            },
+        },
+        [169] = {
+            [1] = {
+                ["chapter"] = "VIII",
+                ["datetime"] = "2026-03-10 19:56:45",
+                ["pos0"] = "/body/DocFragment[7]/body/p[196]/text().0",
+                ["pos1"] = "/body/DocFragment[7]/body/p[196]/text().85",
+                ["text"] = "«Constatons qu’aucun événement fâcheux n’est venu troubler cette réunion de famille.»",
+            },
+        },
+        [174] = {
+            [1] = {
+                ["chapter"] = "IX",
+                ["datetime"] = "2026-03-10 20:00:55",
+                ["pos0"] = "/body/DocFragment[8]/body/p[65]/text().18",
+                ["pos1"] = "/body/DocFragment[8]/body/p[65]/text().102",
+                ["text"] = "Rodolphe attacha les chevaux. Elle allait devant, sur la mousse, entre les ornières.",
+            },
+        },
+        [189] = {
+            [1] = {
+                ["chapter"] = "X",
+                ["datetime"] = "2026-03-10 20:09:17",
+                ["pos0"] = "/body/DocFragment[8]/body/p[213]/text().110",
+                ["pos1"] = "/body/DocFragment[8]/body/p[213]/text().308",
+                ["text"] = "Mais il n’offrait pas grande prise à ces retours du sentiment, si bien qu’elle demeurait fort embarrassée dans sa velléité de sacrifice, lorsque l’apothicaire vint à propos lui fournir une occasion.",
+            },
+        },
+        [199] = {
+            [1] = {
+                ["datetime"] = "2026-03-10 20:14:27",
+                ["pos0"] = "/body/DocFragment[9]/body/p[35]/text().85",
+                ["pos1"] = "/body/DocFragment[9]/body/p[35]/text().469",
+                ["text"] = "Et, d’ailleurs, cela ne m’étonne pas; car, vous autres, messieurs les pharmaciens, vous êtes continuellement fourrés dans votre cuisine, ce qui doit finir par altérer votre tempérament. Regardez-moi, plutôt: tous les jours, je me lève à quatre heures, je fais ma barbe à l’eau froide (je n’ai jamais froid), et je ne porte pas de flanelle, je n’attrape aucun rhume, le coffre est bon!",
+            },
+        },
+        [204] = {
+            [1] = {
+                ["chapter"] = "XII",
+                ["datetime"] = "2026-03-11 19:45:50",
+                ["pos0"] = "/body/DocFragment[9]/body/p[66]/text().0",
+                ["pos1"] = "/body/DocFragment[9]/body/p[66]/text().261",
+                ["text"] = "Le coude sur la longue planche où elle repassait, il considérait avidement toutes ces affaires de femmes étalées autour de lui: les jupons de basin, les fichus, les collerettes, et les pantalons à coulisse, vastes de hanches et qui se rétrécissaient par le bas.",
+            },
+        },
+        [208] = {
+            [1] = {
+                ["chapter"] = "XII",
+                ["datetime"] = "2026-03-11 19:54:22",
+                ["pos0"] = "/body/DocFragment[9]/body/p[107]/text().429",
+                ["pos1"] = "/body/DocFragment[9]/body/p[107]/text().1019",
+                ["text"] = "Parce que des lèvres libertines ou vénales lui avaient murmuré des phrases pareilles, il ne croyait que faiblement à la candeur de celles-là; on en devait rabattre, pensait-il, les discours exagérés cachant les affections médiocres; comme si la plénitude de l’âme ne débordait pas quelquefois par les métaphores les plus vides, puisque personne, jamais, ne peut donner l’exacte mesure de ses besoins, ni de ses conceptions, ni de ses douleurs, et que la parole humaine est comme un chaudron fêlé où nous battons des mélodies à faire danser les ours, quand on voudrait attendrir les étoiles.",
+            },
+        },
+        [210] = {
+            [1] = {
+                ["chapter"] = "XII",
+                ["datetime"] = "2026-03-11 19:58:53",
+                ["pos0"] = "/body/DocFragment[9]/body/p[127]/text().0",
+                ["pos1"] = "/body/DocFragment[9]/body/p[127]/text().175",
+                ["text"] = "Et elle se mit à lui raconter tout, à la hâte, sans suite, exagérant les faits, en inventant plusieurs, et prodiguant les parenthèses si abondamment qu’il n’y comprenait rien.",
+            },
+        },
+        [220] = {
+            [1] = {
+                ["chapter"] = "XIII",
+                ["datetime"] = "2026-03-11 20:05:30",
+                ["pos0"] = "/body/DocFragment[10]/body/p[20]/text().0",
+                ["pos1"] = "/body/DocFragment[10]/body/p[20]/text().36",
+                ["text"] = "La mèche des deux bougies tremblait.",
+            },
+        },
+        [233] = {
+            [1] = {
+                ["chapter"] = "XIV",
+                ["datetime"] = "2026-03-14 19:10:40",
+                ["pos0"] = "/body/DocFragment[10]/body/p[111]/text().48",
+                ["pos1"] = "/body/DocFragment[10]/body/p[111]/text().352",
+                ["text"] = "Elle cousait des habits pour les pauvres; elle envoyait du bois aux femmes en couches; et Charles, un jour en rentrant, trouva dans la cuisine trois vauriens attablés qui mangeaient un potage. Elle fit revenir à la maison sa petite fille, que son mari, durant sa maladie, avait renvoyée chez la nourrice.",
+            },
+        },
+        [247] = {
+            [1] = {
+                ["datetime"] = "2026-03-14 19:16:21",
+                ["pos0"] = "/body/DocFragment[11]/body/p[18]/text().0",
+                ["pos1"] = "/body/DocFragment[11]/body/p[18]/text().93",
+                ["text"] = "Alors il fit la proposition de sortir du théâtre, pour aller prendre des glaces quelque part.",
+            },
+        },
+        [253] = {
+            [1] = {
+                ["chapter"] = "TROISIÈME PARTIE",
+                ["datetime"] = "2026-03-14 19:20:23",
+                ["pos0"] = "/body/DocFragment[11]/body/p[95]/text().0",
+                ["pos1"] = "/body/DocFragment[11]/body/p[95]/text().46",
+                ["text"] = "— Pauvre ami! fit-elle en lui tendant la main.",
+            },
+        },
+        [262] = {
+            [1] = {
+                ["chapter"] = "TROISIÈME PARTIE",
+                ["datetime"] = "2026-03-14 19:25:17",
+                ["pos0"] = "/body/DocFragment[11]/body/p[209]/text().0",
+                ["pos1"] = "/body/DocFragment[11]/body/p[209]/text().148",
+                ["text"] = "Elle descendit la rue Grand-Pont, traversa la place des Arts, le quai Napoléon, le pont Neuf et s’arrêta court devant la statue de Pierre Corneille.",
+            },
+        },
+        [270] = {
+            [1] = {
+                ["datetime"] = "2026-03-16 21:19:02",
+                ["pos0"] = "/body/DocFragment[12]/body/p[30]/text().0",
+                ["pos1"] = "/body/DocFragment[12]/body/p[30]/text().186",
+                ["text"] = "Charles prit les violettes, et, rafraîchissant dessus ses yeux tout rouges de larmes, il les humait délicatement. Elle les retira vite de sa main, et alla les porter dans un verre d’eau.",
+            },
+        },
+        [273] = {
+            [1] = {
+                ["datetime"] = "2026-03-16 21:25:26",
+                ["pos0"] = "/body/DocFragment[12]/body/p[59]/text().0",
+                ["pos1"] = "/body/DocFragment[12]/body/p[59]/text().227",
+                ["text"] = "Mais, dès qu’elle fut partie, Emma ne tarda pas à émerveiller Bovary par son bon sens pratique. Il allait falloir prendre des informations, vérifier les hypothèques, voir s’il y avait lieu à une licitation ou à une liquidation.",
+            },
+        },
+        [278] = {
+            [1] = {
+                ["chapter"] = "IV",
+                ["datetime"] = "2026-03-16 21:31:28",
+                ["pos0"] = "/body/DocFragment[12]/body/p[125]/text().123",
+                ["pos1"] = "/body/DocFragment[12]/body/p[125]/text().290",
+                ["text"] = "Ce pauvre piano, qui lui avait causé tant de vaniteuses satisfactions, le voir s’en aller, c’était pour Bovary comme l’indéfinissable suicide d’une partie d’elle-même!",
+            },
+        },
+        [289] = {
+            [1] = {
+                ["chapter"] = "V",
+                ["datetime"] = "2026-03-16 21:38:57",
+                ["pos0"] = "/body/DocFragment[12]/body/p[213]/text().23",
+                ["pos1"] = "/body/DocFragment[12]/body/p[213]/text().31",
+                ["text"] = "répondit",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2026-03-03 19:45:54",
+            ["notes"] = "disparut",
+            ["page"] = 14,
+            ["text"] = "Voir [[Madame Bovary]] pour le contexte.",
+        },
+        [2] = {
+            ["datetime"] = "2026-03-03 19:50:57",
+            ["notes"] = "Héloïse, il est vrai, possédait encore, outre une part de bateau évaluée six mille francs, sa maison de la rue Saint-François; et cependant, de toute cette fortune que l’on avait fait sonner si haut, rien, si ce n’est un peu de mobilier et quelques nippes, n’avait paru dans le ménage. Il fallut tirer la chose au clair.",
+            ["page"] = 20,
+            ["text"] = "Héloïse, il est vrai, possédait encore, outre une part de bateau évaluée six mille francs, sa maison de la rue Saint-François; et cependant, de toute cette fortune que l’on avait fait sonner si haut, rien, si ce n’est un peu de mobilier et quelques nippes, n’avait paru dans le ménage. Il fallut tirer la chose au clair.",
+        },
+        [3] = {
+            ["datetime"] = "2026-03-03 19:57:03",
+            ["notes"] = "Quand tout fut fini au cimetière, Charles rentra chez lui. Il ne trouva personne en bas; il monta au premier, dans la chambre, vit sa robe encore accrochée au pied de l’alcôve; alors, s’appuyant contre le secrétaire, il resta jusqu’au soir perdu dans une rêverie douloureuse. Elle l’avait aimé, après tout.",
+            ["page"] = 21,
+            ["text"] = "Quand tout fut fini au cimetière, Charles rentra chez lui. Il ne trouva personne en bas; il monta au premier, dans la chambre, vit sa robe encore accrochée au pied de l’alcôve; alors, s’appuyant contre le secrétaire, il resta jusqu’au soir perdu dans une rêverie douloureuse. Elle l’avait aimé, après tout.",
+        },
+        [4] = {
+            ["datetime"] = "2026-03-03 20:05:57",
+            ["notes"] = "— Les sous-pieds vont me gêner pour danser, dit-il.",
+            ["page"] = 55,
+            ["text"] = "— Les sous-pieds vont me gêner pour danser, dit-il.",
+        },
+        [5] = {
+            ["datetime"] = "2026-03-06 20:01:05",
+            ["notes"] = "Elle descendit l’escalier, se retenant de courir.",
+            ["page"] = 56,
+            ["text"] = "Elle descendit l’escalier, se retenant de courir.",
+        },
+        [6] = {
+            ["datetime"] = "2026-03-06 20:06:05",
+            ["notes"] = "Charles se traînait à la rampe, les genoux lui rentraient dans le corps. Il avait passé cinq heures de suite, tout debout devant les tables, à regarder jouer au whist sans y rien comprendre.",
+            ["page"] = 60,
+            ["text"] = "Chercher le sens exact de ce mot.",
+        },
+        [7] = {
+            ["datetime"] = "2026-03-06 20:13:09",
+            ["notes"] = "charmait",
+            ["page"] = 68,
+            ["text"] = "charmait",
+        },
+        [8] = {
+            ["datetime"] = "2026-03-06 20:20:02",
+            ["notes"] = "Les autres existences, si plates qu’elles fussent, avaient du moins la chance d’un événement.",
+            ["page"] = 71,
+            ["text"] = "Les autres existences, si plates qu’elles fussent, avaient du moins la chance d’un événement.",
+        },
+        [9] = {
+            ["datetime"] = "2026-03-08 20:05:22",
+            ["notes"] = "— Jamais il ne cause davantage, répondit-elle; il est venu ici, la semaine dernière, deux voyageurs en draps, des garçons pleins d’esprit qui contaient, le soir, un tas de farces que j’en pleurais de rire; eh bien, il restait là, comme une alose, sans dire un mot.",
+            ["page"] = 85,
+            ["text"] = "— Jamais il ne cause davantage, répondit-elle; il est venu ici, la semaine dernière, deux voyageurs en draps, des garçons pleins d’esprit qui contaient, le soir, un tas de farces que j’en pleurais de rire; eh bien, il restait là, comme une alose, sans dire un mot.",
+        },
+        [10] = {
+            ["datetime"] = "2026-03-08 20:12:57",
+            ["notes"] = "— Et puis ne vous semble-t-il pas, répliqua madame Bovary, que l’esprit vogue plus librement sur cette étendue sans limites, dont la contemplation vous élève l’âme et donne des idées d’infini, d’idéal?",
+            ["page"] = 91,
+            ["text"] = "— Et puis ne vous semble-t-il pas, répliqua madame Bovary, que l’esprit vogue plus librement sur cette étendue sans limites, dont la contemplation vous élève l’âme et donne des idées d’infini, d’idéal?",
+        },
+        [11] = {
+            ["datetime"] = "2026-03-08 20:21:02",
+            ["notes"] = "— Oh! la musique allemande, celle qui porte à rêver.",
+            ["page"] = 92,
+            ["text"] = "À relire.",
+        },
+        [12] = {
+            ["datetime"] = "2026-03-08 20:28:43",
+            ["notes"] = "Poli jusqu’à l’obséquiosité, il se tenait toujours les reins à demi courbés, dans la position de quelqu’un qui salue ou qui invite.",
+            ["page"] = 115,
+            ["text"] = "Comparer avec le premier chapitre.",
+        },
+        [13] = {
+            ["datetime"] = "2026-03-09 20:17:21",
+            ["notes"] = "On la vit prendre à cœur son ménage, retourner à l’église régulièrement et tenir sa servante avec plus de sévérité.",
+            ["page"] = 118,
+            ["text"] = "On la vit prendre à cœur son ménage, retourner à l’église régulièrement et tenir sa servante avec plus de sévérité.",
+        },
+        [14] = {
+            ["datetime"] = "2026-03-09 20:22:25",
+            ["notes"] = "— Puisque je t’assure que ce ne sera rien, dit-il en la baisant au front; ne te tourmente pas, pauvre chérie, tu te rendras malade!",
+            ["page"] = 128,
+            ["text"] = "— Puisque je t’assure que ce ne sera rien, dit-il en la baisant au front; ne te tourmente pas, pauvre chérie, tu te rendras malade!",
+        },
+        [15] = {
+            ["datetime"] = "2026-03-09 20:29:23",
+            ["notes"] = "Bovary commanda donc d’apporter une bande et une cuvette, et pria Justin de la soutenir.",
+            ["page"] = 141,
+            ["text"] = "Bovary commanda donc d’apporter une bande et une cuvette, et pria Justin de la soutenir.",
+        },
+        [16] = {
+            ["datetime"] = "2026-03-09 20:35:22",
+            ["notes"] = "Et aussitôt il examina la partie politique de l’entreprise.",
+            ["page"] = 144,
+            ["text"] = "Belle phrase, mais je ne suis pas d'accord.",
+        },
+        [17] = {
+            ["datetime"] = "2026-03-10 19:56:45",
+            ["notes"] = "«Constatons qu’aucun événement fâcheux n’est venu troubler cette réunion de famille.»",
+            ["page"] = 169,
+            ["text"] = "«Constatons qu’aucun événement fâcheux n’est venu troubler cette réunion de famille.»",
+        },
+        [18] = {
+            ["datetime"] = "2026-03-10 20:00:55",
+            ["notes"] = "Rodolphe attacha les chevaux. Elle allait devant, sur la mousse, entre les ornières.",
+            ["page"] = 174,
+            ["text"] = "Rodolphe attacha les chevaux. Elle allait devant, sur la mousse, entre les ornières.",
+        },
+        [19] = {
+            ["datetime"] = "2026-03-10 20:09:17",
+            ["notes"] = "Mais il n’offrait pas grande prise à ces retours du sentiment, si bien qu’elle demeurait fort embarrassée dans sa velléité de sacrifice, lorsque l’apothicaire vint à propos lui fournir une occasion.",
+            ["page"] = 189,
+            ["text"] = "Mais il n’offrait pas grande prise à ces retours du sentiment, si bien qu’elle demeurait fort embarrassée dans sa velléité de sacrifice, lorsque l’apothicaire vint à propos lui fournir une occasion.",
+        },
+        [20] = {
+            ["datetime"] = "2026-03-10 20:14:27",
+            ["notes"] = "Et, d’ailleurs, cela ne m’étonne pas; car, vous autres, messieurs les pharmaciens, vous êtes continuellement fourrés dans votre cuisine, ce qui doit finir par altérer votre tempérament. Regardez-moi, plutôt: tous les jours, je me lève à quatre heures, je fais ma barbe à l’eau froide (je n’ai jamais froid), et je ne porte pas de flanelle, je n’attrape aucun rhume, le coffre est bon!",
+            ["page"] = 199,
+            ["text"] = "Et, d’ailleurs, cela ne m’étonne pas; car, vous autres, messieurs les pharmaciens, vous êtes continuellement fourrés dans votre cuisine, ce qui doit finir par altérer votre tempérament. Regardez-moi, plutôt: tous les jours, je me lève à quatre heures, je fais ma barbe à l’eau froide (je n’ai jamais froid), et je ne porte pas de flanelle, je n’attrape aucun rhume, le coffre est bon!",
+        },
+        [21] = {
+            ["datetime"] = "2026-03-11 19:45:50",
+            ["notes"] = "Le coude sur la longue planche où elle repassait, il considérait avidement toutes ces affaires de femmes étalées autour de lui: les jupons de basin, les fichus, les collerettes, et les pantalons à coulisse, vastes de hanches et qui se rétrécissaient par le bas.",
+            ["page"] = 204,
+            ["text"] = "Le coude sur la longue planche où elle repassait, il considérait avidement toutes ces affaires de femmes étalées autour de lui: les jupons de basin, les fichus, les collerettes, et les pantalons à coulisse, vastes de hanches et qui se rétrécissaient par le bas.",
+        },
+        [22] = {
+            ["datetime"] = "2026-03-11 19:54:22",
+            ["notes"] = "Parce que des lèvres libertines ou vénales lui avaient murmuré des phrases pareilles, il ne croyait que faiblement à la candeur de celles-là; on en devait rabattre, pensait-il, les discours exagérés cachant les affections médiocres; comme si la plénitude de l’âme ne débordait pas quelquefois par les métaphores les plus vides, puisque personne, jamais, ne peut donner l’exacte mesure de ses besoins, ni de ses conceptions, ni de ses douleurs, et que la parole humaine est comme un chaudron fêlé où nous battons des mélodies à faire danser les ours, quand on voudrait attendrir les étoiles.",
+            ["page"] = 208,
+            ["text"] = "Parce que des lèvres libertines ou vénales lui avaient murmuré des phrases pareilles, il ne croyait que faiblement à la candeur de celles-là; on en devait rabattre, pensait-il, les discours exagérés cachant les affections médiocres; comme si la plénitude de l’âme ne débordait pas quelquefois par les métaphores les plus vides, puisque personne, jamais, ne peut donner l’exacte mesure de ses besoins, ni de ses conceptions, ni de ses douleurs, et que la parole humaine est comme un chaudron fêlé où nous battons des mélodies à faire danser les ours, quand on voudrait attendrir les étoiles.",
+        },
+        [23] = {
+            ["datetime"] = "2026-03-11 19:58:53",
+            ["notes"] = "Et elle se mit à lui raconter tout, à la hâte, sans suite, exagérant les faits, en inventant plusieurs, et prodiguant les parenthèses si abondamment qu’il n’y comprenait rien.",
+            ["page"] = 210,
+            ["text"] = "« Et elle se mit » — tout le livre est là.",
+        },
+        [24] = {
+            ["datetime"] = "2026-03-11 20:05:30",
+            ["notes"] = "La mèche des deux bougies tremblait.",
+            ["page"] = 220,
+            ["text"] = "La mèche des deux bougies tremblait.",
+        },
+        [25] = {
+            ["datetime"] = "2026-03-14 19:10:40",
+            ["notes"] = "Elle cousait des habits pour les pauvres; elle envoyait du bois aux femmes en couches; et Charles, un jour en rentrant, trouva dans la cuisine trois vauriens attablés qui mangeaient un potage. Elle fit revenir à la maison sa petite fille, que son mari, durant sa maladie, avait renvoyée chez la nourrice.",
+            ["page"] = 233,
+            ["text"] = "Elle cousait des habits pour les pauvres; elle envoyait du bois aux femmes en couches; et Charles, un jour en rentrant, trouva dans la cuisine trois vauriens attablés qui mangeaient un potage. Elle fit revenir à la maison sa petite fille, que son mari, durant sa maladie, avait renvoyée chez la nourrice.",
+        },
+        [26] = {
+            ["datetime"] = "2026-03-14 19:16:21",
+            ["notes"] = "Alors il fit la proposition de sortir du théâtre, pour aller prendre des glaces quelque part.",
+            ["page"] = 247,
+            ["text"] = "Alors il fit la proposition de sortir du théâtre, pour aller prendre des glaces quelque part.",
+        },
+        [27] = {
+            ["datetime"] = "2026-03-14 19:20:23",
+            ["notes"] = "— Pauvre ami! fit-elle en lui tendant la main.",
+            ["page"] = 253,
+            ["text"] = "— Pauvre ami! fit-elle en lui tendant la main.",
+        },
+        [28] = {
+            ["datetime"] = "2026-03-14 19:25:17",
+            ["notes"] = "Elle descendit la rue Grand-Pont, traversa la place des Arts, le quai Napoléon, le pont Neuf et s’arrêta court devant la statue de Pierre Corneille.",
+            ["page"] = 262,
+            ["text"] = "Elle descendit la rue Grand-Pont, traversa la place des Arts, le quai Napoléon, le pont Neuf et s’arrêta court devant la statue de Pierre Corneille.",
+        },
+        [29] = {
+            ["datetime"] = "2026-03-16 21:19:02",
+            ["notes"] = "Charles prit les violettes, et, rafraîchissant dessus ses yeux tout rouges de larmes, il les humait délicatement. Elle les retira vite de sa main, et alla les porter dans un verre d’eau.",
+            ["page"] = 270,
+            ["text"] = "Le thème apparaît ici pour la première fois.",
+        },
+        [30] = {
+            ["datetime"] = "2026-03-16 21:25:26",
+            ["notes"] = "Mais, dès qu’elle fut partie, Emma ne tarda pas à émerveiller Bovary par son bon sens pratique. Il allait falloir prendre des informations, vérifier les hypothèques, voir s’il y avait lieu à une licitation ou à une liquidation.",
+            ["page"] = 273,
+            ["text"] = "Mais, dès qu’elle fut partie, Emma ne tarda pas à émerveiller Bovary par son bon sens pratique. Il allait falloir prendre des informations, vérifier les hypothèques, voir s’il y avait lieu à une licitation ou à une liquidation.",
+        },
+        [31] = {
+            ["datetime"] = "2026-03-16 21:31:28",
+            ["notes"] = "Ce pauvre piano, qui lui avait causé tant de vaniteuses satisfactions, le voir s’en aller, c’était pour Bovary comme l’indéfinissable suicide d’une partie d’elle-même!",
+            ["page"] = 278,
+            ["text"] = "Ce pauvre piano, qui lui avait causé tant de vaniteuses satisfactions, le voir s’en aller, c’était pour Bovary comme l’indéfinissable suicide d’une partie d’elle-même!",
+        },
+        [32] = {
+            ["datetime"] = "2026-03-16 21:38:57",
+            ["notes"] = "répondit",
+            ["page"] = 289,
+            ["text"] = "répondit",
+        },
+    },
+    ["doc_pages"] = 368,
+    ["doc_props"] = {
+        ["authors"] = "Gustave Flaubert",
+        ["language"] = "fr",
+        ["title"] = "Madame Bovary",
+    },
+    ["partial_md5_checksum"] = "2ae3ba1ef9301226ae812c3eae236586",
+    ["percent_finished"] = 0.7900,
+    ["stats"] = {
+        ["authors"] = "Gustave Flaubert",
+        ["highlights"] = 25,
+        ["language"] = "fr",
+        ["notes"] = 7,
+        ["pages"] = 368,
+        ["title"] = "Madame Bovary",
+    },
+    ["summary"] = {
+        ["modified"] = "2026-03-16",
+        ["status"] = "reading",
+    },
+}

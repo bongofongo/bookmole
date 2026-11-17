@@ -1,0 +1,11 @@
+# cargo-mutants configuration. See `make mutants` / `make mutants-diff`.
+#
+# nextest over the default `cargo test`: a 2566-mutant sweep of the engine
+# needs the faster, parallel runner to finish in human time at all.
+#
+# This does NOT set `--in-place` — that lives in the Makefile targets instead,
+# because it is a property of where cargo-mutants runs, not of the repo: its
+# default copies the tree into $TMPDIR, and where that is a size-capped tmpfs a
+# checkout with large target/ directories does not fit and the copy dies with
+# "Disk quota exceeded".
+test_tool = "nextest"

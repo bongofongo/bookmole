@@ -1,0 +1,24 @@
+-- The year a work was first published.
+--
+-- `books.publish_year` is, for most rows, the year of *an edition*: Google
+-- Books and calibre report the printing in hand, so a 2011 paperback of a 1949
+-- novel is filed at 2011 and a list drawn as a timeline puts it in the wrong
+-- century.
+-- This column holds first publication where a source states it (Open Library's
+-- `first_publish_year`), beside `publish_year` rather than instead of it: the
+-- edition's year is still a fact, and the library's year filter and sort still
+-- mean it. A reader that wants "when was this written" prefers this column and
+-- falls back to `publish_year`, knowing the fallback is an edition's year.
+--
+-- Nullable; `NULL` means *no source has said*, not "unknown to the world".
+--
+-- ## The repo's seventh deliberate non-back-fill
+--
+-- `UPDATE books SET first_published = publish_year` is exactly the guess this
+-- column exists to stop making. `publish_year` is often an edition year, so
+-- copying it would store a guess in a column whose whole claim is that it is
+-- not one, with nothing left to tell the two apart afterwards. Existing rows
+-- stay NULL until enrichment (`rb enrich`, or a fresh Open Library lookup)
+-- supplies the real value through `MERGE_RULES`, which also stamps its
+-- `field_provenance`.
+ALTER TABLE books ADD COLUMN first_published INTEGER;

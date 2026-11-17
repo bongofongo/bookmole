@@ -1,0 +1,34 @@
+{
+  "runner_version": 1,
+  "recipe": "minimal",
+  "counts": {
+    "books": 10,
+    "books_with_cover": 10,
+    "flashcards": 0,
+    "highlights": 0,
+    "highlights_with_reading": 0,
+    "note_links": 0,
+    "notes": 0,
+    "notes_fts": 0,
+    "readings": 0,
+    "user_provenance": 0
+  },
+  "readings_by_status": {
+
+  },
+  "titles": [
+    "A Modest Proposal / For preventing the children of poor people in Ireland, from being a burden on their parents or country, and for making them beneficial to the publick",
+    "Alice's Adventures in Wonderland",
+    "Jane Eyre: An Autobiography",
+    "Leaves of Grass",
+    "Les trois mousquetaires",
+    "Pride and Prejudice",
+    "The Book of Household Management",
+    "The Complete Works of William Shakespeare",
+    "The Raven",
+    "Through the Looking-Glass"
+  ],
+  "hostile": [
+
+  ]
+}

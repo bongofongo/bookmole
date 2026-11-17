@@ -1,0 +1,23 @@
+# Ten real epubs and nothing else: the smallest recipe that renders a shelf.
+# Devdb-free, device-free; the inner loop for anything that touches import.
+name = "minimal"
+description = "Ten Gutenberg epubs through `bookmole epub`, then the derived-fact passes."
+
+[[step]]
+kind = "epubs"
+dir = "corpus/epub"
+limit = 10
+# An epub with no ISBN takes upsert_book's plain-insert branch, so importing the
+# same file twice makes a second book. Observed 2026-10-20;
+# re-enable once the engine matches a re-imported file to its book.
+reapply = false
+reapply_why = "epub import without an ISBN is not idempotent (duplicate book); reported as an engine bug"
+
+[[step]]
+kind = "sort-keys"
+
+[[step]]
+kind = "covers"
+
+[[step]]
+kind = "refill"

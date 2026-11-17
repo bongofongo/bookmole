@@ -1,0 +1,21 @@
+{
+  "imported": [
+    {
+      "book_title": "A Scanned Monograph",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [],
+      "inserted": 0,
+      "matched_by": "title",
+      "percent_finished": 0.31,
+      "rating": null,
+      "skipped": 0,
+      "status": null,
+      "updated": 0
+    }
+  ],
+  "unmatched": [],
+  "warnings": [
+    "SidecarAnchorsUnsupported(3)"
+  ]
+}

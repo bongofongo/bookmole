@@ -1,0 +1,70 @@
+{
+  "generator_version": 1,
+  "schema_version": 20221111,
+  "books": [
+    {
+      "title": "Middlemarch",
+      "md5": "3f9c1e7a5b2d4068a1c3e5f7092b4d6e",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-05",
+          "seconds": 720,
+          "pages": 3,
+          "minutes": 12
+        },
+        {
+          "day": "2026-01-06",
+          "seconds": 810,
+          "pages": 2,
+          "minutes": 14
+        },
+        {
+          "day": "2026-01-09",
+          "seconds": 3600,
+          "pages": 1,
+          "minutes": 60
+        }
+      ]
+    },
+    {
+      "title": "Brief Encounter",
+      "md5": "7d2a9e4c1b6f3058c2e4a6b8d0f1a3c5",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-07",
+          "seconds": 19,
+          "pages": 1,
+          "minutes": 0
+        }
+      ]
+    },
+    {
+      "title": "A Book We Never Imported",
+      "md5": "b4e8a2c6d0f3157e9a1c3e5b7d9f0a2c",
+      "in_library": false,
+      "days": [
+        {
+          "day": "2026-01-05",
+          "seconds": 900,
+          "pages": 1,
+          "minutes": 15
+        }
+      ]
+    },
+    {
+      "title": "No Checksum Here",
+      "md5": null,
+      "in_library": false,
+      "days": [
+        {
+          "day": "2026-01-06",
+          "seconds": 450,
+          "pages": 1,
+          "minutes": 8
+        }
+      ]
+    }
+  ]
+}

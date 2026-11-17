@@ -1,0 +1,83 @@
+# cargo-deny config. `check bans licenses sources` gates PRs; `check advisories`
+# runs on the scheduled workflow only, because the advisory DB moves on its own
+# schedule and would otherwise red PRs for reasons their author cannot fix.
+
+[graph]
+# The app is only ever built for the machine in front of it. Restricting the
+# graph keeps Windows-only and wasm-only crates out of the ban/license report.
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+]
+
+[advisories]
+version = 2
+
+# Every `unmaintained` entry below is an advisory whose own text ends "Solution:
+# No safe upgrade is available!", and none of them is reachable by a
+# `cargo update` from here. They are listed individually rather than waved
+# through with a blanket `unmaintained = "warn"`, for the same reason the
+# licence allowlist names every licence: a *new* unmaintained crate arriving
+# with a routine update must still turn this job red.
+#
+# No *vulnerability* is ignored here. The one block there was (zip 3.0.0,
+# through the old `epub` crate) left with that crate. Should one ever be listed,
+# it is only because the vulnerable function is provably never called, and its
+# comment must say how. A vulnerability that is reachable is fixed by an
+# upgrade, never listed here.
+#
+# Re-read this list whenever a dependency moves, and delete an entry the day
+# `cargo deny` reports it "not encountered" rather than renewing it.
+ignore = [
+    # `paste` is a macro-only crate pulled in by ratatui. It expands to token
+    # concatenation at compile time and is absent from the shipped binary; it
+    # clears when ratatui drops it.
+    { id = "RUSTSEC-2024-0436", reason = "paste, via ratatui; proc-macro only, not in the shipped binary" },
+]
+
+[licenses]
+version = 2
+# Permissive only. (The one deliberate exception, GPL-3.0 for the old `epub`
+# crate, left with that crate on 2026-11-12.) Anything copyleft landing
+# in the tree should be a visible decision, not something that arrives with a
+# routine `cargo update` — which is exactly what this list is for.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    # `notify`, the mount watcher's event source. A public-domain dedication
+    # with a permissive fallback licence — strictly *fewer* obligations than
+    # MIT, nothing to reproduce and no notice to carry. Listed rather than
+    # waved through because that is what this file is for: a copyleft or
+    # source-available licence must not arrive with a routine `cargo update`,
+    # and the only way to keep that true is to name every licence that does.
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+# Every workspace crate is `publish = false`. The library and tool crates carry
+# a `license` field (MPL-2.0; `epubkit` MIT OR Apache-2.0), but a crate that is
+# never published owes crates.io no SPDX metadata, so cargo-deny is told not to
+# demand it of them.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# `bookmole = { path = "../engine" }` in cli/ and tui/ has no version, which
+# reads as a wildcard. That is the normal way to depend across a workspace.
+allow-wildcard-paths = true
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

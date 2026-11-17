@@ -1,0 +1,268 @@
+-- GENERATED from a Project Gutenberg epub by `corpus gen-corpus`.
+-- Legacy `highlight` + `bookmarks` layout. Do not hand-edit.
+return {
+    ["highlight"] = {
+        [33] = {
+            [1] = {
+                ["chapter"] = "CHAPTER VII",
+                ["datetime"] = "2025-07-14 19:31:55",
+                ["pos0"] = "/body/DocFragment[9]/body/div[1]/p[30]/text().0",
+                ["pos1"] = "/body/DocFragment[9]/body/div[1]/p[30]/text().108",
+                ["text"] = "“Lise!” said Prince Andrew dryly, raising his voice to the pitch which indicates that patience is exhausted.",
+            },
+        },
+        [119] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XXV",
+                ["datetime"] = "2025-07-14 19:39:58",
+                ["pos0"] = "/body/DocFragment[27]/body/div[1]/p[9]/text().151",
+                ["pos1"] = "/body/DocFragment[27]/body/div[1]/p[9]/text().156",
+                ["text"] = "which",
+            },
+        },
+        [146] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XXVIII",
+                ["datetime"] = "2025-07-14 19:47:04",
+                ["pos0"] = "/body/DocFragment[30]/body/div[1]/p[63]/text().102",
+                ["pos1"] = "/body/DocFragment[30]/body/div[1]/p[63]/text().263",
+                ["text"] = "“I know that out of a million cases only one goes wrong, but it is her fancy and mine. They have been telling her things. She has had a dream and is frightened.”",
+            },
+        },
+        [158] = {
+            [1] = {
+                ["chapter"] = "CHAPTER II",
+                ["datetime"] = "2025-07-14 19:54:01",
+                ["pos0"] = "/body/DocFragment[32]/body/div[1]/p[25]/text().0",
+                ["pos1"] = "/body/DocFragment[32]/body/div[1]/p[25]/text().174",
+                ["text"] = "The regiment broke up into companies, which went to their appointed quarters near Braunau, where they hoped to receive boots and clothes and to rest after their hard marches.",
+            },
+        },
+        [175] = {
+            [1] = {
+                ["chapter"] = "CHAPTER IV",
+                ["datetime"] = "2025-07-17 19:21:44",
+                ["pos0"] = "/body/DocFragment[34]/body/div[1]/p[64]/text().0",
+                ["pos1"] = "/body/DocFragment[34]/body/div[1]/p[64]/text().121",
+                ["text"] = "“Oh, it’s wetched! Well, what are you standing there for, you sca’cwow? Call the quahtehmasteh,” he shouted to Lavrúshka.",
+            },
+        },
+        [190] = {
+            [1] = {
+                ["chapter"] = "CHAPTER VII",
+                ["datetime"] = "2025-07-17 19:28:02",
+                ["pos0"] = "/body/DocFragment[37]/body/div[1]/p[48]/text().59",
+                ["pos1"] = "/body/DocFragment[37]/body/div[1]/p[48]/text().226",
+                ["text"] = "Your fine cords would soon get a bit rubbed,” said an infantryman, wiping the mud off his face with his sleeve. “Perched up there, you’re more like a bird than a man.”",
+            },
+        },
+        [193] = {
+            [1] = {
+                ["chapter"] = "CHAPTER VIII",
+                ["datetime"] = "2025-07-17 19:32:58",
+                ["pos0"] = "/body/DocFragment[38]/body/div[1]/p[4]/text().63",
+                ["pos1"] = "/body/DocFragment[38]/body/div[1]/p[4]/text().177",
+                ["text"] = "Look at me,” cried Denísov who, unable to keep still on one spot, kept turning his horse in front of the squadron.",
+            },
+        },
+        [218] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XII",
+                ["datetime"] = "2025-07-17 19:38:26",
+                ["pos0"] = "/body/DocFragment[42]/body/div[1]/p[20]/text().0",
+                ["pos1"] = "/body/DocFragment[42]/body/div[1]/p[20]/text().156",
+                ["text"] = "Before returning to Bilíbin’s Prince Andrew had gone to a bookshop to provide himself with some books for the campaign, and had spent some time in the shop.",
+            },
+        },
+        [418] = {
+            [1] = {
+                ["chapter"] = "CHAPTER I",
+                ["datetime"] = "2025-07-18 21:30:45",
+                ["pos0"] = "/body/DocFragment[71]/body/div[2]/p[58]/text().0",
+                ["pos1"] = "/body/DocFragment[71]/body/div[2]/p[58]/text().165",
+                ["text"] = "She pulled up her muslin sleeve and showed him a red scar on her long, slender, delicate arm, high above the elbow on that part that is covered even by a ball dress.",
+            },
+        },
+        [538] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XI",
+                ["datetime"] = "2025-07-18 21:34:59",
+                ["pos0"] = "/body/DocFragment[97]/body/div[1]/p[42]/text().0",
+                ["pos1"] = "/body/DocFragment[97]/body/div[1]/p[42]/text().205",
+                ["text"] = "“But that’s just the same as myself—they are not others ,” explained Prince Andrew. “The others, one’s neighbors, le prochain , as you and Princess Mary call it, are the chief source of all error and evil.",
+            },
+        },
+        [547] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XIII",
+                ["datetime"] = "2025-07-18 21:42:37",
+                ["pos0"] = "/body/DocFragment[99]/body/div[1]/p[10]/text().0",
+                ["pos1"] = "/body/DocFragment[99]/body/div[1]/p[10]/text().89",
+                ["text"] = "Princess Mary really was disconcerted and red patches came on her face when they went in.",
+            },
+        },
+        [549] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XIII",
+                ["datetime"] = "2025-07-18 21:51:06",
+                ["pos0"] = "/body/DocFragment[99]/body/div[1]/p[37]/text().38",
+                ["pos1"] = "/body/DocFragment[99]/body/div[1]/p[37]/text().153",
+                ["text"] = "Such a brightness on the face like the light of heaven, and from the blessed Mother’s cheek it drops and drops....”",
+            },
+        },
+        [587] = {
+            [1] = {
+                ["chapter"] = "CHAPTER I",
+                ["datetime"] = "2025-07-26 21:33:01",
+                ["pos0"] = "/body/DocFragment[109]/body/div[2]/p[2]/text().0",
+                ["pos1"] = "/body/DocFragment[109]/body/div[2]/p[2]/text().208",
+                ["text"] = "All the plans Pierre had attempted on his estates—and constantly changing from one thing to another had never accomplished—were carried out by Prince Andrew without display and without perceptible difficulty.",
+            },
+        },
+        [592] = {
+            [1] = {
+                ["chapter"] = "CHAPTER II",
+                ["datetime"] = "2025-07-26 21:40:45",
+                ["pos0"] = "/body/DocFragment[110]/body/div[1]/p[20]/text().0",
+                ["pos1"] = "/body/DocFragment[110]/body/div[1]/p[20]/text().88",
+                ["text"] = "He heard the sound of a scuffle and Sónya’s disapproving voice: “It’s past one o’clock.”",
+            },
+        },
+        [607] = {
+            [1] = {
+                ["chapter"] = "CHAPTER VI",
+                ["datetime"] = "2025-07-26 21:49:19",
+                ["pos0"] = "/body/DocFragment[114]/body/div[1]/p[7]/text().561",
+                ["pos1"] = "/body/DocFragment[114]/body/div[1]/p[7]/text().925",
+                ["text"] = "Everything seemed so simple and clear in Speránski’s exposition that Prince Andrew involuntarily agreed with him about everything. If he replied and argued, it was only because he wished to maintain his independence and not submit to Speránski’s opinions entirely. Everything was right and everything was as it should be: only one thing disconcerted Prince Andrew.",
+            },
+        },
+        [673] = {
+            [1] = {
+                ["chapter"] = "CHAPTER XXIII",
+                ["datetime"] = "2025-07-26 21:53:32",
+                ["pos0"] = "/body/DocFragment[131]/body/div[1]/p[11]/text().0",
+                ["pos1"] = "/body/DocFragment[131]/body/div[1]/p[11]/text().113",
+                ["text"] = "“Leave off, Mamma! I don’t think, and don’t want to think about it! He just came and then left off, left off....”",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2025-07-14 19:31:55",
+            ["notes"] = "“Lise!” said Prince Andrew dryly, raising his voice to the pitch which indicates that patience is exhausted.",
+            ["page"] = 33,
+            ["text"] = "Does the narrator believe this, or is it irony?",
+        },
+        [2] = {
+            ["datetime"] = "2025-07-14 19:39:58",
+            ["notes"] = "which",
+            ["page"] = 119,
+            ["text"] = "Look up the historical context here.",
+        },
+        [3] = {
+            ["datetime"] = "2025-07-14 19:47:04",
+            ["notes"] = "“I know that out of a million cases only one goes wrong, but it is her fancy and mine. They have been telling her things. She has had a dream and is frightened.”",
+            ["page"] = 146,
+            ["text"] = "“I know that out of a million cases only one goes wrong, but it is her fancy and mine. They have been telling her things. She has had a dream and is frightened.”",
+        },
+        [4] = {
+            ["datetime"] = "2025-07-14 19:54:01",
+            ["notes"] = "The regiment broke up into companies, which went to their appointed quarters near Braunau, where they hoped to receive boots and clothes and to rest after their hard marches.",
+            ["page"] = 158,
+            ["text"] = "Possible epigraph.",
+        },
+        [5] = {
+            ["datetime"] = "2025-07-17 19:21:44",
+            ["notes"] = "“Oh, it’s wetched! Well, what are you standing there for, you sca’cwow? Call the quahtehmasteh,” he shouted to Lavrúshka.",
+            ["page"] = 175,
+            ["text"] = "Reminds me of something in [[Leo Tolstoy]]'s letters.",
+        },
+        [6] = {
+            ["datetime"] = "2025-07-17 19:28:02",
+            ["notes"] = "Your fine cords would soon get a bit rubbed,” said an infantryman, wiping the mud off his face with his sleeve. “Perched up there, you’re more like a bird than a man.”",
+            ["page"] = 190,
+            ["text"] = "Is this foreshadowing? Check after finishing.",
+        },
+        [7] = {
+            ["datetime"] = "2025-07-17 19:32:58",
+            ["notes"] = "Look at me,” cried Denísov who, unable to keep still on one spot, kept turning his horse in front of the squadron.",
+            ["page"] = 193,
+            ["text"] = "Look at me,” cried Denísov who, unable to keep still on one spot, kept turning his horse in front of the squadron.",
+        },
+        [8] = {
+            ["datetime"] = "2025-07-17 19:38:26",
+            ["notes"] = "Before returning to Bilíbin’s Prince Andrew had gone to a bookshop to provide himself with some books for the campaign, and had spent some time in the shop.",
+            ["page"] = 218,
+            ["text"] = "Before returning to Bilíbin’s Prince Andrew had gone to a bookshop to provide himself with some books for the campaign, and had spent some time in the shop.",
+        },
+        [9] = {
+            ["datetime"] = "2025-07-18 21:30:45",
+            ["notes"] = "She pulled up her muslin sleeve and showed him a red scar on her long, slender, delicate arm, high above the elbow on that part that is covered even by a ball dress.",
+            ["page"] = 418,
+            ["text"] = "She pulled up her muslin sleeve and showed him a red scar on her long, slender, delicate arm, high above the elbow on that part that is covered even by a ball dress.",
+        },
+        [10] = {
+            ["datetime"] = "2025-07-18 21:34:59",
+            ["notes"] = "“But that’s just the same as myself—they are not others ,” explained Prince Andrew. “The others, one’s neighbors, le prochain , as you and Princess Mary call it, are the chief source of all error and evil.",
+            ["page"] = 538,
+            ["text"] = "“But that’s just the same as myself—they are not others ,” explained Prince Andrew. “The others, one’s neighbors, le prochain , as you and Princess Mary call it, are the chief source of all error and evil.",
+        },
+        [11] = {
+            ["datetime"] = "2025-07-18 21:42:37",
+            ["notes"] = "Princess Mary really was disconcerted and red patches came on her face when they went in.",
+            ["page"] = 547,
+            ["text"] = "Princess Mary really was disconcerted and red patches came on her face when they went in.",
+        },
+        [12] = {
+            ["datetime"] = "2025-07-18 21:51:06",
+            ["notes"] = "Such a brightness on the face like the light of heaven, and from the blessed Mother’s cheek it drops and drops....”",
+            ["page"] = 549,
+            ["text"] = "Such a brightness on the face like the light of heaven, and from the blessed Mother’s cheek it drops and drops....”",
+        },
+        [13] = {
+            ["datetime"] = "2025-07-26 21:33:01",
+            ["notes"] = "All the plans Pierre had attempted on his estates—and constantly changing from one thing to another had never accomplished—were carried out by Prince Andrew without display and without perceptible difficulty.",
+            ["page"] = 587,
+            ["text"] = "All the plans Pierre had attempted on his estates—and constantly changing from one thing to another had never accomplished—were carried out by Prince Andrew without display and without perceptible difficulty.",
+        },
+        [14] = {
+            ["datetime"] = "2025-07-26 21:40:45",
+            ["notes"] = "He heard the sound of a scuffle and Sónya’s disapproving voice: “It’s past one o’clock.”",
+            ["page"] = 592,
+            ["text"] = "I disagree, but it is beautifully put.",
+        },
+        [15] = {
+            ["datetime"] = "2025-07-26 21:49:19",
+            ["notes"] = "Everything seemed so simple and clear in Speránski’s exposition that Prince Andrew involuntarily agreed with him about everything. If he replied and argued, it was only because he wished to maintain his independence and not submit to Speránski’s opinions entirely. Everything was right and everything was as it should be: only one thing disconcerted Prince Andrew.",
+            ["page"] = 607,
+            ["text"] = "Quote for the review.",
+        },
+        [16] = {
+            ["datetime"] = "2025-07-26 21:53:32",
+            ["notes"] = "“Leave off, Mamma! I don’t think, and don’t want to think about it! He just came and then left off, left off....”",
+            ["page"] = 673,
+            ["text"] = "Look up the historical context here.",
+        },
+    },
+    ["doc_pages"] = 1748,
+    ["doc_props"] = {
+        ["authors"] = "Leo Tolstoy",
+        ["language"] = "en",
+        ["title"] = "Robert'); DROP TABLE books;--",
+    },
+    ["partial_md5_checksum"] = "b77c0f93428c874828a9233aa1e2cc6e",
+    ["percent_finished"] = 0.4100,
+    ["stats"] = {
+        ["authors"] = "Leo Tolstoy",
+        ["highlights"] = 8,
+        ["language"] = "en",
+        ["notes"] = 8,
+        ["pages"] = 1748,
+        ["title"] = "Robert'); DROP TABLE books;--",
+    },
+    ["summary"] = {
+        ["modified"] = "2025-07-27",
+        ["status"] = "abandoned",
+    },
+}

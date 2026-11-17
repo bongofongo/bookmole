@@ -1,0 +1,17 @@
+# A calibre user with no device: the library `gen-calibre` builds with calibredb.
+# Not buildable until `cargo run -p corpus -- gen-calibre` has run.
+name = "calibre-only"
+description = "The generated calibre library through `bookmole calibre import`."
+
+[[step]]
+kind = "calibre-import"
+library = "corpus/generated/calibre/library"
+
+[[step]]
+kind = "sort-keys"
+
+[[step]]
+kind = "covers"
+
+[[step]]
+kind = "refill"

@@ -1,0 +1,2077 @@
+{
+  "generator_version": 1,
+  "schema_version": 20221111,
+  "books": [
+    {
+      "title": "Pride and Prejudice",
+      "md5": "2b2f3835b1fadc176a340f7f66ca6842",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-06-02",
+          "seconds": 1669,
+          "pages": 34,
+          "minutes": 28
+        },
+        {
+          "day": "2025-06-05",
+          "seconds": 1632,
+          "pages": 40,
+          "minutes": 27
+        },
+        {
+          "day": "2025-06-06",
+          "seconds": 1667,
+          "pages": 27,
+          "minutes": 28
+        },
+        {
+          "day": "2025-06-08",
+          "seconds": 1804,
+          "pages": 39,
+          "minutes": 30
+        },
+        {
+          "day": "2025-06-12",
+          "seconds": 513,
+          "pages": 9,
+          "minutes": 9
+        }
+      ]
+    },
+    {
+      "title": "Frankenstein; Or, The Modern Prometheus",
+      "md5": "c27094b0e70472a2b47c6cb905d299a8",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-06-06",
+          "seconds": 1362,
+          "pages": 22,
+          "minutes": 23
+        },
+        {
+          "day": "2025-06-09",
+          "seconds": 1189,
+          "pages": 21,
+          "minutes": 20
+        },
+        {
+          "day": "2025-06-11",
+          "seconds": 1275,
+          "pages": 25,
+          "minutes": 21
+        },
+        {
+          "day": "2025-06-13",
+          "seconds": 1280,
+          "pages": 17,
+          "minutes": 21
+        },
+        {
+          "day": "2025-06-14",
+          "seconds": 1549,
+          "pages": 6,
+          "minutes": 26
+        },
+        {
+          "day": "2025-06-15",
+          "seconds": 1322,
+          "pages": 38,
+          "minutes": 22
+        },
+        {
+          "day": "2025-06-19",
+          "seconds": 1510,
+          "pages": 9,
+          "minutes": 25
+        },
+        {
+          "day": "2025-06-20",
+          "seconds": 1320,
+          "pages": 5,
+          "minutes": 22
+        }
+      ]
+    },
+    {
+      "title": "Alice's Adventures in Wonderland",
+      "md5": "83bc06802c4c0a1522bff6837bab7c31",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-06-11",
+          "seconds": 1657,
+          "pages": 11,
+          "minutes": 28
+        },
+        {
+          "day": "2025-06-12",
+          "seconds": 1420,
+          "pages": 8,
+          "minutes": 24
+        },
+        {
+          "day": "2025-06-17",
+          "seconds": 1416,
+          "pages": 13,
+          "minutes": 24
+        },
+        {
+          "day": "2025-06-22",
+          "seconds": 1359,
+          "pages": 6,
+          "minutes": 23
+        },
+        {
+          "day": "2025-06-25",
+          "seconds": 1564,
+          "pages": 5,
+          "minutes": 26
+        }
+      ]
+    },
+    {
+      "title": "Moby Dick; Or, The Whale",
+      "md5": "ca59e1736258d1e2393d9a68ef5970c0",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-06-18",
+          "seconds": 1118,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-06-24",
+          "seconds": 959,
+          "pages": 40,
+          "minutes": 16
+        },
+        {
+          "day": "2025-06-27",
+          "seconds": 1035,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-06-28",
+          "seconds": 1180,
+          "pages": 36,
+          "minutes": 20
+        },
+        {
+          "day": "2025-06-29",
+          "seconds": 1072,
+          "pages": 15,
+          "minutes": 18
+        },
+        {
+          "day": "2025-07-01",
+          "seconds": 1053,
+          "pages": 40,
+          "minutes": 18
+        },
+        {
+          "day": "2025-07-02",
+          "seconds": 1137,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-07-04",
+          "seconds": 1123,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-07-11",
+          "seconds": 1175,
+          "pages": 15,
+          "minutes": 20
+        }
+      ]
+    },
+    {
+      "title": "The Adventures of Sherlock Holmes",
+      "md5": "692b28839ddb8b285b5a17844fada146",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-06-24",
+          "seconds": 1245,
+          "pages": 13,
+          "minutes": 21
+        },
+        {
+          "day": "2025-06-25",
+          "seconds": 1280,
+          "pages": 14,
+          "minutes": 21
+        },
+        {
+          "day": "2025-06-26",
+          "seconds": 1475,
+          "pages": 27,
+          "minutes": 25
+        },
+        {
+          "day": "2025-06-29",
+          "seconds": 1675,
+          "pages": 13,
+          "minutes": 28
+        },
+        {
+          "day": "2025-07-02",
+          "seconds": 1237,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2025-07-05",
+          "seconds": 1419,
+          "pages": 31,
+          "minutes": 24
+        },
+        {
+          "day": "2025-07-11",
+          "seconds": 1463,
+          "pages": 12,
+          "minutes": 24
+        },
+        {
+          "day": "2025-07-12",
+          "seconds": 1567,
+          "pages": 24,
+          "minutes": 26
+        },
+        {
+          "day": "2025-07-13",
+          "seconds": 1385,
+          "pages": 17,
+          "minutes": 23
+        },
+        {
+          "day": "2025-07-14",
+          "seconds": 1485,
+          "pages": 23,
+          "minutes": 25
+        }
+      ]
+    },
+    {
+      "title": "A Tale of Two Cities",
+      "md5": "ab67cf2a7239a029a97f7666395d4cd2",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-03",
+          "seconds": 1675,
+          "pages": 14,
+          "minutes": 28
+        },
+        {
+          "day": "2025-07-05",
+          "seconds": 1858,
+          "pages": 30,
+          "minutes": 31
+        }
+      ]
+    },
+    {
+      "title": "A Modest Proposal",
+      "md5": "4c3c88af6c4fbedeb5774f27e71f5719",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-10",
+          "seconds": 1945,
+          "pages": 1,
+          "minutes": 32
+        },
+        {
+          "day": "2025-07-13",
+          "seconds": 2097,
+          "pages": 3,
+          "minutes": 35
+        },
+        {
+          "day": "2025-07-14",
+          "seconds": 1805,
+          "pages": 4,
+          "minutes": 30
+        },
+        {
+          "day": "2025-07-22",
+          "seconds": 1914,
+          "pages": 7,
+          "minutes": 32
+        },
+        {
+          "day": "2025-07-24",
+          "seconds": 1561,
+          "pages": 4,
+          "minutes": 26
+        },
+        {
+          "day": "2025-07-29",
+          "seconds": 1797,
+          "pages": 3,
+          "minutes": 30
+        },
+        {
+          "day": "2025-07-31",
+          "seconds": 999,
+          "pages": 5,
+          "minutes": 17
+        }
+      ]
+    },
+    {
+      "title": "Robert'); DROP TABLE books;--",
+      "md5": "b77c0f93428c874828a9233aa1e2cc6e",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-14",
+          "seconds": 1364,
+          "pages": 40,
+          "minutes": 23
+        },
+        {
+          "day": "2025-07-17",
+          "seconds": 1005,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-07-18",
+          "seconds": 1221,
+          "pages": 40,
+          "minutes": 20
+        },
+        {
+          "day": "2025-07-26",
+          "seconds": 1228,
+          "pages": 40,
+          "minutes": 20
+        }
+      ]
+    },
+    {
+      "title": "The Picture of Dorian Gray",
+      "md5": "336a8bb585e76a900f00ff1adedba3ac",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-19",
+          "seconds": 1436,
+          "pages": 17,
+          "minutes": 24
+        },
+        {
+          "day": "2025-07-22",
+          "seconds": 1780,
+          "pages": 17,
+          "minutes": 30
+        },
+        {
+          "day": "2025-07-25",
+          "seconds": 1616,
+          "pages": 21,
+          "minutes": 27
+        },
+        {
+          "day": "2025-07-28",
+          "seconds": 1446,
+          "pages": 30,
+          "minutes": 24
+        },
+        {
+          "day": "2025-07-31",
+          "seconds": 892,
+          "pages": 6,
+          "minutes": 15
+        }
+      ]
+    },
+    {
+      "title": "Dracula",
+      "md5": "645e61918a0af53c5ed878578b049b15",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-25",
+          "seconds": 1640,
+          "pages": 39,
+          "minutes": 27
+        },
+        {
+          "day": "2025-08-02",
+          "seconds": 1499,
+          "pages": 35,
+          "minutes": 25
+        }
+      ]
+    },
+    {
+      "title": "Jane Eyre: An Autobiography",
+      "md5": "9110eba3c75df70ca434f438d4c4d220",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-07-29",
+          "seconds": 978,
+          "pages": 35,
+          "minutes": 16
+        },
+        {
+          "day": "2025-07-31",
+          "seconds": 1242,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2025-08-05",
+          "seconds": 1019,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-08-06",
+          "seconds": 1538,
+          "pages": 8,
+          "minutes": 26
+        },
+        {
+          "day": "2025-08-07",
+          "seconds": 1227,
+          "pages": 40,
+          "minutes": 20
+        },
+        {
+          "day": "2025-08-09",
+          "seconds": 1298,
+          "pages": 40,
+          "minutes": 22
+        },
+        {
+          "day": "2025-08-15",
+          "seconds": 1379,
+          "pages": 25,
+          "minutes": 23
+        },
+        {
+          "day": "2025-08-16",
+          "seconds": 930,
+          "pages": 38,
+          "minutes": 16
+        },
+        {
+          "day": "2025-08-20",
+          "seconds": 1388,
+          "pages": 39,
+          "minutes": 23
+        },
+        {
+          "day": "2025-08-21",
+          "seconds": 971,
+          "pages": 39,
+          "minutes": 16
+        }
+      ]
+    },
+    {
+      "title": "Ulysses",
+      "md5": "fbaa2db028e31a92cf481c7f937b0925",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-08-05",
+          "seconds": 1715,
+          "pages": 40,
+          "minutes": 29
+        },
+        {
+          "day": "2025-08-08",
+          "seconds": 1846,
+          "pages": 21,
+          "minutes": 31
+        },
+        {
+          "day": "2025-08-11",
+          "seconds": 1518,
+          "pages": 40,
+          "minutes": 25
+        },
+        {
+          "day": "2025-08-13",
+          "seconds": 504,
+          "pages": 8,
+          "minutes": 8
+        }
+      ]
+    },
+    {
+      "title": "Adventures of Huckleberry Finn",
+      "md5": "f2567bc10ac8321bf86ba0a8e78b03a5",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-08-11",
+          "seconds": 1419,
+          "pages": 20,
+          "minutes": 24
+        },
+        {
+          "day": "2025-08-12",
+          "seconds": 1322,
+          "pages": 25,
+          "minutes": 22
+        },
+        {
+          "day": "2025-08-13",
+          "seconds": 1428,
+          "pages": 38,
+          "minutes": 24
+        },
+        {
+          "day": "2025-08-14",
+          "seconds": 1027,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-08-15",
+          "seconds": 1270,
+          "pages": 27,
+          "minutes": 21
+        },
+        {
+          "day": "2025-08-16",
+          "seconds": 1187,
+          "pages": 17,
+          "minutes": 20
+        },
+        {
+          "day": "2025-08-19",
+          "seconds": 1327,
+          "pages": 21,
+          "minutes": 22
+        },
+        {
+          "day": "2025-08-20",
+          "seconds": 1129,
+          "pages": 17,
+          "minutes": 19
+        }
+      ]
+    },
+    {
+      "title": "Beowulf: An Anglo-Saxon Epic Poem",
+      "md5": "4c3a261eb793ab369b281dc3c2205fcc",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-09-01",
+          "seconds": 1191,
+          "pages": 3,
+          "minutes": 20
+        },
+        {
+          "day": "2025-09-02",
+          "seconds": 1658,
+          "pages": 3,
+          "minutes": 28
+        },
+        {
+          "day": "2025-09-07",
+          "seconds": 1414,
+          "pages": 5,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-08",
+          "seconds": 1440,
+          "pages": 5,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-14",
+          "seconds": 1643,
+          "pages": 4,
+          "minutes": 27
+        },
+        {
+          "day": "2025-09-16",
+          "seconds": 1636,
+          "pages": 4,
+          "minutes": 27
+        },
+        {
+          "day": "2025-09-24",
+          "seconds": 1457,
+          "pages": 6,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-25",
+          "seconds": 1252,
+          "pages": 2,
+          "minutes": 21
+        },
+        {
+          "day": "2025-09-28",
+          "seconds": 1570,
+          "pages": 3,
+          "minutes": 26
+        },
+        {
+          "day": "2025-10-01",
+          "seconds": 1368,
+          "pages": 6,
+          "minutes": 23
+        }
+      ]
+    },
+    {
+      "title": "Les Misérables",
+      "md5": "6f6c940b26bcfbea182a88e5fa1968e1",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-09-09",
+          "seconds": 1232,
+          "pages": 17,
+          "minutes": 21
+        },
+        {
+          "day": "2025-09-12",
+          "seconds": 1325,
+          "pages": 29,
+          "minutes": 22
+        },
+        {
+          "day": "2025-09-13",
+          "seconds": 1198,
+          "pages": 35,
+          "minutes": 20
+        },
+        {
+          "day": "2025-09-14",
+          "seconds": 1265,
+          "pages": 40,
+          "minutes": 21
+        }
+      ]
+    },
+    {
+      "title": "Le Petit Prince",
+      "md5": "46ae4003fc5be54c03a2960b8ea8466b",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-09-17",
+          "seconds": 1338,
+          "pages": 40,
+          "minutes": 22
+        },
+        {
+          "day": "2025-09-18",
+          "seconds": 1427,
+          "pages": 40,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-19",
+          "seconds": 1614,
+          "pages": 40,
+          "minutes": 27
+        },
+        {
+          "day": "2025-09-20",
+          "seconds": 1629,
+          "pages": 39,
+          "minutes": 27
+        },
+        {
+          "day": "2025-09-21",
+          "seconds": 1748,
+          "pages": 40,
+          "minutes": 29
+        }
+      ]
+    },
+    {
+      "title": "Don Quijote",
+      "md5": "3a60daa12dd3bfeba4a5676a58742f31",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-09-21",
+          "seconds": 1412,
+          "pages": 40,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-24",
+          "seconds": 1440,
+          "pages": 40,
+          "minutes": 24
+        },
+        {
+          "day": "2025-09-28",
+          "seconds": 1132,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-10-06",
+          "seconds": 1025,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-10-08",
+          "seconds": 1278,
+          "pages": 40,
+          "minutes": 21
+        }
+      ]
+    },
+    {
+      "title": "Der Struwwelpeter",
+      "md5": "5068cbe8c1a8b892d0b422695ee7921b",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-09-27",
+          "seconds": 1410,
+          "pages": 21,
+          "minutes": 24
+        },
+        {
+          "day": "2025-10-01",
+          "seconds": 1481,
+          "pages": 10,
+          "minutes": 25
+        },
+        {
+          "day": "2025-10-03",
+          "seconds": 1411,
+          "pages": 11,
+          "minutes": 24
+        },
+        {
+          "day": "2025-10-04",
+          "seconds": 1415,
+          "pages": 6,
+          "minutes": 24
+        },
+        {
+          "day": "2025-10-13",
+          "seconds": 1313,
+          "pages": 6,
+          "minutes": 22
+        },
+        {
+          "day": "2025-10-17",
+          "seconds": 1504,
+          "pages": 9,
+          "minutes": 25
+        },
+        {
+          "day": "2025-10-18",
+          "seconds": 1572,
+          "pages": 8,
+          "minutes": 26
+        }
+      ]
+    },
+    {
+      "title": "Faust: Der Tragödie erster Teil",
+      "md5": "8981721e175653a17faf199bfc1dbc97",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-02",
+          "seconds": 1362,
+          "pages": 13,
+          "minutes": 23
+        },
+        {
+          "day": "2025-10-04",
+          "seconds": 1696,
+          "pages": 23,
+          "minutes": 28
+        },
+        {
+          "day": "2025-10-12",
+          "seconds": 1791,
+          "pages": 14,
+          "minutes": 30
+        },
+        {
+          "day": "2025-10-13",
+          "seconds": 1932,
+          "pages": 14,
+          "minutes": 32
+        },
+        {
+          "day": "2025-10-17",
+          "seconds": 1667,
+          "pages": 10,
+          "minutes": 28
+        },
+        {
+          "day": "2025-10-21",
+          "seconds": 1482,
+          "pages": 5,
+          "minutes": 25
+        }
+      ]
+    },
+    {
+      "title": "Братья Карамазовы",
+      "md5": "8fc6266bf89ab790ec868efe911fe8c5",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-09",
+          "seconds": 996,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-10-12",
+          "seconds": 1241,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2025-10-15",
+          "seconds": 1343,
+          "pages": 40,
+          "minutes": 22
+        },
+        {
+          "day": "2025-10-17",
+          "seconds": 1407,
+          "pages": 40,
+          "minutes": 23
+        }
+      ]
+    },
+    {
+      "title": "Crime and Punishment",
+      "md5": "f391d3817fa70567adb9f3c642437af7",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-12",
+          "seconds": 1278,
+          "pages": 28,
+          "minutes": 21
+        },
+        {
+          "day": "2025-10-13",
+          "seconds": 990,
+          "pages": 40,
+          "minutes": 17
+        },
+        {
+          "day": "2025-10-14",
+          "seconds": 1256,
+          "pages": 33,
+          "minutes": 21
+        },
+        {
+          "day": "2025-10-15",
+          "seconds": 1185,
+          "pages": 40,
+          "minutes": 20
+        },
+        {
+          "day": "2025-10-16",
+          "seconds": 1522,
+          "pages": 40,
+          "minutes": 25
+        },
+        {
+          "day": "2025-10-21",
+          "seconds": 1349,
+          "pages": 40,
+          "minutes": 22
+        },
+        {
+          "day": "2025-10-29",
+          "seconds": 1161,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-11-01",
+          "seconds": 1282,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2025-11-05",
+          "seconds": 1286,
+          "pages": 31,
+          "minutes": 21
+        },
+        {
+          "day": "2025-11-14",
+          "seconds": 916,
+          "pages": 40,
+          "minutes": 15
+        }
+      ]
+    },
+    {
+      "title": "こころ",
+      "md5": "ccae712b7db49322b18b7139d6b638b1",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-13",
+          "seconds": 1978,
+          "pages": 1,
+          "minutes": 33
+        },
+        {
+          "day": "2025-10-14",
+          "seconds": 1713,
+          "pages": 1,
+          "minutes": 29
+        },
+        {
+          "day": "2025-10-16",
+          "seconds": 1308,
+          "pages": 1,
+          "minutes": 22
+        }
+      ]
+    },
+    {
+      "title": "論語",
+      "md5": "fcfdfed30b3513e5263836595a1352e2",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-14",
+          "seconds": 1525,
+          "pages": 6,
+          "minutes": 25
+        },
+        {
+          "day": "2025-10-16",
+          "seconds": 1381,
+          "pages": 6,
+          "minutes": 23
+        },
+        {
+          "day": "2025-10-22",
+          "seconds": 1222,
+          "pages": 11,
+          "minutes": 20
+        },
+        {
+          "day": "2025-10-29",
+          "seconds": 1297,
+          "pages": 3,
+          "minutes": 22
+        },
+        {
+          "day": "2025-10-30",
+          "seconds": 1622,
+          "pages": 4,
+          "minutes": 27
+        },
+        {
+          "day": "2025-11-03",
+          "seconds": 1697,
+          "pages": 3,
+          "minutes": 28
+        },
+        {
+          "day": "2025-11-04",
+          "seconds": 1353,
+          "pages": 9,
+          "minutes": 23
+        },
+        {
+          "day": "2025-11-05",
+          "seconds": 1535,
+          "pages": 8,
+          "minutes": 26
+        },
+        {
+          "day": "2025-11-08",
+          "seconds": 1725,
+          "pages": 6,
+          "minutes": 29
+        },
+        {
+          "day": "2025-11-22",
+          "seconds": 1116,
+          "pages": 4,
+          "minutes": 19
+        }
+      ]
+    },
+    {
+      "title": "Il Decamerone",
+      "md5": "0bfb58de98cdc34541056e62436b2a7c",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-15",
+          "seconds": 1839,
+          "pages": 9,
+          "minutes": 31
+        },
+        {
+          "day": "2025-10-17",
+          "seconds": 2015,
+          "pages": 14,
+          "minutes": 34
+        }
+      ]
+    },
+    {
+      "title": "The Federalist Papers",
+      "md5": "a361c6e261f6f9f906d20070e552e69c",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-16",
+          "seconds": 1728,
+          "pages": 19,
+          "minutes": 29
+        },
+        {
+          "day": "2025-10-25",
+          "seconds": 1756,
+          "pages": 37,
+          "minutes": 29
+        },
+        {
+          "day": "2025-10-28",
+          "seconds": 1641,
+          "pages": 40,
+          "minutes": 27
+        },
+        {
+          "day": "2025-11-02",
+          "seconds": 1351,
+          "pages": 40,
+          "minutes": 23
+        },
+        {
+          "day": "2025-11-04",
+          "seconds": 1455,
+          "pages": 40,
+          "minutes": 24
+        },
+        {
+          "day": "2025-11-07",
+          "seconds": 266,
+          "pages": 3,
+          "minutes": 4
+        }
+      ]
+    },
+    {
+      "title": "The Complete Works of William Shakespeare",
+      "md5": "88132b87d577855d5decb5f8015e2a88",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-17",
+          "seconds": 1488,
+          "pages": 40,
+          "minutes": 25
+        },
+        {
+          "day": "2025-10-28",
+          "seconds": 1442,
+          "pages": 40,
+          "minutes": 24
+        }
+      ]
+    },
+    {
+      "title": "The Scarlet Letter",
+      "md5": "3ccaa48ae17d644ac779d733ccaaced7",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-10-26",
+          "seconds": 1115,
+          "pages": 40,
+          "minutes": 19
+        },
+        {
+          "day": "2025-10-29",
+          "seconds": 1353,
+          "pages": 18,
+          "minutes": 23
+        },
+        {
+          "day": "2025-10-31",
+          "seconds": 1201,
+          "pages": 18,
+          "minutes": 20
+        },
+        {
+          "day": "2025-11-04",
+          "seconds": 1160,
+          "pages": 31,
+          "minutes": 19
+        },
+        {
+          "day": "2025-11-05",
+          "seconds": 1014,
+          "pages": 21,
+          "minutes": 17
+        },
+        {
+          "day": "2025-11-06",
+          "seconds": 1303,
+          "pages": 18,
+          "minutes": 22
+        },
+        {
+          "day": "2025-11-07",
+          "seconds": 1398,
+          "pages": 10,
+          "minutes": 23
+        },
+        {
+          "day": "2025-11-10",
+          "seconds": 1358,
+          "pages": 20,
+          "minutes": 23
+        },
+        {
+          "day": "2025-11-11",
+          "seconds": 1551,
+          "pages": 21,
+          "minutes": 26
+        },
+        {
+          "day": "2025-11-16",
+          "seconds": 1540,
+          "pages": 15,
+          "minutes": 26
+        }
+      ]
+    },
+    {
+      "title": "The Adventures of Tom Sawyer",
+      "md5": "470ff72624650cec4e2e80a4a5e5d3ae",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-11-01",
+          "seconds": 1141,
+          "pages": 7,
+          "minutes": 19
+        },
+        {
+          "day": "2025-11-04",
+          "seconds": 1318,
+          "pages": 10,
+          "minutes": 22
+        },
+        {
+          "day": "2025-11-06",
+          "seconds": 1379,
+          "pages": 19,
+          "minutes": 23
+        },
+        {
+          "day": "2025-11-13",
+          "seconds": 1522,
+          "pages": 21,
+          "minutes": 25
+        },
+        {
+          "day": "2025-11-15",
+          "seconds": 1334,
+          "pages": 19,
+          "minutes": 22
+        },
+        {
+          "day": "2025-11-16",
+          "seconds": 1190,
+          "pages": 14,
+          "minutes": 20
+        }
+      ]
+    },
+    {
+      "title": "Heart of Darkness",
+      "md5": "d285a18f5eaf6f9226fb4d87b367bd56",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-11-10",
+          "seconds": 1530,
+          "pages": 10,
+          "minutes": 26
+        },
+        {
+          "day": "2025-11-11",
+          "seconds": 1775,
+          "pages": 14,
+          "minutes": 30
+        },
+        {
+          "day": "2025-11-24",
+          "seconds": 1834,
+          "pages": 8,
+          "minutes": 31
+        },
+        {
+          "day": "2025-11-25",
+          "seconds": 1160,
+          "pages": 39,
+          "minutes": 19
+        },
+        {
+          "day": "2025-11-28",
+          "seconds": 557,
+          "pages": 4,
+          "minutes": 9
+        }
+      ]
+    },
+    {
+      "title": "Through the Looking-Glass",
+      "md5": "116ca796a3b534d467f15591445d118c",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-11-17",
+          "seconds": 1626,
+          "pages": 12,
+          "minutes": 27
+        },
+        {
+          "day": "2025-11-22",
+          "seconds": 1645,
+          "pages": 19,
+          "minutes": 27
+        },
+        {
+          "day": "2025-11-23",
+          "seconds": 1918,
+          "pages": 9,
+          "minutes": 32
+        },
+        {
+          "day": "2025-11-25",
+          "seconds": 954,
+          "pages": 4,
+          "minutes": 16
+        }
+      ]
+    },
+    {
+      "title": "The Wonderful Wizard of Oz",
+      "md5": "c760a69566de2cf3c3655d1bae5ac665",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-11-20",
+          "seconds": 1693,
+          "pages": 10,
+          "minutes": 28
+        },
+        {
+          "day": "2025-11-23",
+          "seconds": 1919,
+          "pages": 10,
+          "minutes": 32
+        }
+      ]
+    },
+    {
+      "title": "The Jungle Book",
+      "md5": "a46bea4a1623cb09446510129809fd28",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-11-26",
+          "seconds": 1163,
+          "pages": 16,
+          "minutes": 19
+        },
+        {
+          "day": "2025-11-27",
+          "seconds": 1220,
+          "pages": 4,
+          "minutes": 20
+        },
+        {
+          "day": "2025-12-06",
+          "seconds": 1688,
+          "pages": 14,
+          "minutes": 28
+        },
+        {
+          "day": "2025-12-08",
+          "seconds": 1459,
+          "pages": 5,
+          "minutes": 24
+        },
+        {
+          "day": "2025-12-11",
+          "seconds": 1418,
+          "pages": 13,
+          "minutes": 24
+        },
+        {
+          "day": "2025-12-15",
+          "seconds": 1079,
+          "pages": 26,
+          "minutes": 18
+        },
+        {
+          "day": "2025-12-16",
+          "seconds": 1205,
+          "pages": 15,
+          "minutes": 20
+        },
+        {
+          "day": "2025-12-17",
+          "seconds": 1227,
+          "pages": 12,
+          "minutes": 20
+        },
+        {
+          "day": "2025-12-27",
+          "seconds": 1486,
+          "pages": 17,
+          "minutes": 25
+        },
+        {
+          "day": "2025-12-31",
+          "seconds": 1489,
+          "pages": 9,
+          "minutes": 25
+        }
+      ]
+    },
+    {
+      "title": "x' UNION SELECT sql FROM sqlite_master; /*",
+      "md5": "a6edcc1ee89d774174a9e2d25d8f8881",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-12-03",
+          "seconds": 1156,
+          "pages": 13,
+          "minutes": 19
+        },
+        {
+          "day": "2025-12-05",
+          "seconds": 1434,
+          "pages": 26,
+          "minutes": 24
+        },
+        {
+          "day": "2025-12-06",
+          "seconds": 1277,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2025-12-11",
+          "seconds": 1408,
+          "pages": 10,
+          "minutes": 23
+        },
+        {
+          "day": "2025-12-12",
+          "seconds": 1228,
+          "pages": 27,
+          "minutes": 20
+        },
+        {
+          "day": "2025-12-13",
+          "seconds": 1531,
+          "pages": 13,
+          "minutes": 26
+        },
+        {
+          "day": "2025-12-14",
+          "seconds": 1370,
+          "pages": 7,
+          "minutes": 23
+        },
+        {
+          "day": "2025-12-15",
+          "seconds": 1087,
+          "pages": 36,
+          "minutes": 18
+        },
+        {
+          "day": "2025-12-19",
+          "seconds": 1392,
+          "pages": 21,
+          "minutes": 23
+        },
+        {
+          "day": "2025-12-20",
+          "seconds": 1184,
+          "pages": 40,
+          "minutes": 20
+        }
+      ]
+    },
+    {
+      "title": "The Raven",
+      "md5": "bd7a8d60641c31f5477f3de8b70f5bc2",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-12-10",
+          "seconds": 1921,
+          "pages": 1,
+          "minutes": 32
+        },
+        {
+          "day": "2025-12-13",
+          "seconds": 1840,
+          "pages": 1,
+          "minutes": 31
+        },
+        {
+          "day": "2025-12-17",
+          "seconds": 1603,
+          "pages": 2,
+          "minutes": 27
+        },
+        {
+          "day": "2025-12-24",
+          "seconds": 1807,
+          "pages": 2,
+          "minutes": 30
+        },
+        {
+          "day": "2025-12-30",
+          "seconds": 1942,
+          "pages": 3,
+          "minutes": 32
+        },
+        {
+          "day": "2025-12-31",
+          "seconds": 1863,
+          "pages": 3,
+          "minutes": 31
+        },
+        {
+          "day": "2026-01-08",
+          "seconds": 1207,
+          "pages": 4,
+          "minutes": 20
+        }
+      ]
+    },
+    {
+      "title": "Leaves of Grass",
+      "md5": "310fbd798e0d808aa814dc8991d5cd93",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2025-12-31",
+          "seconds": 1364,
+          "pages": 1,
+          "minutes": 23
+        }
+      ]
+    },
+    {
+      "title": "Romeo and Juliet",
+      "md5": "e6f9a86547f4654e5fdf97b96b76a379",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-09",
+          "seconds": 1436,
+          "pages": 8,
+          "minutes": 24
+        },
+        {
+          "day": "2026-01-10",
+          "seconds": 1431,
+          "pages": 10,
+          "minutes": 24
+        },
+        {
+          "day": "2026-01-11",
+          "seconds": 1340,
+          "pages": 12,
+          "minutes": 22
+        },
+        {
+          "day": "2026-01-12",
+          "seconds": 1635,
+          "pages": 10,
+          "minutes": 27
+        },
+        {
+          "day": "2026-01-13",
+          "seconds": 1688,
+          "pages": 10,
+          "minutes": 28
+        },
+        {
+          "day": "2026-01-14",
+          "seconds": 1343,
+          "pages": 6,
+          "minutes": 22
+        },
+        {
+          "day": "2026-01-15",
+          "seconds": 1452,
+          "pages": 5,
+          "minutes": 24
+        },
+        {
+          "day": "2026-01-16",
+          "seconds": 1412,
+          "pages": 12,
+          "minutes": 24
+        },
+        {
+          "day": "2026-01-17",
+          "seconds": 1487,
+          "pages": 7,
+          "minutes": 25
+        },
+        {
+          "day": "2026-01-18",
+          "seconds": 1384,
+          "pages": 7,
+          "minutes": 23
+        }
+      ]
+    },
+    {
+      "title": "The Importance of Being Earnest: A Trivial Comedy for Serious People",
+      "md5": "a07ca62c576eace00e30c497f9095d8f",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-16",
+          "seconds": 1335,
+          "pages": 6,
+          "minutes": 22
+        },
+        {
+          "day": "2026-01-18",
+          "seconds": 1606,
+          "pages": 8,
+          "minutes": 27
+        },
+        {
+          "day": "2026-01-20",
+          "seconds": 1510,
+          "pages": 6,
+          "minutes": 25
+        },
+        {
+          "day": "2026-01-21",
+          "seconds": 1277,
+          "pages": 8,
+          "minutes": 21
+        }
+      ]
+    },
+    {
+      "title": "The Book of Household Management",
+      "md5": "64c34afcb95ea50fe5c25734c627f840",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-26",
+          "seconds": 1461,
+          "pages": 40,
+          "minutes": 24
+        },
+        {
+          "day": "2026-01-27",
+          "seconds": 1909,
+          "pages": 40,
+          "minutes": 32
+        },
+        {
+          "day": "2026-01-29",
+          "seconds": 951,
+          "pages": 40,
+          "minutes": 16
+        }
+      ]
+    },
+    {
+      "title": "Pride and Prejudice",
+      "md5": "822f91d3d2aec6ed604808b2a0d01071",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-02-05",
+          "seconds": 1745,
+          "pages": 17,
+          "minutes": 29
+        },
+        {
+          "day": "2026-02-06",
+          "seconds": 1297,
+          "pages": 40,
+          "minutes": 22
+        },
+        {
+          "day": "2026-02-07",
+          "seconds": 1667,
+          "pages": 16,
+          "minutes": 28
+        },
+        {
+          "day": "2026-02-08",
+          "seconds": 1051,
+          "pages": 28,
+          "minutes": 18
+        },
+        {
+          "day": "2026-02-09",
+          "seconds": 1394,
+          "pages": 38,
+          "minutes": 23
+        },
+        {
+          "day": "2026-02-10",
+          "seconds": 1201,
+          "pages": 21,
+          "minutes": 20
+        },
+        {
+          "day": "2026-02-11",
+          "seconds": 1262,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2026-02-12",
+          "seconds": 1084,
+          "pages": 34,
+          "minutes": 18
+        },
+        {
+          "day": "2026-02-13",
+          "seconds": 1520,
+          "pages": 16,
+          "minutes": 25
+        },
+        {
+          "day": "2026-02-15",
+          "seconds": 1290,
+          "pages": 14,
+          "minutes": 22
+        }
+      ]
+    },
+    {
+      "title": "Alice's Adventures in Wonderland",
+      "md5": "433baddb2091053dcd256d2c04a7f048",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-02-14",
+          "seconds": 1716,
+          "pages": 16,
+          "minutes": 29
+        },
+        {
+          "day": "2026-02-15",
+          "seconds": 2032,
+          "pages": 10,
+          "minutes": 34
+        },
+        {
+          "day": "2026-02-26",
+          "seconds": 1643,
+          "pages": 8,
+          "minutes": 27
+        },
+        {
+          "day": "2026-03-03",
+          "seconds": 1078,
+          "pages": 3,
+          "minutes": 18
+        }
+      ]
+    },
+    {
+      "title": "Die Verwandlung",
+      "md5": "9e3a3dbc8fa37d99ced4050d99cecfd0",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-02-21",
+          "seconds": 1555,
+          "pages": 5,
+          "minutes": 26
+        },
+        {
+          "day": "2026-02-23",
+          "seconds": 2053,
+          "pages": 8,
+          "minutes": 34
+        },
+        {
+          "day": "2026-02-24",
+          "seconds": 1484,
+          "pages": 6,
+          "minutes": 25
+        },
+        {
+          "day": "2026-02-27",
+          "seconds": 2087,
+          "pages": 13,
+          "minutes": 35
+        },
+        {
+          "day": "2026-02-28",
+          "seconds": 285,
+          "pages": 2,
+          "minutes": 5
+        }
+      ]
+    },
+    {
+      "title": "Madame Bovary",
+      "md5": "2ae3ba1ef9301226ae812c3eae236586",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-03-03",
+          "seconds": 1172,
+          "pages": 40,
+          "minutes": 20
+        },
+        {
+          "day": "2026-03-06",
+          "seconds": 1309,
+          "pages": 19,
+          "minutes": 22
+        },
+        {
+          "day": "2026-03-08",
+          "seconds": 1461,
+          "pages": 34,
+          "minutes": 24
+        },
+        {
+          "day": "2026-03-09",
+          "seconds": 1149,
+          "pages": 29,
+          "minutes": 19
+        },
+        {
+          "day": "2026-03-10",
+          "seconds": 1087,
+          "pages": 32,
+          "minutes": 18
+        },
+        {
+          "day": "2026-03-11",
+          "seconds": 1337,
+          "pages": 19,
+          "minutes": 22
+        },
+        {
+          "day": "2026-03-14",
+          "seconds": 923,
+          "pages": 32,
+          "minutes": 15
+        },
+        {
+          "day": "2026-03-16",
+          "seconds": 1349,
+          "pages": 21,
+          "minutes": 22
+        }
+      ]
+    },
+    {
+      "title": "Αγαμέμνων",
+      "md5": "5a433d711fa05cf3c8bbc6129c2e27d2",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-03-12",
+          "seconds": 1906,
+          "pages": 10,
+          "minutes": 32
+        },
+        {
+          "day": "2026-03-14",
+          "seconds": 1873,
+          "pages": 7,
+          "minutes": 31
+        },
+        {
+          "day": "2026-03-17",
+          "seconds": 1871,
+          "pages": 4,
+          "minutes": 31
+        },
+        {
+          "day": "2026-03-20",
+          "seconds": 1854,
+          "pages": 4,
+          "minutes": 31
+        },
+        {
+          "day": "2026-03-31",
+          "seconds": 288,
+          "pages": 2,
+          "minutes": 5
+        }
+      ]
+    },
+    {
+      "title": "Κύρου Ανάβασις Τόμος 1",
+      "md5": "9100cc2ef87b9a544964ae47a65eb7a6",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-03-18",
+          "seconds": 1704,
+          "pages": 13,
+          "minutes": 28
+        },
+        {
+          "day": "2026-03-19",
+          "seconds": 1461,
+          "pages": 24,
+          "minutes": 24
+        },
+        {
+          "day": "2026-03-22",
+          "seconds": 1801,
+          "pages": 13,
+          "minutes": 30
+        },
+        {
+          "day": "2026-03-25",
+          "seconds": 1784,
+          "pages": 35,
+          "minutes": 30
+        },
+        {
+          "day": "2026-03-28",
+          "seconds": 1829,
+          "pages": 19,
+          "minutes": 30
+        },
+        {
+          "day": "2026-03-29",
+          "seconds": 1897,
+          "pages": 37,
+          "minutes": 32
+        }
+      ]
+    },
+    {
+      "title": "Κύρου Ανάβασις Τόμος 2",
+      "md5": "0a13c33aa1176a599f07dc09c3e928df",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-03-28",
+          "seconds": 1467,
+          "pages": 18,
+          "minutes": 24
+        },
+        {
+          "day": "2026-03-29",
+          "seconds": 1375,
+          "pages": 21,
+          "minutes": 23
+        },
+        {
+          "day": "2026-03-31",
+          "seconds": 1405,
+          "pages": 12,
+          "minutes": 23
+        },
+        {
+          "day": "2026-04-01",
+          "seconds": 1483,
+          "pages": 13,
+          "minutes": 25
+        },
+        {
+          "day": "2026-04-03",
+          "seconds": 1148,
+          "pages": 28,
+          "minutes": 19
+        },
+        {
+          "day": "2026-04-06",
+          "seconds": 1339,
+          "pages": 8,
+          "minutes": 22
+        },
+        {
+          "day": "2026-04-07",
+          "seconds": 1797,
+          "pages": 10,
+          "minutes": 30
+        },
+        {
+          "day": "2026-04-09",
+          "seconds": 1554,
+          "pages": 10,
+          "minutes": 26
+        }
+      ]
+    },
+    {
+      "title": "צל העולם",
+      "md5": "b97bdcf72916550b0af18dd5f0ae28ed",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-04-03",
+          "seconds": 1670,
+          "pages": 2,
+          "minutes": 28
+        },
+        {
+          "day": "2026-04-08",
+          "seconds": 1604,
+          "pages": 3,
+          "minutes": 27
+        }
+      ]
+    },
+    {
+      "title": "The Yellow Wallpaper",
+      "md5": "7b3fb311db5871f5e430a55bb20cd740",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-04-08",
+          "seconds": 1902,
+          "pages": 1,
+          "minutes": 32
+        },
+        {
+          "day": "2026-04-11",
+          "seconds": 1675,
+          "pages": 2,
+          "minutes": 28
+        }
+      ]
+    },
+    {
+      "title": "The Works of Edgar Allan Poe — Volume 1",
+      "md5": "4d89d195e3081aa79437eeea53a5869c",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-04-14",
+          "seconds": 1498,
+          "pages": 14,
+          "minutes": 25
+        },
+        {
+          "day": "2026-04-15",
+          "seconds": 1327,
+          "pages": 29,
+          "minutes": 22
+        },
+        {
+          "day": "2026-05-01",
+          "seconds": 1308,
+          "pages": 7,
+          "minutes": 22
+        },
+        {
+          "day": "2026-05-05",
+          "seconds": 1279,
+          "pages": 15,
+          "minutes": 21
+        },
+        {
+          "day": "2026-05-12",
+          "seconds": 1158,
+          "pages": 19,
+          "minutes": 19
+        },
+        {
+          "day": "2026-05-13",
+          "seconds": 1362,
+          "pages": 4,
+          "minutes": 23
+        },
+        {
+          "day": "2026-05-15",
+          "seconds": 1459,
+          "pages": 32,
+          "minutes": 24
+        },
+        {
+          "day": "2026-05-17",
+          "seconds": 1265,
+          "pages": 40,
+          "minutes": 21
+        },
+        {
+          "day": "2026-05-19",
+          "seconds": 1420,
+          "pages": 25,
+          "minutes": 24
+        },
+        {
+          "day": "2026-05-22",
+          "seconds": 982,
+          "pages": 40,
+          "minutes": 16
+        }
+      ]
+    },
+    {
+      "title": "The Works of Edgar Allan Poe — Volume 2",
+      "md5": "b360f566c8627024575307b3ed9b3ecf",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-04-21",
+          "seconds": 1819,
+          "pages": 18,
+          "minutes": 30
+        },
+        {
+          "day": "2026-04-22",
+          "seconds": 1843,
+          "pages": 35,
+          "minutes": 31
+        },
+        {
+          "day": "2026-04-23",
+          "seconds": 1260,
+          "pages": 22,
+          "minutes": 21
+        }
+      ]
+    }
+  ]
+}

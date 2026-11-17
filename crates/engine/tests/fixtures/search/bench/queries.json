@@ -1,0 +1,2667 @@
+{
+  "about": "The search benchmark's queries (tests/search_bench.rs). Public, famous-book queries written for it; every ol_work and ISBN was read off live Open Library and is re-verified by each recording run. See ../README.md.",
+  "library": [
+    {
+      "key": "left-hand",
+      "title": "The Left Hand of Darkness",
+      "authors": [
+        "Ursula K. Le Guin"
+      ],
+      "ol_work": "/works/OL59800W",
+      "isbn_13": "9781101665398"
+    },
+    {
+      "key": "circe",
+      "title": "Circe",
+      "authors": [
+        "Madeline Miller"
+      ],
+      "ol_work": "/works/OL18012166W",
+      "isbn_13": "9780316556330"
+    },
+    {
+      "key": "name-of-the-wind",
+      "title": "The Name of the Wind",
+      "authors": [
+        "Patrick Rothfuss"
+      ],
+      "ol_work": "/works/OL8479867W",
+      "isbn_13": "9780756404079"
+    },
+    {
+      "key": "middlemarch",
+      "title": "Middlemarch",
+      "authors": [
+        "George Eliot"
+      ],
+      "ol_work": "/works/OL20867W"
+    },
+    {
+      "key": "dispossessed",
+      "title": "The Dispossessed",
+      "authors": [
+        "Ursula K. Le Guin"
+      ],
+      "ol_work": "/works/OL59863W"
+    },
+    {
+      "key": "piranesi",
+      "title": "Piranesi",
+      "authors": [
+        "Susanna Clarke"
+      ],
+      "ol_work": "/works/OL20893680W"
+    },
+    {
+      "key": "secret-history",
+      "title": "The Secret History",
+      "authors": [
+        "Donna Tartt"
+      ],
+      "ol_work": "/works/OL4321141W"
+    },
+    {
+      "key": "sorcerers-stone",
+      "title": "Harry Potter and the Sorcerer's Stone",
+      "authors": [
+        "J.K. Rowling"
+      ],
+      "ol_work": "/works/OL82563W"
+    },
+    {
+      "key": "fellowship",
+      "title": "The Fellowship of the Ring: Being the First Part of The Lord of the Rings",
+      "authors": [
+        "J.R.R. Tolkien"
+      ],
+      "ol_work": "/works/OL27513W"
+    },
+    {
+      "key": "dune-messiah",
+      "title": "Dune Messiah",
+      "authors": [
+        "Frank Herbert"
+      ],
+      "ol_work": "/works/OL893461W"
+    },
+    {
+      "key": "emma",
+      "title": "Emma",
+      "authors": [
+        "Jane Austen"
+      ],
+      "ol_work": "/works/OL66513W"
+    },
+    {
+      "key": "persuasion",
+      "title": "Persuasion",
+      "authors": [
+        "Jane Austen"
+      ],
+      "ol_work": "/works/OL66544W"
+    },
+    {
+      "key": "beloved",
+      "title": "Beloved",
+      "authors": [
+        "Toni Morrison"
+      ],
+      "ol_work": "/works/OL50548W"
+    },
+    {
+      "key": "the-sea",
+      "title": "The Sea",
+      "authors": [
+        "John Banville"
+      ],
+      "ol_work": "/works/OL2687259W"
+    },
+    {
+      "key": "lathe",
+      "title": "The Lathe of Heaven",
+      "authors": [
+        "Ursula K. Le Guin"
+      ],
+      "ol_work": "/works/OL59858W"
+    },
+    {
+      "key": "jonathan-strange",
+      "title": "Jonathan Strange & Mr Norrell",
+      "authors": [
+        "Susanna Clarke"
+      ],
+      "ol_work": "/works/OL5703422W"
+    },
+    {
+      "key": "goldfinch",
+      "title": "The Goldfinch",
+      "authors": [
+        "Donna Tartt"
+      ],
+      "ol_work": "/works/OL16809803W"
+    },
+    {
+      "key": "chamber-of-secrets",
+      "title": "Harry Potter and the Chamber of Secrets",
+      "authors": [
+        "J.K. Rowling"
+      ],
+      "ol_work": "/works/OL82537W"
+    },
+    {
+      "key": "two-towers",
+      "title": "The Two Towers",
+      "authors": [
+        "J.R.R. Tolkien"
+      ],
+      "ol_work": "/works/OL27479W"
+    },
+    {
+      "key": "song-of-achilles",
+      "title": "The Song of Achilles",
+      "authors": [
+        "Madeline Miller"
+      ],
+      "ol_work": "/works/OL16509148W"
+    },
+    {
+      "key": "wise-mans-fear",
+      "title": "The Wise Man's Fear",
+      "authors": [
+        "Patrick Rothfuss"
+      ],
+      "ol_work": "/works/OL8479869W"
+    },
+    {
+      "key": "silas-marner",
+      "title": "Silas Marner",
+      "authors": [
+        "George Eliot"
+      ],
+      "ol_work": "/works/OL20874W"
+    },
+    {
+      "key": "never-let-me-go",
+      "title": "Never Let Me Go",
+      "authors": [
+        "Kazuo Ishiguro"
+      ],
+      "ol_work": "/works/OL59038W"
+    },
+    {
+      "key": "white-teeth",
+      "title": "White Teeth",
+      "authors": [
+        "Zadie Smith"
+      ],
+      "ol_work": "/works/OL481143W"
+    },
+    {
+      "key": "the-road",
+      "title": "The Road",
+      "authors": [
+        "Cormac McCarthy"
+      ],
+      "ol_work": "/works/OL40873W"
+    },
+    {
+      "key": "neuromancer",
+      "title": "Neuromancer",
+      "authors": [
+        "William Gibson"
+      ],
+      "ol_work": "/works/OL27258W"
+    },
+    {
+      "key": "the-hobbit",
+      "title": "The Hobbit",
+      "authors": [
+        "J.R.R. Tolkien"
+      ],
+      "ol_work": "/works/OL27482W"
+    },
+    {
+      "key": "jane-eyre",
+      "title": "Jane Eyre",
+      "authors": [
+        "Charlotte Brontë"
+      ],
+      "ol_work": "/works/OL1095427W"
+    }
+  ],
+  "queries": [
+    {
+      "id": "typo-01",
+      "category": "typos",
+      "query": "dnue herbrt",
+      "expect": {
+        "ol_work": "/works/OL893414W",
+        "title": "Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "typo-02",
+      "category": "typos",
+      "query": "the hobit",
+      "expect": {
+        "ol_work": "/works/OL27482W",
+        "title": "The Hobbit",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "typo-03",
+      "category": "typos",
+      "query": "pride and prejudce",
+      "expect": {
+        "ol_work": "/works/OL66554W",
+        "title": "Pride and Prejudice",
+        "author": "Jane Austen"
+      }
+    },
+    {
+      "id": "typo-04",
+      "category": "typos",
+      "query": "harry poter and the philosophers stone",
+      "expect": {
+        "ol_work": "/works/OL82563W",
+        "title": "Harry Potter and the Philosopher's Stone",
+        "author": "J.K. Rowling"
+      }
+    },
+    {
+      "id": "typo-05",
+      "category": "typos",
+      "query": "the great gatbsy",
+      "expect": {
+        "ol_work": "/works/OL468431W",
+        "title": "The Great Gatsby",
+        "author": "F. Scott Fitzgerald"
+      }
+    },
+    {
+      "id": "typo-06",
+      "category": "typos",
+      "query": "to kil a mockingbird",
+      "expect": {
+        "ol_work": "/works/OL3140822W",
+        "title": "To Kill a Mockingbird",
+        "author": "Harper Lee"
+      }
+    },
+    {
+      "id": "typo-07",
+      "category": "typos",
+      "query": "brave new wrold",
+      "expect": {
+        "ol_work": "/works/OL64365W",
+        "title": "Brave New World",
+        "author": "Aldous Huxley"
+      }
+    },
+    {
+      "id": "typo-08",
+      "category": "typos",
+      "query": "catcher in the ry",
+      "expect": {
+        "ol_work": "/works/OL3335245W",
+        "title": "The Catcher in the Rye",
+        "author": "J.D. Salinger"
+      }
+    },
+    {
+      "id": "typo-09",
+      "category": "typos",
+      "query": "lord of the rngs",
+      "expect": {
+        "ol_work": "/works/OL27448W",
+        "title": "The Lord of the Rings",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "typo-10",
+      "category": "typos",
+      "query": "neuromancr",
+      "expect": {
+        "ol_work": "/works/OL27258W",
+        "title": "Neuromancer",
+        "author": "William Gibson"
+      }
+    },
+    {
+      "id": "typo-11",
+      "category": "typos",
+      "query": "crime and punishmnet",
+      "expect": {
+        "ol_work": "/works/OL166894W",
+        "title": "Crime and Punishment",
+        "author": [
+          "Fyodor Dostoevsky",
+          "Fyodor Dostoyevsky",
+          "Fiódor Dostoievski",
+          "Фёдор Михайлович Достоевский"
+        ]
+      }
+    },
+    {
+      "id": "typo-12",
+      "category": "typos",
+      "query": "the brothrs karamazov",
+      "expect": {
+        "ol_work": [
+          "/works/OL10432709W",
+          "/works/OL166975W"
+        ],
+        "title": "The Brothers Karamazov",
+        "author": [
+          "Fyodor Dostoevsky",
+          "Fyodor Dostoyevsky",
+          "Fiódor Dostoievski",
+          "Фёдор Михайлович Достоевский"
+        ]
+      }
+    },
+    {
+      "id": "typo-13",
+      "category": "typos",
+      "query": "wuthering hieghts",
+      "expect": {
+        "ol_work": "/works/OL21177W",
+        "title": "Wuthering Heights",
+        "author": "Emily Brontë"
+      }
+    },
+    {
+      "id": "typo-14",
+      "category": "typos",
+      "query": "jane eyer",
+      "expect": {
+        "ol_work": "/works/OL1095427W",
+        "title": "Jane Eyre",
+        "author": "Charlotte Brontë"
+      }
+    },
+    {
+      "id": "typo-15",
+      "category": "typos",
+      "query": "frankenstien",
+      "expect": {
+        "ol_work": "/works/OL450063W",
+        "title": "Frankenstein",
+        "author": "Mary Shelley"
+      }
+    },
+    {
+      "id": "typo-16",
+      "category": "typos",
+      "query": "draculla",
+      "expect": {
+        "ol_work": "/works/OL85892W",
+        "title": "Dracula",
+        "author": "Bram Stoker"
+      }
+    },
+    {
+      "id": "typo-17",
+      "category": "typos",
+      "query": "moby dik",
+      "expect": {
+        "ol_work": "/works/OL102749W",
+        "title": "Moby Dick",
+        "author": "Herman Melville"
+      }
+    },
+    {
+      "id": "typo-18",
+      "category": "typos",
+      "query": "anna karenia",
+      "expect": {
+        "ol_work": "/works/OL267096W",
+        "title": "Anna Karenina",
+        "author": [
+          "Leo Tolstoy",
+          "Lev Tolstoy",
+          "Лев Толстой"
+        ]
+      }
+    },
+    {
+      "id": "typo-19",
+      "category": "typos",
+      "query": "midlemarch",
+      "expect": {
+        "ol_work": "/works/OL20867W",
+        "title": "Middlemarch",
+        "author": "George Eliot"
+      }
+    },
+    {
+      "id": "typo-20",
+      "category": "typos",
+      "query": "the silmarilion",
+      "expect": {
+        "ol_work": "/works/OL27495W",
+        "title": "The Silmarillion",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "typo-21",
+      "category": "typos",
+      "query": "slaughterhous five",
+      "expect": {
+        "ol_work": "/works/OL98459W",
+        "title": "Slaughterhouse-Five",
+        "author": "Kurt Vonnegut"
+      }
+    },
+    {
+      "id": "typo-22",
+      "category": "typos",
+      "query": "kafka on the shroe",
+      "expect": {
+        "ol_work": "/works/OL2625431W",
+        "title": "Kafka on the Shore",
+        "author": [
+          "Haruki Murakami",
+          "村上春樹"
+        ]
+      }
+    },
+    {
+      "id": "typo-23",
+      "category": "typos",
+      "query": "the road cormac mccarthey",
+      "expect": {
+        "ol_work": "/works/OL40873W",
+        "title": "The Road",
+        "author": "Cormac McCarthy"
+      }
+    },
+    {
+      "id": "typo-24",
+      "category": "typos",
+      "query": "beloved toni morison",
+      "expect": {
+        "ol_work": "/works/OL50548W",
+        "title": "Beloved",
+        "author": "Toni Morrison"
+      }
+    },
+    {
+      "id": "typo-25",
+      "category": "typos",
+      "query": "norwegain wood murakmi",
+      "expect": {
+        "ol_work": "/works/OL2625457W",
+        "title": "Norwegian Wood",
+        "author": [
+          "Haruki Murakami",
+          "村上春樹"
+        ]
+      }
+    },
+    {
+      "id": "byauthor-01",
+      "category": "title_author",
+      "query": "dune by frank herbert",
+      "expect": {
+        "ol_work": "/works/OL893414W",
+        "title": "Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "byauthor-02",
+      "category": "title_author",
+      "query": "beloved by toni morrison",
+      "expect": {
+        "ol_work": "/works/OL50548W",
+        "title": "Beloved",
+        "author": "Toni Morrison"
+      }
+    },
+    {
+      "id": "byauthor-03",
+      "category": "title_author",
+      "query": "the road - mccarthy",
+      "expect": {
+        "ol_work": "/works/OL40873W",
+        "title": "The Road",
+        "author": "Cormac McCarthy"
+      }
+    },
+    {
+      "id": "byauthor-04",
+      "category": "title_author",
+      "query": "emma by jane austen",
+      "expect": {
+        "ol_work": "/works/OL66513W",
+        "title": "Emma",
+        "author": "Jane Austen"
+      }
+    },
+    {
+      "id": "byauthor-05",
+      "category": "title_author",
+      "query": "it stephen king",
+      "expect": {
+        "ol_work": "/works/OL81613W",
+        "title": "It",
+        "author": "Stephen King"
+      }
+    },
+    {
+      "id": "byauthor-06",
+      "category": "title_author",
+      "query": "the stand by stephen king",
+      "expect": {
+        "ol_work": "/works/OL81618W",
+        "title": "The Stand",
+        "author": "Stephen King"
+      }
+    },
+    {
+      "id": "byauthor-07",
+      "category": "title_author",
+      "query": "austen, persuasion",
+      "expect": {
+        "ol_work": "/works/OL66544W",
+        "title": "Persuasion",
+        "author": "Jane Austen"
+      }
+    },
+    {
+      "id": "byauthor-08",
+      "category": "title_author",
+      "query": "atonement ian mcewan",
+      "expect": {
+        "ol_work": "/works/OL1855944W",
+        "title": "Atonement",
+        "author": "Ian McEwan"
+      }
+    },
+    {
+      "id": "byauthor-09",
+      "category": "title_author",
+      "query": "the trial by franz kafka",
+      "expect": {
+        "ol_work": "/works/OL498463W",
+        "title": "The Trial",
+        "author": "Franz Kafka"
+      }
+    },
+    {
+      "id": "byauthor-10",
+      "category": "title_author",
+      "query": "the plague camus",
+      "expect": {
+        "ol_work": "/works/OL1230715W",
+        "title": "The Plague",
+        "author": "Albert Camus"
+      }
+    },
+    {
+      "id": "byauthor-11",
+      "category": "title_author",
+      "query": "night elie wiesel",
+      "expect": {
+        "ol_work": "/works/OL14856842W",
+        "title": "Night",
+        "author": "Elie Wiesel"
+      }
+    },
+    {
+      "id": "byauthor-12",
+      "category": "title_author",
+      "query": "watchmen alan moore",
+      "expect": {
+        "ol_work": "/works/OL2897798W",
+        "title": "Watchmen",
+        "author": "Alan Moore"
+      }
+    },
+    {
+      "id": "byauthor-13",
+      "category": "title_author",
+      "query": "white teeth zadie smith",
+      "expect": {
+        "ol_work": "/works/OL481143W",
+        "title": "White Teeth",
+        "author": "Zadie Smith"
+      }
+    },
+    {
+      "id": "byauthor-14",
+      "category": "title_author",
+      "query": "the bell jar by sylvia plath",
+      "expect": {
+        "ol_work": "/works/OL1865528W",
+        "title": "The Bell Jar",
+        "author": "Sylvia Plath"
+      }
+    },
+    {
+      "id": "byauthor-15",
+      "category": "title_author",
+      "query": "never let me go ishiguro",
+      "expect": {
+        "ol_work": "/works/OL59038W",
+        "title": "Never Let Me Go",
+        "author": "Kazuo Ishiguro"
+      }
+    },
+    {
+      "id": "byauthor-16",
+      "category": "title_author",
+      "query": "the sea john banville",
+      "expect": {
+        "ol_work": "/works/OL2687259W",
+        "title": "The Sea",
+        "author": "John Banville"
+      }
+    },
+    {
+      "id": "byauthor-17",
+      "category": "title_author",
+      "query": "middlemarch by george eliot",
+      "expect": {
+        "ol_work": "/works/OL20867W",
+        "title": "Middlemarch",
+        "author": "George Eliot"
+      }
+    },
+    {
+      "id": "byauthor-18",
+      "category": "title_author",
+      "query": "orlando virginia woolf",
+      "expect": {
+        "ol_work": "/works/OL39360W",
+        "title": "Orlando",
+        "author": "Virginia Woolf"
+      }
+    },
+    {
+      "id": "byauthor-19",
+      "category": "title_author",
+      "query": "solaris by stanislaw lem",
+      "expect": {
+        "ol_work": "/works/OL109524W",
+        "title": "Solaris",
+        "author": "Stanisław Lem"
+      }
+    },
+    {
+      "id": "byauthor-20",
+      "category": "title_author",
+      "query": "ishiguro klara and the sun",
+      "expect": {
+        "ol_work": "/works/OL20883297W",
+        "title": "Klara and the Sun",
+        "author": "Kazuo Ishiguro"
+      }
+    },
+    {
+      "id": "series-01",
+      "category": "series",
+      "query": "dune 2",
+      "expect": {
+        "ol_work": "/works/OL893461W",
+        "title": "Dune Messiah",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "series-02",
+      "category": "series",
+      "query": "harry potter 3",
+      "expect": {
+        "ol_work": "/works/OL82536W",
+        "title": "Harry Potter and the Prisoner of Azkaban",
+        "author": "J.K. Rowling"
+      }
+    },
+    {
+      "id": "series-03",
+      "category": "series",
+      "query": "hunger games 2",
+      "expect": {
+        "ol_work": "/works/OL5735360W",
+        "title": "Catching Fire",
+        "author": "Suzanne Collins"
+      }
+    },
+    {
+      "id": "series-04",
+      "category": "series",
+      "query": "mistborn 2",
+      "expect": {
+        "ol_work": "/works/OL5738150W",
+        "title": "The Well of Ascension",
+        "author": "Brandon Sanderson"
+      }
+    },
+    {
+      "id": "series-05",
+      "category": "series",
+      "query": "earthsea book 2",
+      "expect": {
+        "ol_work": "/works/OL59801W",
+        "title": "The Tombs of Atuan",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "series-06",
+      "category": "series",
+      "query": "the expanse book 3",
+      "expect": {
+        "ol_work": "/works/OL17074648W",
+        "title": "Abaddon's Gate",
+        "author": "James S. A. Corey"
+      }
+    },
+    {
+      "id": "series-07",
+      "category": "series",
+      "query": "wheel of time 1",
+      "expect": {
+        "ol_work": "/works/OL7924103W",
+        "title": "The Eye of the World",
+        "author": "Robert Jordan"
+      }
+    },
+    {
+      "id": "series-08",
+      "category": "series",
+      "query": "stormlight archive book two",
+      "expect": {
+        "ol_work": "/works/OL16813053W",
+        "title": "Words of Radiance",
+        "author": "Brandon Sanderson"
+      }
+    },
+    {
+      "id": "series-09",
+      "category": "series",
+      "query": "dune messiah",
+      "expect": {
+        "ol_work": "/works/OL893461W",
+        "title": "Dune Messiah",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "series-10",
+      "category": "series",
+      "query": "the two towers",
+      "expect": {
+        "ol_work": "/works/OL27479W",
+        "title": "The Two Towers",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "series-11",
+      "category": "series",
+      "query": "a clash of kings",
+      "expect": {
+        "ol_work": "/works/OL257939W",
+        "title": "A Clash of Kings",
+        "author": "George R. R. Martin"
+      }
+    },
+    {
+      "id": "series-12",
+      "category": "series",
+      "query": "foundation and empire",
+      "expect": {
+        "ol_work": "/works/OL46224W",
+        "title": "Foundation and Empire",
+        "author": "Isaac Asimov"
+      }
+    },
+    {
+      "id": "series-13",
+      "category": "series",
+      "query": "the wise man's fear",
+      "expect": {
+        "ol_work": "/works/OL8479869W",
+        "title": "The Wise Man's Fear",
+        "author": "Patrick Rothfuss"
+      }
+    },
+    {
+      "id": "series-14",
+      "category": "series",
+      "query": "his dark materials subtle knife",
+      "expect": {
+        "ol_work": "/works/OL28993W",
+        "title": "The Subtle Knife",
+        "author": "Philip Pullman"
+      }
+    },
+    {
+      "id": "series-15",
+      "category": "series",
+      "query": "children of dune",
+      "expect": {
+        "ol_work": "/works/OL893516W",
+        "title": "Children of Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "translation-01",
+      "category": "translations",
+      "query": "the name of the rose",
+      "expect": {
+        "ol_work": "/works/OL8996439W",
+        "title": [
+          "The Name of the Rose",
+          "Il nome della rosa"
+        ],
+        "author": "Umberto Eco"
+      }
+    },
+    {
+      "id": "translation-02",
+      "category": "translations",
+      "query": "the shadow of the wind",
+      "expect": {
+        "ol_work": "/works/OL278437W",
+        "title": [
+          "The Shadow of the Wind",
+          "La sombra del viento"
+        ],
+        "author": "Carlos Ruiz Zafón"
+      }
+    },
+    {
+      "id": "translation-03",
+      "category": "translations",
+      "query": "my brilliant friend",
+      "expect": {
+        "ol_work": "/works/OL16520879W",
+        "title": [
+          "My Brilliant Friend",
+          "L'amica geniale"
+        ],
+        "author": "Elena Ferrante"
+      }
+    },
+    {
+      "id": "translation-04",
+      "category": "translations",
+      "query": "the little prince",
+      "expect": {
+        "ol_work": "/works/OL10263W",
+        "title": [
+          "The Little Prince",
+          "Le Petit Prince"
+        ],
+        "author": "Antoine de Saint-Exupéry"
+      }
+    },
+    {
+      "id": "translation-05",
+      "category": "translations",
+      "query": "blindness saramago",
+      "expect": {
+        "ol_work": "/works/OL27420W",
+        "title": [
+          "Blindness",
+          "Ensaio sobre a cegueira"
+        ],
+        "author": "José Saramago"
+      }
+    },
+    {
+      "id": "translation-06",
+      "category": "translations",
+      "query": "perfume the story of a murderer",
+      "expect": {
+        "ol_work": "/works/OL10834W",
+        "title": [
+          "Perfume",
+          "Das Parfum"
+        ],
+        "author": "Patrick Süskind"
+      }
+    },
+    {
+      "id": "translation-07",
+      "category": "translations",
+      "query": "the stranger camus",
+      "expect": {
+        "ol_work": "/works/OL1230613W",
+        "title": [
+          "The Stranger",
+          "L'Étranger"
+        ],
+        "author": "Albert Camus"
+      }
+    },
+    {
+      "id": "translation-08",
+      "category": "translations",
+      "query": "love in the time of cholera",
+      "expect": {
+        "ol_work": "/works/OL274518W",
+        "title": [
+          "Love in the Time of Cholera",
+          "El amor en los tiempos del cólera"
+        ],
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "translation-09",
+      "category": "translations",
+      "query": "the metamorphosis",
+      "expect": {
+        "ol_work": "/works/OL498556W",
+        "title": [
+          "The Metamorphosis",
+          "Die Verwandlung"
+        ],
+        "author": "Franz Kafka"
+      }
+    },
+    {
+      "id": "translation-10",
+      "category": "translations",
+      "query": "the master and margarita",
+      "expect": {
+        "ol_work": "/works/OL676009W",
+        "title": [
+          "The Master and Margarita",
+          "Мастер и Маргарита"
+        ],
+        "author": [
+          "Mikhail Bulgakov",
+          "Михаил Булгаков"
+        ]
+      }
+    },
+    {
+      "id": "translation-11",
+      "category": "translations",
+      "query": "stolz und vorurteil",
+      "expect": {
+        "ol_work": "/works/OL66554W",
+        "title": [
+          "Pride and Prejudice",
+          "stolz und vorurteil"
+        ],
+        "author": "Jane Austen"
+      }
+    },
+    {
+      "id": "translation-12",
+      "category": "translations",
+      "query": "un mundo feliz",
+      "expect": {
+        "ol_work": "/works/OL64365W",
+        "title": [
+          "Brave New World",
+          "un mundo feliz"
+        ],
+        "author": "Aldous Huxley"
+      }
+    },
+    {
+      "id": "translation-13",
+      "category": "translations",
+      "query": "le vieil homme et la mer",
+      "expect": {
+        "ol_work": "/works/OL63073W",
+        "title": [
+          "The Old Man and the Sea",
+          "le vieil homme et la mer"
+        ],
+        "author": "Ernest Hemingway"
+      }
+    },
+    {
+      "id": "translation-14",
+      "category": "translations",
+      "query": "matar a un ruiseñor",
+      "expect": {
+        "ol_work": "/works/OL3140822W",
+        "title": [
+          "To Kill a Mockingbird",
+          "matar a un ruiseñor"
+        ],
+        "author": "Harper Lee"
+      }
+    },
+    {
+      "id": "translation-15",
+      "category": "translations",
+      "query": "il grande gatsby",
+      "expect": {
+        "ol_work": "/works/OL468431W",
+        "title": [
+          "The Great Gatsby",
+          "il grande gatsby"
+        ],
+        "author": "F. Scott Fitzgerald"
+      }
+    },
+    {
+      "id": "translation-16",
+      "category": "translations",
+      "query": "der fänger im roggen",
+      "expect": {
+        "ol_work": "/works/OL3335245W",
+        "title": [
+          "The Catcher in the Rye",
+          "der fänger im roggen"
+        ],
+        "author": "J.D. Salinger"
+      }
+    },
+    {
+      "id": "translation-17",
+      "category": "translations",
+      "query": "le seigneur des anneaux",
+      "expect": {
+        "ol_work": "/works/OL27448W",
+        "title": [
+          "The Lord of the Rings",
+          "le seigneur des anneaux"
+        ],
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "translation-18",
+      "category": "translations",
+      "query": "harry potter und der stein der weisen",
+      "expect": {
+        "ol_work": "/works/OL82563W",
+        "title": [
+          "Harry Potter and the Philosopher's Stone",
+          "harry potter und der stein der weisen"
+        ],
+        "author": "J.K. Rowling"
+      }
+    },
+    {
+      "id": "translation-19",
+      "category": "translations",
+      "query": "cem anos de solidão",
+      "expect": {
+        "ol_work": "/works/OL274505W",
+        "title": [
+          "One Hundred Years of Solitude",
+          "cem anos de solidão"
+        ],
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "translation-20",
+      "category": "translations",
+      "query": "de hobbit",
+      "expect": {
+        "ol_work": "/works/OL27482W",
+        "title": [
+          "The Hobbit",
+          "de hobbit"
+        ],
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "lang-fr-01",
+      "category": "non_english",
+      "query": "à la recherche du temps perdu",
+      "expect": {
+        "ol_work": "/works/OL1190289W",
+        "title": "À la recherche du temps perdu",
+        "author": "Marcel Proust"
+      }
+    },
+    {
+      "id": "lang-fr-02",
+      "category": "non_english",
+      "query": "le rouge et le noir",
+      "expect": {
+        "ol_work": "/works/OL733640W",
+        "title": "Le Rouge et le Noir",
+        "author": "Stendhal"
+      }
+    },
+    {
+      "id": "lang-fr-03",
+      "category": "non_english",
+      "query": "l'écume des jours",
+      "expect": {
+        "ol_work": "/works/OL708597W",
+        "title": "L'Écume des jours",
+        "author": "Boris Vian"
+      }
+    },
+    {
+      "id": "lang-de-04",
+      "category": "non_english",
+      "query": "der zauberberg",
+      "expect": {
+        "ol_work": "/works/OL14866824W",
+        "title": "Der Zauberberg",
+        "author": "Thomas Mann"
+      }
+    },
+    {
+      "id": "lang-de-05",
+      "category": "non_english",
+      "query": "die blechtrommel",
+      "expect": {
+        "ol_work": "/works/OL67334W",
+        "title": "Die Blechtrommel",
+        "author": "Günter Grass"
+      }
+    },
+    {
+      "id": "lang-de-06",
+      "category": "non_english",
+      "query": "der vorleser",
+      "expect": {
+        "ol_work": "/works/OL14871157W",
+        "title": "Der Vorleser",
+        "author": "Bernhard Schlink"
+      }
+    },
+    {
+      "id": "lang-es-07",
+      "category": "non_english",
+      "query": "cien años de soledad",
+      "expect": {
+        "ol_work": "/works/OL274505W",
+        "title": "Cien años de soledad",
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "lang-es-08",
+      "category": "non_english",
+      "query": "la casa de los espíritus",
+      "expect": {
+        "ol_work": "/works/OL1905255W",
+        "title": "La casa de los espíritus",
+        "author": "Isabel Allende"
+      }
+    },
+    {
+      "id": "lang-es-09",
+      "category": "non_english",
+      "query": "rayuela",
+      "expect": {
+        "ol_work": "/works/OL14860424W",
+        "title": "Rayuela",
+        "author": "Julio Cortázar"
+      }
+    },
+    {
+      "id": "lang-it-10",
+      "category": "non_english",
+      "query": "il gattopardo",
+      "expect": {
+        "ol_work": "/works/OL2386305W",
+        "title": "Il Gattopardo",
+        "author": "Giuseppe Tomasi di Lampedusa"
+      }
+    },
+    {
+      "id": "lang-it-11",
+      "category": "non_english",
+      "query": "se una notte d'inverno un viaggiatore",
+      "expect": {
+        "ol_work": "/works/OL15321W",
+        "title": "Se una notte d'inverno un viaggiatore",
+        "author": "Italo Calvino"
+      }
+    },
+    {
+      "id": "lang-it-12",
+      "category": "non_english",
+      "query": "la coscienza di zeno",
+      "expect": {
+        "ol_work": "/works/OL2276498W",
+        "title": "La coscienza di Zeno",
+        "author": "Italo Svevo"
+      }
+    },
+    {
+      "id": "lang-pt-13",
+      "category": "non_english",
+      "query": "dom casmurro",
+      "expect": {
+        "ol_work": "/works/OL1003040W",
+        "title": "Dom Casmurro",
+        "author": "Machado de Assis"
+      }
+    },
+    {
+      "id": "lang-pt-14",
+      "category": "non_english",
+      "query": "o alquimista",
+      "expect": {
+        "ol_work": "/works/OL796465W",
+        "title": "O Alquimista",
+        "author": "Paulo Coelho"
+      }
+    },
+    {
+      "id": "lang-nl-15",
+      "category": "non_english",
+      "query": "het achterhuis",
+      "expect": {
+        "ol_work": "/works/OL266178W",
+        "title": "Het Achterhuis",
+        "author": "Anne Frank"
+      }
+    },
+    {
+      "id": "lang-nl-16",
+      "category": "non_english",
+      "query": "de avonden",
+      "expect": {
+        "ol_work": "/works/OL699606W",
+        "title": "De avonden",
+        "author": "Gerard Reve"
+      }
+    },
+    {
+      "id": "lang-sv-17",
+      "category": "non_english",
+      "query": "pippi långstrump",
+      "expect": {
+        "ol_work": "/works/OL14872925W",
+        "title": "Pippi Långstrump",
+        "author": "Astrid Lindgren"
+      }
+    },
+    {
+      "id": "lang-sv-18",
+      "category": "non_english",
+      "query": "män som hatar kvinnor",
+      "expect": {
+        "ol_work": "/works/OL5784622W",
+        "title": "Män som hatar kvinnor",
+        "author": "Stieg Larsson"
+      }
+    },
+    {
+      "id": "lang-pl-19",
+      "category": "non_english",
+      "query": "lalka prus",
+      "expect": {
+        "ol_work": "/works/OL2852373W",
+        "title": "Lalka",
+        "author": "Bolesław Prus"
+      }
+    },
+    {
+      "id": "lang-pl-20",
+      "category": "non_english",
+      "query": "pan tadeusz",
+      "expect": {
+        "ol_work": "/works/OL1118880W",
+        "title": "Pan Tadeusz",
+        "author": "Adam Mickiewicz"
+      }
+    },
+    {
+      "id": "lang-fr-21",
+      "category": "non_english",
+      "query": "les miserables",
+      "expect": {
+        "ol_work": [
+          "/works/OL1063588W",
+          "/works/OL40542345W"
+        ],
+        "title": "Les Misérables",
+        "author": "Victor Hugo"
+      }
+    },
+    {
+      "id": "lang-fr-22",
+      "category": "non_english",
+      "query": "l'elegance du herisson",
+      "expect": {
+        "ol_work": [
+          "/works/OL24140275W",
+          "/works/OL13351632W"
+        ],
+        "title": "L'élégance du hérisson",
+        "author": "Muriel Barbery"
+      }
+    },
+    {
+      "id": "lang-es-23",
+      "category": "non_english",
+      "query": "la sombra del viento",
+      "expect": {
+        "ol_work": "/works/OL278437W",
+        "title": "La sombra del viento",
+        "author": "Carlos Ruiz Zafón"
+      }
+    },
+    {
+      "id": "lang-es-24",
+      "category": "non_english",
+      "query": "el amor en los tiempos del colera",
+      "expect": {
+        "ol_work": "/works/OL274518W",
+        "title": "El amor en los tiempos del cólera",
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "lang-de-25",
+      "category": "non_english",
+      "query": "der richter und sein henker",
+      "expect": {
+        "ol_work": "/works/OL8584542W",
+        "title": "Der Richter und sein Henker",
+        "author": "Friedrich Dürrenmatt"
+      }
+    },
+    {
+      "id": "lang-de-26",
+      "category": "non_english",
+      "query": "der schatten des windes",
+      "expect": {
+        "ol_work": "/works/OL278437W",
+        "title": [
+          "Der Schatten des Windes",
+          "La sombra del viento"
+        ],
+        "author": "Carlos Ruiz Zafón"
+      }
+    },
+    {
+      "id": "lang-nl-27",
+      "category": "non_english",
+      "query": "het diner",
+      "expect": {
+        "ol_work": "/works/OL2486917W",
+        "title": "Het diner",
+        "author": "Herman Koch"
+      }
+    },
+    {
+      "id": "lang-sv-28",
+      "category": "non_english",
+      "query": "kallocain",
+      "expect": {
+        "ol_work": [
+          "/works/OL1265023W",
+          "/works/OL24681944W"
+        ],
+        "title": "Kallocain",
+        "author": "Karin Boye"
+      }
+    },
+    {
+      "id": "lang-pl-29",
+      "category": "non_english",
+      "query": "ferdydurke",
+      "expect": {
+        "ol_work": "/works/OL37091W",
+        "title": "Ferdydurke",
+        "author": "Witold Gombrowicz"
+      }
+    },
+    {
+      "id": "recent-01",
+      "category": "recent",
+      "query": "yellowface",
+      "expect": {
+        "ol_work": "/works/OL29050559W",
+        "title": "Yellowface",
+        "author": "R. F. Kuang"
+      }
+    },
+    {
+      "id": "recent-02",
+      "category": "recent",
+      "query": "fourth wing",
+      "expect": {
+        "ol_work": "/works/OL29226517W",
+        "title": "Fourth Wing",
+        "author": "Rebecca Yarros"
+      }
+    },
+    {
+      "id": "recent-03",
+      "category": "recent",
+      "query": "the covenant of water",
+      "expect": {
+        "ol_work": "/works/OL29192912W",
+        "title": "The Covenant of Water",
+        "author": "Abraham Verghese"
+      }
+    },
+    {
+      "id": "recent-04",
+      "category": "recent",
+      "query": "tom lake",
+      "expect": {
+        "ol_work": "/works/OL37825473W",
+        "title": "Tom Lake",
+        "author": "Ann Patchett"
+      }
+    },
+    {
+      "id": "recent-05",
+      "category": "recent",
+      "query": "the heaven & earth grocery store",
+      "expect": {
+        "ol_work": "/works/OL34059667W",
+        "title": "The Heaven & Earth Grocery Store",
+        "author": "James McBride"
+      }
+    },
+    {
+      "id": "recent-06",
+      "category": "recent",
+      "query": "prophet song",
+      "expect": {
+        "ol_work": "/works/OL34341539W",
+        "title": "Prophet Song",
+        "author": "Paul Lynch"
+      }
+    },
+    {
+      "id": "recent-07",
+      "category": "recent",
+      "query": "orbital samantha harvey",
+      "expect": {
+        "ol_work": "/works/OL35708581W",
+        "title": "Orbital",
+        "author": "Samantha Harvey"
+      }
+    },
+    {
+      "id": "recent-08",
+      "category": "recent",
+      "query": "james percival everett",
+      "expect": {
+        "ol_work": "/works/OL36506504W",
+        "title": "James",
+        "author": "Percival Everett"
+      }
+    },
+    {
+      "id": "recent-09",
+      "category": "recent",
+      "query": "intermezzo",
+      "expect": {
+        "ol_work": "/works/OL37949460W",
+        "title": "Intermezzo",
+        "author": "Sally Rooney"
+      }
+    },
+    {
+      "id": "recent-10",
+      "category": "recent",
+      "query": "the women kristin hannah",
+      "expect": {
+        "ol_work": "/works/OL37247638W",
+        "title": "The Women",
+        "author": "Kristin Hannah"
+      }
+    },
+    {
+      "id": "recent-11",
+      "category": "recent",
+      "query": "the god of the woods",
+      "expect": {
+        "ol_work": "/works/OL37827517W",
+        "title": "The God of the Woods",
+        "author": "Liz Moore"
+      }
+    },
+    {
+      "id": "recent-12",
+      "category": "recent",
+      "query": "the ministry of time",
+      "expect": {
+        "ol_work": "/works/OL37571815W",
+        "title": "The Ministry of Time",
+        "author": "Kaliane Bradley"
+      }
+    },
+    {
+      "id": "recent-13",
+      "category": "recent",
+      "query": "onyx storm",
+      "expect": {
+        "ol_work": "/works/OL41943074W",
+        "title": "Onyx Storm",
+        "author": "Rebecca Yarros"
+      }
+    },
+    {
+      "id": "recent-14",
+      "category": "recent",
+      "query": "sunrise on the reaping",
+      "expect": {
+        "ol_work": "/works/OL43426400W",
+        "title": "Sunrise on the Reaping",
+        "author": "Suzanne Collins"
+      }
+    },
+    {
+      "id": "recent-15",
+      "category": "recent",
+      "query": "katabasis",
+      "expect": {
+        "ol_work": "/works/OL42397860W",
+        "title": "Katabasis",
+        "author": "R. F. Kuang"
+      }
+    },
+    {
+      "id": "recent-16",
+      "category": "recent",
+      "query": "the bee sting",
+      "expect": {
+        "ol_work": [
+          "/works/OL28856510W",
+          "/works/OL37588217W"
+        ],
+        "title": [
+          "The Bee Sting",
+          "Bee Sting"
+        ],
+        "author": "Paul Murray"
+      }
+    },
+    {
+      "id": "recent-17",
+      "category": "recent",
+      "query": "western lane",
+      "expect": {
+        "ol_work": "/works/OL27893004W",
+        "title": "Western Lane",
+        "author": "Chetna Maroo"
+      }
+    },
+    {
+      "id": "recent-18",
+      "category": "recent",
+      "query": "north woods",
+      "expect": {
+        "ol_work": "/works/OL34028309W",
+        "title": "North Woods",
+        "author": "Daniel Mason"
+      }
+    },
+    {
+      "id": "recent-19",
+      "category": "recent",
+      "query": "creation lake",
+      "expect": {
+        "ol_work": "/works/OL37586804W",
+        "title": "Creation Lake",
+        "author": "Rachel Kushner"
+      }
+    },
+    {
+      "id": "recent-20",
+      "category": "recent",
+      "query": "the safekeep",
+      "expect": {
+        "ol_work": "/works/OL37572547W",
+        "title": "The Safekeep",
+        "author": "Yael van der Wouden"
+      }
+    },
+    {
+      "id": "recent-21",
+      "category": "recent",
+      "query": "all fours",
+      "expect": {
+        "ol_work": "/works/OL37827700W",
+        "title": "All Fours",
+        "author": "Miranda July"
+      }
+    },
+    {
+      "id": "recent-22",
+      "category": "recent",
+      "query": "the emperor of gladness",
+      "expect": {
+        "ol_work": "/works/OL42394591W",
+        "title": "The Emperor of Gladness",
+        "author": "Ocean Vuong"
+      }
+    },
+    {
+      "id": "recent-23",
+      "category": "recent",
+      "query": "funny story",
+      "expect": {
+        "ol_work": "/works/OL37575890W",
+        "title": "Funny Story",
+        "author": "Emily Henry"
+      }
+    },
+    {
+      "id": "isbn-01",
+      "category": "isbn",
+      "query": "9781444738209",
+      "expect": {
+        "ol_work": "/works/OL893414W",
+        "isbns": [
+          "9781444738209",
+          "1444738208"
+        ],
+        "title": "Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "isbn-02",
+      "category": "isbn",
+      "query": "978-1-4447-3820-9",
+      "expect": {
+        "ol_work": "/works/OL893414W",
+        "isbns": [
+          "9781444738209",
+          "1444738208"
+        ],
+        "title": "Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "isbn-03",
+      "category": "isbn",
+      "query": "1444738208",
+      "expect": {
+        "ol_work": "/works/OL893414W",
+        "isbns": [
+          "9781444738209",
+          "1444738208"
+        ],
+        "title": "Dune",
+        "author": "Frank Herbert"
+      }
+    },
+    {
+      "id": "isbn-07",
+      "category": "isbn",
+      "query": "9780756404079",
+      "expect": {
+        "ol_work": "/works/OL8479867W",
+        "isbns": [
+          "9780756404079",
+          "075640407X"
+        ],
+        "title": "The Name of the Wind",
+        "author": "Patrick Rothfuss"
+      }
+    },
+    {
+      "id": "isbn-08",
+      "category": "isbn",
+      "query": "978-0-7564-0407-9",
+      "expect": {
+        "ol_work": "/works/OL8479867W",
+        "isbns": [
+          "9780756404079",
+          "075640407X"
+        ],
+        "title": "The Name of the Wind",
+        "author": "Patrick Rothfuss"
+      }
+    },
+    {
+      "id": "isbn-09",
+      "category": "isbn",
+      "query": "0 7564 0407 X",
+      "expect": {
+        "ol_work": "/works/OL8479867W",
+        "isbns": [
+          "9780756404079",
+          "075640407X"
+        ],
+        "title": "The Name of the Wind",
+        "author": "Patrick Rothfuss"
+      }
+    },
+    {
+      "id": "isbn-10",
+      "category": "isbn",
+      "query": "9781786330512",
+      "expect": {
+        "ol_work": "/works/OL18139176W",
+        "isbns": [
+          "9781786330512",
+          "1786330512"
+        ],
+        "title": "Educated",
+        "author": "Tara Westover"
+      }
+    },
+    {
+      "id": "isbn-11",
+      "category": "isbn",
+      "query": "978 1 7863 3051 2",
+      "expect": {
+        "ol_work": "/works/OL18139176W",
+        "isbns": [
+          "9781786330512",
+          "1786330512"
+        ],
+        "title": "Educated",
+        "author": "Tara Westover"
+      }
+    },
+    {
+      "id": "isbn-12",
+      "category": "isbn",
+      "query": "1786330512",
+      "expect": {
+        "ol_work": "/works/OL18139176W",
+        "isbns": [
+          "9781786330512",
+          "1786330512"
+        ],
+        "title": "Educated",
+        "author": "Tara Westover"
+      }
+    },
+    {
+      "id": "isbn-13",
+      "category": "isbn",
+      "query": "9780099590088",
+      "expect": {
+        "ol_work": "/works/OL17075811W",
+        "isbns": [
+          "9780099590088",
+          "0099590085"
+        ],
+        "title": "Sapiens",
+        "author": "Yuval Noah Harari"
+      }
+    },
+    {
+      "id": "isbn-14",
+      "category": "isbn",
+      "query": "978-0-0995-9008-8",
+      "expect": {
+        "ol_work": "/works/OL17075811W",
+        "isbns": [
+          "9780099590088",
+          "0099590085"
+        ],
+        "title": "Sapiens",
+        "author": "Yuval Noah Harari"
+      }
+    },
+    {
+      "id": "isbn-15",
+      "category": "isbn",
+      "query": "0-0995-9008-5",
+      "expect": {
+        "ol_work": "/works/OL17075811W",
+        "isbns": [
+          "9780099590088",
+          "0099590085"
+        ],
+        "title": "Sapiens",
+        "author": "Yuval Noah Harari"
+      }
+    },
+    {
+      "id": "isbn-16",
+      "category": "isbn",
+      "query": "9780316556330",
+      "expect": {
+        "ol_work": "/works/OL18012166W",
+        "isbns": [
+          "9780316556330",
+          "0316556335"
+        ],
+        "title": "Circe",
+        "author": "Madeline Miller"
+      }
+    },
+    {
+      "id": "isbn-17",
+      "category": "isbn",
+      "query": "978 0 3165 5633 0",
+      "expect": {
+        "ol_work": "/works/OL18012166W",
+        "isbns": [
+          "9780316556330",
+          "0316556335"
+        ],
+        "title": "Circe",
+        "author": "Madeline Miller"
+      }
+    },
+    {
+      "id": "isbn-18",
+      "category": "isbn",
+      "query": "0 3165 5633 5",
+      "expect": {
+        "ol_work": "/works/OL18012166W",
+        "isbns": [
+          "9780316556330",
+          "0316556335"
+        ],
+        "title": "Circe",
+        "author": "Madeline Miller"
+      }
+    },
+    {
+      "id": "isbn-19",
+      "category": "isbn",
+      "query": "9780804139021",
+      "expect": {
+        "ol_work": "/works/OL17091839W",
+        "isbns": [
+          "9780804139021",
+          "0804139024"
+        ],
+        "title": "The Martian",
+        "author": "Andy Weir"
+      }
+    },
+    {
+      "id": "isbn-20",
+      "category": "isbn",
+      "query": "978-0-8041-3902-1",
+      "expect": {
+        "ol_work": "/works/OL17091839W",
+        "isbns": [
+          "9780804139021",
+          "0804139024"
+        ],
+        "title": "The Martian",
+        "author": "Andy Weir"
+      }
+    },
+    {
+      "id": "isbn-21",
+      "category": "isbn",
+      "query": "0804139024",
+      "expect": {
+        "ol_work": "/works/OL17091839W",
+        "isbns": [
+          "9780804139021",
+          "0804139024"
+        ],
+        "title": "The Martian",
+        "author": "Andy Weir"
+      }
+    },
+    {
+      "id": "isbn-22",
+      "category": "isbn",
+      "query": "9780307588364",
+      "expect": {
+        "ol_work": "/works/OL16239762W",
+        "isbns": [
+          "9780307588364",
+          "030758836X"
+        ],
+        "title": "Gone Girl",
+        "author": "Gillian Flynn"
+      }
+    },
+    {
+      "id": "isbn-23",
+      "category": "isbn",
+      "query": "978 0 3075 8836 4",
+      "expect": {
+        "ol_work": "/works/OL16239762W",
+        "isbns": [
+          "9780307588364",
+          "030758836X"
+        ],
+        "title": "Gone Girl",
+        "author": "Gillian Flynn"
+      }
+    },
+    {
+      "id": "isbn-24",
+      "category": "isbn",
+      "query": "0-3075-8836-X",
+      "expect": {
+        "ol_work": "/works/OL16239762W",
+        "isbns": [
+          "9780307588364",
+          "030758836X"
+        ],
+        "title": "Gone Girl",
+        "author": "Gillian Flynn"
+      }
+    },
+    {
+      "id": "partial-01",
+      "category": "partial",
+      "query": "hitchhiker's guide",
+      "expect": {
+        "ol_work": "/works/OL2163649W",
+        "title": "The Hitchhiker's Guide to the Galaxy",
+        "author": "Douglas Adams"
+      }
+    },
+    {
+      "id": "partial-02",
+      "category": "partial",
+      "query": "one hundred years of",
+      "expect": {
+        "ol_work": "/works/OL274505W",
+        "title": "One Hundred Years of Solitude",
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "partial-03",
+      "category": "partial",
+      "query": "a portrait of the artist",
+      "expect": {
+        "ol_work": "/works/OL86343W",
+        "title": "A Portrait of the Artist as a Young Man",
+        "author": "James Joyce"
+      }
+    },
+    {
+      "id": "partial-04",
+      "category": "partial",
+      "query": "the curious incident",
+      "expect": {
+        "ol_work": "/works/OL2965102W",
+        "title": "The Curious Incident of the Dog in the Night-Time",
+        "author": "Mark Haddon"
+      }
+    },
+    {
+      "id": "partial-05",
+      "category": "partial",
+      "query": "zen and the art",
+      "expect": {
+        "ol_work": "/works/OL827357W",
+        "title": "Zen and the Art of Motorcycle Maintenance",
+        "author": "Robert M. Pirsig"
+      }
+    },
+    {
+      "id": "partial-06",
+      "category": "partial",
+      "query": "the unbearable lightness",
+      "expect": {
+        "ol_work": "/works/OL8972751W",
+        "title": "The Unbearable Lightness of Being",
+        "author": "Milan Kundera"
+      }
+    },
+    {
+      "id": "partial-07",
+      "category": "partial",
+      "query": "do androids dream",
+      "expect": {
+        "ol_work": "/works/OL2172356W",
+        "title": "Do Androids Dream of Electric Sheep?",
+        "author": "Philip K. Dick"
+      }
+    },
+    {
+      "id": "partial-08",
+      "category": "partial",
+      "query": "the strange case of dr jekyll",
+      "expect": {
+        "ol_work": "/works/OL24156W",
+        "title": "Strange Case of Dr Jekyll and Mr Hyde",
+        "author": "Robert Louis Stevenson"
+      }
+    },
+    {
+      "id": "partial-09",
+      "category": "partial",
+      "query": "the brief wondrous life",
+      "expect": {
+        "ol_work": "/works/OL7990014W",
+        "title": "The Brief Wondrous Life of Oscar Wao",
+        "author": "Junot Díaz"
+      }
+    },
+    {
+      "id": "partial-10",
+      "category": "partial",
+      "query": "one flew over",
+      "expect": {
+        "ol_work": "/works/OL2944469W",
+        "title": "One Flew Over the Cuckoo's Nest",
+        "author": "Ken Kesey"
+      }
+    },
+    {
+      "id": "partial-11",
+      "category": "partial",
+      "query": "the man who mistook his wife",
+      "expect": {
+        "ol_work": "/works/OL1811898W",
+        "title": "The Man Who Mistook His Wife for a Hat",
+        "author": "Oliver Sacks"
+      }
+    },
+    {
+      "id": "partial-12",
+      "category": "partial",
+      "query": "the perks of being",
+      "expect": {
+        "ol_work": "/works/OL875437W",
+        "title": "The Perks of Being a Wallflower",
+        "author": "Stephen Chbosky"
+      }
+    },
+    {
+      "id": "partial-13",
+      "category": "partial",
+      "query": "the heart is a lonely",
+      "expect": {
+        "ol_work": "/works/OL11081469W",
+        "title": "The Heart Is a Lonely Hunter",
+        "author": "Carson McCullers"
+      }
+    },
+    {
+      "id": "partial-14",
+      "category": "partial",
+      "query": "where the crawdads",
+      "expect": {
+        "ol_work": "/works/OL18766691W",
+        "title": "Where the Crawdads Sing",
+        "author": "Delia Owens"
+      }
+    },
+    {
+      "id": "partial-15",
+      "category": "partial",
+      "query": "a tree grows in",
+      "expect": {
+        "ol_work": "/works/OL78359W",
+        "title": "A Tree Grows in Brooklyn",
+        "author": "Betty Smith"
+      }
+    },
+    {
+      "id": "partial-16",
+      "category": "partial",
+      "query": "dispossessed",
+      "expect": {
+        "ol_work": "/works/OL59863W",
+        "title": "The Dispossessed",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "partial-17",
+      "category": "partial",
+      "query": "remains of the day",
+      "expect": {
+        "ol_work": "/works/OL59048W",
+        "title": "The Remains of the Day",
+        "author": "Kazuo Ishiguro"
+      }
+    },
+    {
+      "id": "partial-18",
+      "category": "partial",
+      "query": "the left hand of",
+      "expect": {
+        "ol_work": "/works/OL59800W",
+        "title": "The Left Hand of Darkness",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "partial-19",
+      "category": "partial",
+      "query": "if on a winter's night",
+      "expect": {
+        "ol_work": "/works/OL15321W",
+        "title": "If on a Winter's Night a Traveler",
+        "author": "Italo Calvino"
+      }
+    },
+    {
+      "id": "partial-20",
+      "category": "partial",
+      "query": "a confederacy of",
+      "expect": {
+        "ol_work": "/works/OL3501723W",
+        "title": "A Confederacy of Dunces",
+        "author": "John Kennedy Toole"
+      }
+    },
+    {
+      "id": "author-01",
+      "category": "author_only",
+      "query": "ursula le guin",
+      "expect": {
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "author-02",
+      "category": "author_only",
+      "query": "haruki murakami",
+      "expect": {
+        "author": [
+          "Haruki Murakami",
+          "村上春樹"
+        ]
+      }
+    },
+    {
+      "id": "author-03",
+      "category": "author_only",
+      "query": "terry pratchett",
+      "expect": {
+        "author": "Terry Pratchett"
+      }
+    },
+    {
+      "id": "author-04",
+      "category": "author_only",
+      "query": "agatha christie",
+      "expect": {
+        "author": "Agatha Christie"
+      }
+    },
+    {
+      "id": "author-05",
+      "category": "author_only",
+      "query": "jane austen",
+      "expect": {
+        "author": "Jane Austen"
+      }
+    },
+    {
+      "id": "author-06",
+      "category": "author_only",
+      "query": "fyodor dostoevsky",
+      "expect": {
+        "author": [
+          "Fyodor Dostoevsky",
+          "Fyodor Dostoyevsky",
+          "Fiódor Dostoievski",
+          "Фёдор Михайлович Достоевский",
+          "Фёдор Достоевский"
+        ]
+      }
+    },
+    {
+      "id": "author-07",
+      "category": "author_only",
+      "query": "toni morrison",
+      "expect": {
+        "author": "Toni Morrison"
+      }
+    },
+    {
+      "id": "author-08",
+      "category": "author_only",
+      "query": "kazuo ishiguro",
+      "expect": {
+        "author": "Kazuo Ishiguro"
+      }
+    },
+    {
+      "id": "author-09",
+      "category": "author_only",
+      "query": "octavia butler",
+      "expect": {
+        "author": "Octavia E. Butler"
+      }
+    },
+    {
+      "id": "author-10",
+      "category": "author_only",
+      "query": "neil gaiman",
+      "expect": {
+        "author": "Neil Gaiman"
+      }
+    },
+    {
+      "id": "author-11",
+      "category": "author_only",
+      "query": "margaret atwood",
+      "expect": {
+        "author": "Margaret Atwood"
+      }
+    },
+    {
+      "id": "author-12",
+      "category": "author_only",
+      "query": "isaac asimov",
+      "expect": {
+        "author": "Isaac Asimov"
+      }
+    },
+    {
+      "id": "author-13",
+      "category": "author_only",
+      "query": "virginia woolf",
+      "expect": {
+        "author": "Virginia Woolf"
+      }
+    },
+    {
+      "id": "author-14",
+      "category": "author_only",
+      "query": "gabriel garcia marquez",
+      "expect": {
+        "author": "Gabriel García Márquez"
+      }
+    },
+    {
+      "id": "author-15",
+      "category": "author_only",
+      "query": "brandon sanderson",
+      "expect": {
+        "author": "Brandon Sanderson"
+      }
+    },
+    {
+      "id": "cjk-01",
+      "category": "cjk_cyrillic",
+      "query": "ノルウェイの森",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL2625457W",
+        "title": [
+          "Norwegian Wood",
+          "ノルウェイの森"
+        ],
+        "author": [
+          "Haruki Murakami",
+          "村上春樹"
+        ]
+      }
+    },
+    {
+      "id": "cjk-02",
+      "category": "cjk_cyrillic",
+      "query": "三体",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL17267881W",
+        "title": [
+          "The Three-Body Problem",
+          "三体"
+        ],
+        "author": [
+          "Liu Cixin",
+          "Cixin Liu",
+          "刘慈欣"
+        ]
+      }
+    },
+    {
+      "id": "cjk-03",
+      "category": "cjk_cyrillic",
+      "query": "人間失格",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL3923952W",
+        "title": [
+          "No Longer Human",
+          "人間失格"
+        ],
+        "author": [
+          "Osamu Dazai",
+          "太宰治"
+        ]
+      }
+    },
+    {
+      "id": "cjk-04",
+      "category": "cjk_cyrillic",
+      "query": "雪国",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL2045111W",
+        "title": [
+          "Snow Country",
+          "雪国"
+        ],
+        "author": [
+          "Yasunari Kawabata",
+          "川端康成"
+        ]
+      }
+    },
+    {
+      "id": "cjk-05",
+      "category": "cjk_cyrillic",
+      "query": "채식주의자",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL17334243W",
+        "title": [
+          "The Vegetarian",
+          "채식주의자"
+        ],
+        "author": [
+          "Han Kang",
+          "한강"
+        ]
+      }
+    },
+    {
+      "id": "cjk-06",
+      "category": "cjk_cyrillic",
+      "query": "мастер и маргарита",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL676009W",
+        "title": [
+          "The Master and Margarita",
+          "мастер и маргарита"
+        ],
+        "author": [
+          "Mikhail Bulgakov",
+          "Михаил Булгаков"
+        ]
+      }
+    },
+    {
+      "id": "cjk-07",
+      "category": "cjk_cyrillic",
+      "query": "преступление и наказание",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL166894W",
+        "title": [
+          "Crime and Punishment",
+          "преступление и наказание"
+        ],
+        "author": [
+          "Fyodor Dostoevsky",
+          "Fyodor Dostoyevsky",
+          "Fiódor Dostoievski",
+          "Фёдор Михайлович Достоевский",
+          "Фёдор Достоевский"
+        ]
+      }
+    },
+    {
+      "id": "cjk-08",
+      "category": "cjk_cyrillic",
+      "query": "война и мир",
+      "gates": false,
+      "expect": {
+        "ol_work": [
+          "/works/OL267171W",
+          "/works/OL36765642W"
+        ],
+        "title": [
+          "War and Peace",
+          "война и мир"
+        ],
+        "author": [
+          "Leo Tolstoy",
+          "Lev Tolstoy",
+          "Лев Толстой"
+        ]
+      }
+    },
+    {
+      "id": "cjk-09",
+      "category": "cjk_cyrillic",
+      "query": "анна каренина",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL267096W",
+        "title": [
+          "Anna Karenina",
+          "анна каренина"
+        ],
+        "author": [
+          "Leo Tolstoy",
+          "Lev Tolstoy",
+          "Лев Толстой"
+        ]
+      }
+    },
+    {
+      "id": "cjk-10",
+      "category": "cjk_cyrillic",
+      "query": "мы замятин",
+      "gates": false,
+      "expect": {
+        "ol_work": "/works/OL10215W",
+        "title": [
+          "We",
+          "мы замятин"
+        ],
+        "author": [
+          "Yevgeny Zamyatin",
+          "Евгений Замятин"
+        ]
+      }
+    },
+    {
+      "id": "held-01",
+      "category": "held",
+      "query": "the left hand of darkness",
+      "expect": {
+        "held": "left-hand",
+        "ol_work": "/works/OL59800W",
+        "title": "The Left Hand of Darkness",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "held-03",
+      "category": "held",
+      "query": "circe madeline miller",
+      "expect": {
+        "held": "circe",
+        "ol_work": "/works/OL18012166W",
+        "title": "Circe",
+        "author": "Madeline Miller"
+      }
+    },
+    {
+      "id": "held-04",
+      "category": "held",
+      "query": "the name of the wind",
+      "expect": {
+        "held": "name-of-the-wind",
+        "ol_work": "/works/OL8479867W",
+        "title": "The Name of the Wind",
+        "author": "Patrick Rothfuss"
+      }
+    },
+    {
+      "id": "held-05",
+      "category": "held",
+      "query": "middlemarch",
+      "expect": {
+        "held": "middlemarch",
+        "ol_work": "/works/OL20867W",
+        "title": "Middlemarch",
+        "author": "George Eliot"
+      }
+    },
+    {
+      "id": "held-06",
+      "category": "held",
+      "query": "the dispossessed",
+      "expect": {
+        "held": "dispossessed",
+        "ol_work": "/works/OL59863W",
+        "title": "The Dispossessed",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "held-07",
+      "category": "held",
+      "query": "piranesi",
+      "expect": {
+        "held": "piranesi",
+        "ol_work": "/works/OL20893680W",
+        "title": "Piranesi",
+        "author": "Susanna Clarke"
+      }
+    },
+    {
+      "id": "held-08",
+      "category": "held",
+      "query": "the secret history donna tartt",
+      "expect": {
+        "held": "secret-history",
+        "ol_work": "/works/OL4321141W",
+        "title": "The Secret History",
+        "author": "Donna Tartt"
+      }
+    },
+    {
+      "id": "held-09",
+      "category": "held",
+      "query": "harry potter and the philosopher's stone",
+      "expect": {
+        "held": "sorcerers-stone",
+        "ol_work": "/works/OL82563W",
+        "title": "Harry Potter and the Sorcerer's Stone",
+        "author": "J.K. Rowling"
+      }
+    },
+    {
+      "id": "held-10",
+      "category": "held",
+      "query": "the fellowship of the ring",
+      "expect": {
+        "held": "fellowship",
+        "ol_work": "/works/OL27513W",
+        "title": "The Fellowship of the Ring: Being the First Part of The Lord of the Rings",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "held-12",
+      "category": "held",
+      "scope": "library",
+      "query": "midlemarch",
+      "expect": {
+        "held": "middlemarch",
+        "ol_work": "/works/OL20867W",
+        "title": "Middlemarch",
+        "author": "George Eliot"
+      }
+    },
+    {
+      "id": "held-13",
+      "category": "held",
+      "scope": "library",
+      "query": "dispossesed",
+      "expect": {
+        "held": "dispossessed",
+        "ol_work": "/works/OL59863W",
+        "title": "The Dispossessed",
+        "author": "Ursula K. Le Guin"
+      }
+    },
+    {
+      "id": "held-14",
+      "category": "held",
+      "scope": "library",
+      "query": "piranessi",
+      "expect": {
+        "held": "piranesi",
+        "ol_work": "/works/OL20893680W",
+        "title": "Piranesi",
+        "author": "Susanna Clarke"
+      }
+    },
+    {
+      "id": "held-15",
+      "category": "held",
+      "scope": "library",
+      "query": "secret histroy",
+      "expect": {
+        "held": "secret-history",
+        "ol_work": "/works/OL4321141W",
+        "title": "The Secret History",
+        "author": "Donna Tartt"
+      }
+    },
+    {
+      "id": "held-16",
+      "category": "held",
+      "scope": "library",
+      "query": "jonathon strange",
+      "expect": {
+        "held": "jonathan-strange",
+        "ol_work": "/works/OL5703422W",
+        "title": "Jonathan Strange & Mr Norrell",
+        "author": "Susanna Clarke"
+      }
+    },
+    {
+      "id": "held-17",
+      "category": "held",
+      "scope": "library",
+      "query": "neuromancr",
+      "expect": {
+        "held": "neuromancer",
+        "ol_work": "/works/OL27258W",
+        "title": "Neuromancer",
+        "author": "William Gibson"
+      }
+    },
+    {
+      "id": "held-18",
+      "category": "held",
+      "scope": "library",
+      "query": "silas marnr",
+      "expect": {
+        "held": "silas-marner",
+        "ol_work": "/works/OL20874W",
+        "title": "Silas Marner",
+        "author": "George Eliot"
+      }
+    },
+    {
+      "id": "held-19",
+      "category": "held",
+      "scope": "library",
+      "query": "the hobit",
+      "expect": {
+        "held": "the-hobbit",
+        "ol_work": "/works/OL27482W",
+        "title": "The Hobbit",
+        "author": "J.R.R. Tolkien"
+      }
+    },
+    {
+      "id": "held-20",
+      "category": "held",
+      "scope": "library",
+      "query": "jane eyer",
+      "expect": {
+        "held": "jane-eyre",
+        "ol_work": "/works/OL1095427W",
+        "title": "Jane Eyre",
+        "author": "Charlotte Brontë"
+      }
+    }
+  ]
+}

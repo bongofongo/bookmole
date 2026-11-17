@@ -1,0 +1,26 @@
+# The avenue every other fixture skips: no files, no device. Books arrive from a
+# Goodreads export; pages are typed; notes cite pages. Both files are written by
+# `gen-reader`; `fixtures/verbs.jsonl` is the small committed shape twin.
+name = "physical-reader"
+description = "A Goodreads export, then typed progress, notes and corrections replayed through the CLI."
+
+[[step]]
+kind = "goodreads-import"
+csv = "corpus/generated/reader/physical.csv"
+
+[[step]]
+kind = "verbs"
+file = "corpus/generated/reader/verbs.jsonl"
+
+[[step]]
+kind = "sort-keys"
+
+[[step]]
+kind = "refill"
+
+# Observed 2026-10-20: `progress <book> -- -12` exits 0 and stores
+# current_page = -12. hostile.json declares page-negative `rejected`; the
+# declaration stands and the divergence is reported as an engine bug.
+[[known]]
+case = "page-negative"
+why = "progress accepts and stores a negative page (engine bug)"

@@ -1,0 +1,30 @@
+-- The passage a reading's card shows, chosen by the reader.
+--
+-- ## A column on `readings`, not a `cards` table
+--
+-- A card is a *finished reading drawn*, and the API has no card type for
+-- the same reason there is no `cards` row: a card is a layout over facts
+-- the reading already holds. The one fact it did not hold is which passage
+-- the reader chose for it, and that is a property of the reading — one per
+-- read, a reread chooses its own — so it is a nullable column here rather
+-- than a table that would exist only to carry one foreign key.
+--
+-- ## Why the reader chooses, and the longest mark no longer does
+--
+-- The card's passage was first picked by a rule (the longest mark of the
+-- reading, ties to the lowest id), and that rule's cost was known from the
+-- start: it selects for the longest *drag*, not the best passage. So the
+-- passage is the reader's choice, and a card with none shows none: on a card,
+-- what the reader chose should be the loudest thing, and a guess made on their
+-- behalf should not be dressed up as one. `NULL` here therefore means
+-- *not chosen*, and it is not back-filled from the old rule on purpose: a
+-- passage the rule picked is exactly the passage the reader did not.
+--
+-- `ON DELETE SET NULL`: a highlight that leaves (a book's highlights are
+-- re-imported, a mark is removed) takes the choice with it and the card
+-- goes back to saying nothing, which is the honest state. The write path
+-- (`Storage::set_card_passage`) checks the highlight is of the reading's
+-- book — and, when the highlight is attributed to a reading at all, that it
+-- is this one — because nothing in the schema stops a client naming a
+-- passage from another book.
+ALTER TABLE readings ADD COLUMN card_highlight_id INTEGER REFERENCES highlights(id) ON DELETE SET NULL;

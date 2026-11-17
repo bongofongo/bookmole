@@ -1,0 +1,380 @@
+{
+  "_comment": "Tier-2 corpus: real Project Gutenberg epubs, committed under corpus/epub/ and fetched by scripts/fetch-corpus.sh when one is added. Chosen for diversity rather than fame — multiple scripts and languages, very long and very short, diacritics and non-Latin characters in titles and author names, multiple authors, and works with no author at all. `sha256` is filled in by `scripts/fetch-corpus.sh --record`; once set it is verified on every fetch, so a Gutenberg re-issue fails loudly instead of silently reshuffling every golden. Every book must be public domain everywhere, not only in the United States: Gutenberg marks some ebooks as copyrighted, and a translation is only free once its translator's term has run out, so read the header and check the translator before adding one.",
+  "books": [
+    {
+      "id": 1342,
+      "title": "Pride and Prejudice",
+      "author": "Jane Austen",
+      "language": "en",
+      "sha256": "462be7852d84412c6695851395144a97e9762d45bd3c41b9f356dc7ac047b8a9"
+    },
+    {
+      "id": 84,
+      "title": "Frankenstein; Or, The Modern Prometheus",
+      "author": "Mary Wollstonecraft Shelley",
+      "language": "en",
+      "sha256": "2719565ac885c335df88f220b03a9c45b95dc4225193a8dc649f6493550c4332"
+    },
+    {
+      "id": 11,
+      "title": "Alice's Adventures in Wonderland",
+      "author": "Lewis Carroll",
+      "language": "en",
+      "sha256": "5c0706a6ad6ed931c1ad1892461490250ea8818a5429db708381d336a25815e9"
+    },
+    {
+      "id": 2701,
+      "title": "Moby Dick; Or, The Whale",
+      "author": "Herman Melville",
+      "language": "en",
+      "sha256": "4c4bd055e2d91a0a27a4220b5f1927e259595970ea5fae1346849ab16df3b271"
+    },
+    {
+      "id": 1661,
+      "title": "The Adventures of Sherlock Holmes",
+      "author": "Arthur Conan Doyle",
+      "language": "en",
+      "sha256": "4e380df6664160703b706b3b690f1a63b1242c2c5085c30ee79727f0177230b0"
+    },
+    {
+      "id": 98,
+      "title": "A Tale of Two Cities",
+      "author": "Charles Dickens",
+      "language": "en",
+      "sha256": "94e22b2d9db5a53b462e82957cad4b4680ce133b33ebe32bde70d7cb8c3b30e3"
+    },
+    {
+      "id": 1080,
+      "title": "A Modest Proposal",
+      "author": "Jonathan Swift",
+      "language": "en",
+      "_why": "very short — exercises a spine with almost nothing in it",
+      "sha256": "5800b2f68ad0c141fbaf6eb062691e440ac3bc0be1abc67816a4f80961c20d45"
+    },
+    {
+      "id": 2600,
+      "title": "War and Peace",
+      "author": "Leo Tolstoy",
+      "language": "en",
+      "_why": "very long — the scale case",
+      "sha256": "7be0c7f9ceadd4e2533552e249e8cc25e1f6020471110cb97e66b100db3f2a05"
+    },
+    {
+      "id": 174,
+      "title": "The Picture of Dorian Gray",
+      "author": "Oscar Wilde",
+      "language": "en",
+      "sha256": "4df2cfc0bfa11fa038c54453c8b31c6b7197e0449a8946c10451e3b795dc8533"
+    },
+    {
+      "id": 345,
+      "title": "Dracula",
+      "author": "Bram Stoker",
+      "language": "en",
+      "sha256": "0926608cc4e5e0b65591474efc13b3871703fbf6959e73376c4e22776dcd1c57"
+    },
+    {
+      "id": 1260,
+      "title": "Jane Eyre: An Autobiography",
+      "author": "Charlotte Brontë",
+      "language": "en",
+      "_why": "diacritic in the author name",
+      "sha256": "57fcd3683aaf969a4fe4d6595a1b92604b278689524ee6cb3c52baa6f30922a1"
+    },
+    {
+      "id": 4300,
+      "title": "Ulysses",
+      "author": "James Joyce",
+      "language": "en",
+      "sha256": "dde9cd9d7687ac8501338b00c59e8a41f0adb996dd6c8a930c06e6ccf3cabf05"
+    },
+    {
+      "id": 76,
+      "title": "Adventures of Huckleberry Finn",
+      "author": "Mark Twain",
+      "language": "en",
+      "sha256": "91790b2c21697c7d36a17941fba47481892a613e78087ab086b2181161f75408"
+    },
+    {
+      "id": 16328,
+      "title": "Beowulf: An Anglo-Saxon Epic Poem",
+      "author": "Unknown",
+      "language": "en",
+      "_why": "no real author",
+      "sha256": "219941960ffd2dd25437635fb0855ac0a0c1e73d1ec67873cebcf4ef2ba86e5b"
+    },
+    {
+      "id": 17489,
+      "title": "Les Misérables",
+      "author": "Victor Hugo",
+      "language": "fr",
+      "_why": "French, diacritics in the title",
+      "sha256": "df7fabe0b7c3d3a6990dd3451c570da60babcc344d250ead55ab16b3fbcb5b47"
+    },
+    {
+      "id": 13951,
+      "title": "Le Petit Prince",
+      "author": "Antoine de Saint-Exupéry",
+      "language": "fr",
+      "sha256": "5bcc1f32a1e643329aaa8b028a83aee2003422cd1201334b99b4abd26940f21a"
+    },
+    {
+      "id": 2000,
+      "title": "Don Quijote",
+      "author": "Miguel de Cervantes Saavedra",
+      "language": "es",
+      "_why": "Spanish",
+      "sha256": "e3b6b4737a08c91f9afb8cca62d6be24f46988dae820b0cca613c23735f1bb04"
+    },
+    {
+      "id": 21000,
+      "title": "Der Struwwelpeter",
+      "author": "Heinrich Hoffmann",
+      "language": "de",
+      "_why": "German, umlauts",
+      "sha256": "7b6cd4394f3c978fde821a3b70b4018e4c7a81e58d1a61d0a766461483584378"
+    },
+    {
+      "id": 2229,
+      "title": "Faust: Der Tragödie erster Teil",
+      "author": "Johann Wolfgang von Goethe",
+      "language": "de",
+      "sha256": "17ea3960ee7df1493be694ad3ac518a20080792af57e8d973d79e7ffaaf47266"
+    },
+    {
+      "id": 28054,
+      "title": "Братья Карамазовы",
+      "author": "Fyodor Dostoyevsky",
+      "language": "ru",
+      "_why": "Cyrillic title",
+      "sha256": "c75274830529adb9b7f4a1e3c5f46e927465c6d087950b20f3d28495cc7963c4"
+    },
+    {
+      "id": 2554,
+      "title": "Crime and Punishment",
+      "author": "Fyodor Dostoyevsky",
+      "language": "en",
+      "sha256": "38a40af721493ac3503521c98628d4a19cdf7aa0b4849306372df59bd5e9bf17"
+    },
+    {
+      "id": 24039,
+      "title": "こころ",
+      "author": "夏目 漱石",
+      "language": "ja",
+      "_why": "Japanese — space-less text, so every highlight is one word to single_word()",
+      "sha256": "28b3a783bd6f2f3f2174520332a2b8e46c1492d920b075fa0b21e382feb75519"
+    },
+    {
+      "id": 1656,
+      "title": "論語",
+      "author": "Confucius",
+      "language": "zh",
+      "_why": "Chinese — same space-less property, different script",
+      "sha256": "7b3221dda79a4f0c2dde8af4f5c07ce0c2b7c054cce2b014f56043188dc8a465"
+    },
+    {
+      "id": 30235,
+      "title": "Il Decamerone",
+      "author": "Giovanni Boccaccio",
+      "language": "it",
+      "_why": "Italian",
+      "sha256": "f9396dc23b963fc0dcea073746b8b267691baf8839236d64763fa07e41b5681c"
+    },
+    {
+      "id": 1404,
+      "title": "The Federalist Papers",
+      "author": "Alexander Hamilton, John Jay, James Madison",
+      "language": "en",
+      "_why": "multiple authors. Gutenberg id 1404 — 33283 was wrong from the start (it is Calculus Made Easy) and has no epub at any URL, which is why this job failed every night rather than intermittently.",
+      "sha256": "1222b75379d3bf6920ebea2a1dafe1d9ff50d1147f5e0a78e7749ea268b9451e"
+    },
+    {
+      "id": 100,
+      "title": "The Complete Works of William Shakespeare",
+      "author": "William Shakespeare",
+      "language": "en",
+      "_why": "enormous spine",
+      "sha256": "a922fcfbb79f4013ebaa772e999f93ef77b40a04506684650b60a0d911ce5a6f"
+    },
+    {
+      "id": 25344,
+      "title": "The Scarlet Letter",
+      "author": "Nathaniel Hawthorne",
+      "language": "en",
+      "sha256": "72b09bb2ac4763d62d5e8d2278690b9434a05641f1f3f49593bee3a8ef439414"
+    },
+    {
+      "id": 74,
+      "title": "The Adventures of Tom Sawyer",
+      "author": "Mark Twain",
+      "language": "en",
+      "sha256": "fe35a8197504c0331a5b0c3bb5098a9aa6f57491cb9ae208e21e5377784e44f5"
+    },
+    {
+      "id": 219,
+      "title": "Heart of Darkness",
+      "author": "Joseph Conrad",
+      "language": "en",
+      "sha256": "d760d8134788a509b5d04f2454fd92e9f0b568f7b450421a4e840f19fee07962"
+    },
+    {
+      "id": 12,
+      "title": "Through the Looking-Glass",
+      "author": "Lewis Carroll",
+      "language": "en",
+      "_why": "illustrated (Tenniel) — a real cover image",
+      "sha256": "4b5032be55606211470898f6242b996574c11be131d28f3ad53c99c8f108739c"
+    },
+    {
+      "id": 55,
+      "title": "The Wonderful Wizard of Oz",
+      "author": "L. Frank Baum",
+      "language": "en",
+      "_why": "illustrated — a real cover image",
+      "sha256": "fe2536baf486f564ab6b4af37e9bcbc6172974ecc345393ad06b89483cd8bb09"
+    },
+    {
+      "id": 236,
+      "title": "The Jungle Book",
+      "author": "Rudyard Kipling",
+      "language": "en",
+      "_why": "illustrated — a real cover image",
+      "sha256": "51f0c5d2bfeb0a86e22d2f8a93a1d7978699d17bf95edad2bdf8168863f3d6f9"
+    },
+    {
+      "id": 2591,
+      "title": "Grimms' Fairy Tales",
+      "author": "Jacob Grimm and Wilhelm Grimm",
+      "language": "en",
+      "_why": "two authors joined with 'and'; illustrated",
+      "sha256": "42f902e74c64f0102915d452d3cd8aec2178218fbae8d199d73559d53b09a7a2"
+    },
+    {
+      "id": 1065,
+      "title": "The Raven",
+      "author": "Edgar Allan Poe",
+      "language": "en",
+      "_why": "very short poem — the smallest spine in the corpus, short stanza 'paragraphs'",
+      "sha256": "dacf3bae82c44e33efc96f278d0025632ad734d4ff2be44c369e0eca94ee4790"
+    },
+    {
+      "id": 1322,
+      "title": "Leaves of Grass",
+      "author": "Walt Whitman",
+      "language": "en",
+      "_why": "poetry — short lines as paragraphs",
+      "sha256": "ff17821f9c295844196ffcc2f73920f6d40b276f067023786da1733b4974bdc0"
+    },
+    {
+      "id": 1513,
+      "title": "Romeo and Juliet",
+      "author": "William Shakespeare",
+      "language": "en",
+      "_why": "drama — speeches as short paragraphs",
+      "sha256": "eb770fa180a86c9f4d6f24a61d7fd01876ccec923bc9c7dc0e81aac4693826ea"
+    },
+    {
+      "id": 844,
+      "title": "The Importance of Being Earnest: A Trivial Comedy for Serious People",
+      "author": "Oscar Wilde",
+      "language": "en",
+      "_why": "drama; long subtitle after a colon",
+      "sha256": "979b96af3108b97d45bbcd4ea93bb2d47747a1c51d4de139527b30f550018920"
+    },
+    {
+      "id": 10136,
+      "title": "The Book of Household Management",
+      "author": "Mrs. Beeton",
+      "language": "en",
+      "_why": "cookbook/manual — recipes, lists, tables; honorific author",
+      "sha256": "78786eae88255512dc41221d67f6ebd5886d38c18e4c9f6dd4bca270ed1e8626"
+    },
+    {
+      "id": 42671,
+      "title": "Pride and Prejudice",
+      "author": "Jane Austen",
+      "language": "en",
+      "_why": "second edition of 1342 — the duplicate-detection case",
+      "sha256": "41aee7860a78734daad32c6de03c140fc56af8d15b71d1ccc895469513fe0773"
+    },
+    {
+      "id": 28885,
+      "title": "Alice's Adventures in Wonderland",
+      "author": "Lewis Carroll",
+      "language": "en",
+      "_why": "second (illustrated) edition of 11 — duplicate detection",
+      "sha256": "3a2c8b0cb8de02151ae05c25885eca5b17a1e37f633bae0f9ae6c8b0a582d977"
+    },
+    {
+      "id": 22367,
+      "title": "Die Verwandlung",
+      "author": "Franz Kafka",
+      "language": "de",
+      "sha256": "f46ad6f55f7ef4bc52bb75c79c2de5b4a18be7bca2e945315375c1b9df71b73b"
+    },
+    {
+      "id": 14155,
+      "title": "Madame Bovary",
+      "author": "Gustave Flaubert",
+      "language": "fr",
+      "_why": "French; the original-language case",
+      "sha256": "7b484766baa73267ba3bd28f91deafa4d5a2640840f416e489662fe2f90c00cf"
+    },
+    {
+      "id": 39536,
+      "title": "Αγαμέμνων",
+      "author": "Aeschylus",
+      "language": "el",
+      "_why": "Greek title and text; drama",
+      "sha256": "d243ffb225df7125ff4b8019ac1aabd7362e5d448c3a82240eefa2adf6da86bf"
+    },
+    {
+      "id": 39764,
+      "title": "Κύρου Ανάβασις Τόμος 1",
+      "author": "Xenophon",
+      "language": "el",
+      "_why": "multi-volume work, volume 1 (Greek)",
+      "sha256": "815fd11f5a4f2d64015f22c75279883ce6951b945c9fa173bd1a28d3a18bd5b8"
+    },
+    {
+      "id": 40061,
+      "title": "Κύρου Ανάβασις Τόμος 2",
+      "author": "Xenophon",
+      "language": "el",
+      "_why": "multi-volume work, volume 2 (Greek)",
+      "sha256": "27c94d4dc0032ef52c87b7207de09f919d7855c72b29c294b019c17686c216f5"
+    },
+    {
+      "id": 61024,
+      "title": "צל העולם",
+      "author": "Gautier of Metz",
+      "language": "he",
+      "_why": "Hebrew — RTL title and text",
+      "sha256": "f47e5351f898797c38ce11fbb6511f59b223b98efebf579d0d86ef26450a7092"
+    },
+    {
+      "id": 1952,
+      "title": "The Yellow Wallpaper",
+      "author": "Charlotte Perkins Gilman",
+      "language": "en",
+      "_why": "short story — a very short text",
+      "sha256": "81fe9cb59df5d9616e48d9f3721404dee6dc3b20e1b50be73bf6b63cf7bf8d24"
+    },
+    {
+      "id": 2147,
+      "title": "The Works of Edgar Allan Poe — Volume 1",
+      "author": "Edgar Allan Poe",
+      "language": "en",
+      "_why": "multi-volume work, volume 1; em dash in title",
+      "sha256": "04828d1ff1adf7c2ced78e75dc0062b897a0ab7931c9a07962a4574e704a934f"
+    },
+    {
+      "id": 2148,
+      "title": "The Works of Edgar Allan Poe — Volume 2",
+      "author": "Edgar Allan Poe",
+      "language": "en",
+      "_why": "multi-volume work, volume 2",
+      "sha256": "e65d9c1ee07671b7fedba2aca737a753c7289503fd6e784de8f0affe9a901089"
+    }
+  ]
+}

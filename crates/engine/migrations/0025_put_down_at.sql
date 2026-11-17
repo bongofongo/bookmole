@@ -1,0 +1,29 @@
+-- When a read was put down.
+--
+-- `abandon_reading` marks a reading `abandoned` **without closing it**
+-- (`finished_at` stays NULL: an abandoned book is one you might still pick
+-- up), and until now it recorded no instant at all. `last_modified` is not
+-- that instant — a later progress write or device refresh moves it — so a
+-- history that says *put down 12 Sep*, or a count of the days a put-down read
+-- lasted, had nothing honest to read. This column is the instant the
+-- reading **became** `abandoned`, stamped by `Storage::abandon_reading` on the
+-- transition and by `merge_books` when it closes the older of two open
+-- readings as abandoned (at the same instant it writes into `finished_at`).
+--
+-- **Read only while `status = 'abandoned'`.** A reading picked up again keeps
+-- the stale value rather than having a writer clear it; every reader goes
+-- through `CASE WHEN status = 'abandoned'`, so the instant means nothing once
+-- the status has moved on, and a second put-down stamps it afresh.
+--
+-- ## The repo's sixth deliberate non-back-fill
+--
+-- No row written before this migration can be given a put-down instant. The
+-- only candidate is `last_modified`, which is an **upper bound** (abandoning
+-- stamped it, and later writes only move it forward) and not a date: back-filling
+-- it would print *put down 3 Nov* for a book put down in March and touched in
+-- November. So `NULL` means *not since we started recording*, and a reader of
+-- the column has to word it that way — the History timeline places such a card
+-- by `last_modified` and says so in the field it orders by, never in
+-- `put_down_at`. A reading closed `abandoned` by a merge carries its
+-- `finished_at`, which readers use when this column is NULL.
+ALTER TABLE readings ADD COLUMN put_down_at INTEGER;

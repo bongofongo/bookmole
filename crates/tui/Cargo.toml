@@ -1,0 +1,55 @@
+[package]
+name = "bookmole-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+[[bin]]
+name = "bookmole-tui"
+path = "src/main.rs"
+
+[dependencies]
+bookmole = { path = "../engine" }
+# The ray tracer and its cover textures, extracted into their own crate so a GUI
+# frontend can draw the same book. `render3d/mod.rs` re-exports it under the old
+# module names.
+bookmole-book3d = { path = "../book3d" }
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+arboard.workspace = true
+image.workspace = true
+flate2.workspace = true
+base64.workspace = true
+futures.workspace = true
+serde.workspace = true
+# The perf log is JSONL: one frame per line, so two runs can be diffed
+# mechanically rather than eyeballed.
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+# The capability probe polls the tty directly for terminal query replies.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+# Only to assert that a kitty placeholder cell measures one column wide — if it
+# ever measured two, ratatui's buffer diff would skip every second cell.
+unicode-width = "0.2"
+# `test_app` seeds a highlight and a flashcard directly, and both are write
+# paths the facade deliberately does **not** have: a highlight comes off a
+# device and a flashcard is derived from one, so inventing `Engine::add_*` to
+# make a fixture compile would be adding product surface no product asked for.
+# The engine's `internals` feature (which exposes `Engine::storage()`) is the
+# door left for exactly this. It is a dev-dependency, so the shipped binary
+# never has it.
+bookmole = { path = "../engine", features = ["internals"] }
+# `tests/data_dir.rs` runs the binary under a throwaway HOME.
+tempfile = "3"
