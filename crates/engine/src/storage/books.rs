@@ -11,6 +11,7 @@ use super::highlights::identity_hash_of;
 use super::query::{Bind, BookFilter, BookQuery, BookSummary, LibraryScope};
 use super::{Storage, now_unix};
 use crate::book::{Book, series_index_text};
+use crate::copies::NewCopy;
 use crate::error::{EngineError, Result};
 
 /// `limit` selects along the sort key in every arm; every arm is an indexed `ORDER BY` except
@@ -642,51 +643,93 @@ impl Storage {
     /// Ignores `Book`'s progress fields: reading state is written only by `update_progress`.
     /// `source` stamps provenance on every field the record supplies; `None` stamps nothing.
     pub async fn upsert_book(&self, book: &Book, source: Option<Source>) -> Result<i64> {
-        let set_clause = format!(
-            "{},\n            last_modified = excluded.last_modified",
-            merge_set(Winner::Incoming, guards_user(source), |_, col| format!(
-                "excluded.{col}"
-            ))
-        );
-
-        // Built from `MERGE_RULES` plus `created_at` and `last_modified`, so a column change cannot desync
-        // it.
-        let holes = std::iter::repeat_n("?", MERGE_RULES.len() + 2)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let insert = format!(
-            "INSERT INTO books ({}, created_at, last_modified) VALUES ({holes})",
-            merge_columns().collect::<Vec<_>>().join(", ")
-        );
-
-        let sql = if book.isbn_10.is_some() {
-            format!("{insert} ON CONFLICT(isbn_10) DO UPDATE SET {set_clause} RETURNING id")
-        } else if book.isbn_13.is_some() {
-            format!("{insert} ON CONFLICT(isbn_13) DO UPDATE SET {set_clause} RETURNING id")
-        } else {
-            format!("{insert} RETURNING id")
-        };
-
-        let now = now_unix();
         // One transaction: a row whose values landed but whose provenance did not can never be repaired.
         let mut tx = self.pool().begin().await?;
-        let row = bind_merge_columns(sqlx::query(&sql), book)?
-            .bind(now)
-            .bind(now)
-            .fetch_one(&mut *tx)
-            .await?;
-        let id: i64 = row.try_get("id")?;
-        if let Some(source) = source {
-            let fields =
-                claimable(&mut tx, id, &fields_said(book), guards_user(Some(source))).await?;
-            field_provenance::stamp(&mut tx, id, &fields, source).await?;
-        }
-        // After the stamp: a `Source::User` claim on `sort_title` tells the derivation to leave it alone.
-        refresh_sort_keys(&mut tx, id).await?;
+        let id = upsert_book_in(&mut tx, book, source).await?;
         tx.commit().await?;
         Ok(id)
     }
 
+    /// `upsert_book` that also records `first_copy(id)` when no stored book shared one of `book`'s
+    /// ISBNs, in one transaction: a created book whose copy failed would stay out of the library,
+    /// and a retry would find the book and add nothing.
+    pub async fn upsert_book_with_first_copy(
+        &self,
+        book: &Book,
+        first_copy: impl FnOnce(i64) -> NewCopy,
+    ) -> Result<i64> {
+        let mut tx = self.pool().begin().await?;
+        let mut existed = false;
+        for isbn in [&book.isbn_13, &book.isbn_10].into_iter().flatten() {
+            existed |= sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM books WHERE isbn_10 = ?1 OR isbn_13 = ?1)",
+            )
+            .bind(isbn)
+            .fetch_one(&mut *tx)
+            .await?;
+        }
+        let id = upsert_book_in(&mut tx, book, None).await?;
+        if !existed {
+            copies::insert_copy(&mut tx, &first_copy(id)).await?;
+        }
+        tx.commit().await?;
+        Ok(id)
+    }
+}
+
+async fn upsert_book_in(
+    conn: &mut sqlx::SqliteConnection,
+    book: &Book,
+    source: Option<Source>,
+) -> Result<i64> {
+    let set_clause = format!(
+        "{},\n            last_modified = excluded.last_modified",
+        merge_set(Winner::Incoming, guards_user(source), |_, col| format!(
+            "excluded.{col}"
+        ))
+    );
+
+    // Built from `MERGE_RULES` plus `created_at` and `last_modified`, so a column change cannot desync
+    // it.
+    let holes = std::iter::repeat_n("?", MERGE_RULES.len() + 2)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert = format!(
+        "INSERT INTO books ({}, created_at, last_modified) VALUES ({holes})",
+        merge_columns().collect::<Vec<_>>().join(", ")
+    );
+
+    let sql = if book.isbn_10.is_some() {
+        format!("{insert} ON CONFLICT(isbn_10) DO UPDATE SET {set_clause} RETURNING id")
+    } else if book.isbn_13.is_some() {
+        format!("{insert} ON CONFLICT(isbn_13) DO UPDATE SET {set_clause} RETURNING id")
+    } else {
+        format!("{insert} RETURNING id")
+    };
+
+    let now = now_unix();
+    let row = bind_merge_columns(sqlx::query(&sql), book)?
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *conn)
+        .await?;
+    let id: i64 = row.try_get("id")?;
+    if let Some(source) = source {
+        let fields = claimable(
+            &mut *conn,
+            id,
+            &fields_said(book),
+            guards_user(Some(source)),
+        )
+        .await?;
+        field_provenance::stamp(&mut *conn, id, &fields, source).await?;
+    }
+    // After the stamp: a `Source::User` claim on `sort_title` tells the derivation to leave it alone.
+    refresh_sort_keys(&mut *conn, id).await?;
+    Ok(id)
+}
+
+impl Storage {
     /// Merges a partial record into a book already identified by id. Never inserts, unlike
     /// `upsert_book`, whose ISBN-less branch would create a second row.
     /// `Some(Source::User)` claims the fields it writes, so no provider merge overwrites them.

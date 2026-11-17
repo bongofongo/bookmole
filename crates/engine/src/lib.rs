@@ -2640,15 +2640,16 @@ impl Engine {
     /// [`Engine::save_book`] that records an `unrecorded` copy when the save created the book;
     /// an update to an existing book adds nothing.
     pub async fn save_book_unrecorded(&self, book: &Book) -> Result<Book> {
-        let mut existed = false;
-        for isbn in [&book.isbn_13, &book.isbn_10].into_iter().flatten() {
-            existed |= self.storage.find_book_by_isbn(isbn).await?.is_some();
-        }
-        let saved = self.save_book(book).await?;
-        if !existed && let Some(id) = saved.id {
-            self.ensure_unrecorded_copy(id).await?;
-        }
-        Ok(saved)
+        let id = self
+            .storage
+            .upsert_book_with_first_copy(book, |id| {
+                NewCopy::new(id, None, Tenure::Unrecorded, LearnedFrom::User)
+            })
+            .await?;
+        self.storage
+            .get_book(id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
     }
 
     /// Stores this copy's file in `database/files/` and attaches a `store` place; explicit, never by
@@ -3842,5 +3843,38 @@ mod tests {
         sql(&engine, "DROP TRIGGER refuse_delete").await;
         engine.delete_note(&note).await.unwrap();
         assert!(engine.get_note(note.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_created_book_whose_copy_is_refused_is_kept_on_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+        let book = Book {
+            title: Some("Middlemarch".into()),
+            isbn_13: Some("9780141439549".into()),
+            ..Default::default()
+        };
+
+        sql(
+            &engine,
+            "CREATE TRIGGER refuse_copies BEFORE INSERT ON copies
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+        .await;
+        assert!(engine.save_book_unrecorded(&book).await.is_err());
+        let isbn = book.isbn_13.as_deref().unwrap();
+        assert!(
+            engine
+                .storage
+                .find_book_by_isbn(isbn)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        sql(&engine, "DROP TRIGGER refuse_copies").await;
+        let saved = engine.save_book_unrecorded(&book).await.unwrap();
+        let copies = engine.copies_for_book(saved.id.unwrap()).await.unwrap();
+        assert_eq!(copies.len(), 1, "the retry leaves the book in the library");
     }
 }

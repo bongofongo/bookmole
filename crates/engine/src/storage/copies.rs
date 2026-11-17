@@ -254,32 +254,7 @@ async fn flag(pool: &SqlitePool, sql: &str, book_id: i64) -> Result<bool> {
 impl Storage {
     /// Records a copy; empty free text is stored as `NULL`.
     pub async fn create_copy(&self, new: &NewCopy) -> Result<Copy> {
-        let now = now_unix();
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO copies (book_id, form, tenure, have_now, from_whom, app, location,
-                                 started_at, due_at, ended_at, lent_to, unreadable, note,
-                                 learned_from, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        )
-        .bind(new.book_id)
-        .bind(new.form.map(|f| f.as_str()))
-        .bind(new.tenure.as_str())
-        .bind(new.have_now)
-        .bind(text(&new.from_whom))
-        .bind(text(&new.app))
-        .bind(text(&new.location))
-        .bind(new.started_at)
-        .bind(new.due_at)
-        .bind(new.ended_at)
-        .bind(text(&new.lent_to))
-        .bind(new.unreadable)
-        .bind(text(&new.note))
-        .bind(new.learned_from.as_str())
-        .bind(now)
-        .bind(now)
-        .fetch_one(self.pool())
-        .await?;
-        tracing::debug!(copy_id = id, book_id = new.book_id, "copy recorded");
+        let id = insert_copy(&mut *self.pool().acquire().await?, new).await?;
         self.get_copy(id)
             .await?
             .ok_or_else(|| EngineError::Other("copy vanished after insert".into()))
@@ -680,4 +655,34 @@ impl Storage {
         };
         Ok(LibraryCopies { rows: out, counts })
     }
+}
+
+pub(super) async fn insert_copy(conn: &mut SqliteConnection, new: &NewCopy) -> Result<i64> {
+    let now = now_unix();
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO copies (book_id, form, tenure, have_now, from_whom, app, location,
+                             started_at, due_at, ended_at, lent_to, unreadable, note,
+                             learned_from, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    )
+    .bind(new.book_id)
+    .bind(new.form.map(|f| f.as_str()))
+    .bind(new.tenure.as_str())
+    .bind(new.have_now)
+    .bind(text(&new.from_whom))
+    .bind(text(&new.app))
+    .bind(text(&new.location))
+    .bind(new.started_at)
+    .bind(new.due_at)
+    .bind(new.ended_at)
+    .bind(text(&new.lent_to))
+    .bind(new.unreadable)
+    .bind(text(&new.note))
+    .bind(new.learned_from.as_str())
+    .bind(now)
+    .bind(now)
+    .fetch_one(&mut *conn)
+    .await?;
+    tracing::debug!(copy_id = id, book_id = new.book_id, "copy recorded");
+    Ok(id)
 }
