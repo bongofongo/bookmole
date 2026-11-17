@@ -161,6 +161,7 @@ enum Cmd {
     },
 }
 
+#[expect(clippy::too_many_lines)]
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {

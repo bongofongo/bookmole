@@ -750,6 +750,7 @@ pub async fn import_apple_books(
     Ok(report)
 }
 
+#[expect(clippy::too_many_lines)]
 async fn import_asset(
     storage: &Storage,
     asset_id: &str,

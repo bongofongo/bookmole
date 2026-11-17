@@ -201,6 +201,7 @@ pub struct BookStanding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct CopyStanding {
     pub book_id: i64,
     pub have_now: bool,

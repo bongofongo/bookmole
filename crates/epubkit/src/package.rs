@@ -145,6 +145,7 @@ impl<R: Read + Seek> Package<R> {
     }
 
     /// Open an EPUB from any seekable reader, under `limits`.
+    #[expect(clippy::too_many_lines)]
     pub fn from_reader_with(reader: R, limits: Limits) -> Result<Self, Error> {
         let mut archive = Archive::new(reader, limits)?;
         let mut warnings = Vec::new();

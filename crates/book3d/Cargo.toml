@@ -23,3 +23,9 @@ path = "src/lib.rs"
 # Cover decode and the Lanczos prescale (`texture.rs`), and nothing more: the
 # workspace's own feature set (jpeg, png, gif, webp).
 image.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

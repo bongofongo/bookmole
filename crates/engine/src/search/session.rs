@@ -344,6 +344,7 @@ impl SearchSession {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_lines)]
     pub(crate) async fn start_with(
         id: String,
         text: &str,

@@ -377,6 +377,32 @@ fn reflect_show_creates_neither_a_note_nor_a_reading() {
 }
 
 #[test]
+fn a_failed_editor_keeps_the_draft_and_says_where() {
+    let cli = Cli::new();
+    let tmp = cli.root.path().join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let out = cli
+        .command()
+        .env("EDITOR", "false")
+        .env("TMPDIR", &tmp)
+        .args(["--data-dir", cli.data_dir().to_str().unwrap(), "note"])
+        .output()
+        .expect("the binary runs");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let kept: Vec<_> = std::fs::read_dir(&tmp)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(
+        stderr.contains(&format!("the draft is kept at {}", kept[0].display())),
+        "{stderr}"
+    );
+    cli.run(&["notes"]).lacks("Untitled");
+}
+
+#[test]
 fn links_reads_both_directions_and_prints_a_dangling_target_as_text() {
     let cli = Cli::new();
 

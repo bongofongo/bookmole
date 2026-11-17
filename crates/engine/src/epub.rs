@@ -375,14 +375,13 @@ mod tests {
 
     #[test]
     fn extracts_cover_from_fixture() {
-        let dir = std::env::temp_dir().join(format!("rb-epub-test-{}", std::process::id()));
-        let c = extract_cover(&real_epub(), &dir)
+        let dir = tempfile::tempdir().unwrap();
+        let c = extract_cover(&real_epub(), dir.path())
             .unwrap()
             .expect("an illustrated Gutenberg epub carries its cover");
         assert!(c.path.exists());
         assert!(std::fs::metadata(&c.path).unwrap().len() > 0);
         let stem = c.path.file_stem().unwrap().to_string_lossy().to_string();
         assert_eq!(stem.len(), 64, "{stem}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

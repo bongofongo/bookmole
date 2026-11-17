@@ -2163,6 +2163,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)]
     fn a_code_typed_on_a_computer_links_it_on_the_reader() {
         use crate::wireless::{mac, paired_challenge, token_challenge, verify};
         let tmp = mount();

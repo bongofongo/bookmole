@@ -179,17 +179,12 @@ mod tests {
         c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
     }
 
-    fn framed_file(border: Rgb<u8>, middle: Rgb<u8>) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "bookmole-book3d-texture-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let path = dir.join("cover.png");
+    fn framed_file(border: Rgb<u8>, middle: Rgb<u8>) -> tempfile::TempPath {
+        let path = tempfile::Builder::new()
+            .suffix(".png")
+            .tempfile()
+            .expect("scratch file")
+            .into_temp_path();
         let img = RgbImage::from_fn(20, 20, |x, y| {
             if x < 2 || y < 2 || x >= 18 || y >= 18 {
                 border

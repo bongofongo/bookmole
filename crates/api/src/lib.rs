@@ -1137,6 +1137,7 @@ impl Api {
     }
 
     /// One arm per request, and no arm decides anything: a rule here would skip in-process callers.
+    #[expect(clippy::too_many_lines)]
     pub async fn dispatch(&self, request: Request) -> ApiResult<Response> {
         use Request as R;
         Ok(match request {

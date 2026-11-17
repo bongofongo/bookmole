@@ -127,6 +127,7 @@ async fn apply(engine: &Arc<Engine>, case: &Case, field: &str) -> Observed {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 async fn door(engine: &Engine, case: &Case, field: &str) -> Observed {
     match field {
         "note-body" => {

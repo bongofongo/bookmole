@@ -92,16 +92,7 @@ impl ScriptedBeacon {
 
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().unwrap();
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("database/images"),
-        files_dir: tmp.path().join("database/files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let config = EngineConfig::in_memory(tmp.path());
     (tmp, Engine::open(config).await.unwrap())
 }
 

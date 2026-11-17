@@ -527,6 +527,7 @@ fn is_xml_char(c: char) -> bool {
         0x9 | 0xA | 0xD | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
 }
 
+#[expect(clippy::too_many_lines)]
 fn parse_str_mode(text: &str, path: &str, limits: &Limits, mode: Mode) -> Result<Document, Error> {
     let html = mode == Mode::Html;
     let mut reader = Reader::from_str(text);

@@ -33,6 +33,7 @@ const GLOBAL: Section = Section {
     ],
 };
 
+#[expect(clippy::too_many_lines)]
 pub fn page(screen: Screen) -> Help {
     match screen {
         Screen::Menu => Help {

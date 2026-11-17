@@ -34,3 +34,6 @@ tempfile = "3"
 # assert that the seam turns an `OffsetDateTime` into unix seconds and back.
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

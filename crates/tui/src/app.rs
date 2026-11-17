@@ -477,6 +477,7 @@ impl NoteDraft {
     }
 }
 
+#[expect(clippy::struct_excessive_bools)]
 pub struct App {
     pub engine: Engine,
     pub screen: Screen,
@@ -3315,6 +3316,7 @@ mod tests {
 
     /// `find_tool` searches `calibre_bin_dir` before `PATH`, so a fake binary gives the same answer
     /// everywhere; editing `PATH` is `unsafe` in edition 2024 and races other tests.
+    #[expect(clippy::disallowed_methods)]
     async fn test_app_with_calibre(calibre_bin_dir: Option<PathBuf>) -> App {
         // A unique dir per call: tests share a process, so a per-pid vault would let them wipe each other.
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3821,6 +3823,7 @@ mod tests {
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     async fn draw_every_screen_once(app: &mut App, w: u16, h: u16) {
         {
             let app = &mut *app;
@@ -4082,6 +4085,7 @@ mod tests {
         }
     }
 
+    #[expect(clippy::disallowed_methods)]
     fn scratch(tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static SEQ: AtomicUsize = AtomicUsize::new(0);

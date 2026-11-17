@@ -397,6 +397,7 @@ struct BenchSummary {
     rtt_tmux: Vec<u64>,
 }
 
+#[expect(clippy::too_many_lines)]
 async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&stdout()) {
         bail!("--bench-render needs a real terminal — it measures the terminal, not us");
@@ -971,9 +972,8 @@ mod tests {
     #[test]
     fn the_history_file_gets_a_header_once_and_a_row_per_run() {
         // Append, never truncate, and write the header once: a mid-file header breaks every reader.
-        let dir = std::env::temp_dir().join(format!("bookmole-history-{}", std::process::id()));
-        let path = dir.join("history.tsv");
-        let _ = std::fs::remove_file(&path);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.tsv");
 
         let caps = render3d::Caps::default();
         append_history(
@@ -1009,15 +1009,13 @@ mod tests {
         // Rows carry their environment so sandbox and live-pane runs do not trend together.
         assert!(lines[1].contains("\tlive\t"), "env missing: {}", lines[1]);
         assert!(lines[3].contains("\tbox\t"), "env missing: {}", lines[3]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_history_file_with_stale_columns_is_rotated_not_appended_to() {
         // Rows meaning different things must not share a header, and old rows must survive.
-        let dir = std::env::temp_dir().join(format!("bookmole-rotate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("history.tsv");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.tsv");
         std::fs::write(&path, "epoch_s\tmode\told_column\n1\tglyph\ttrue\n").unwrap();
 
         append_history(
@@ -1035,12 +1033,11 @@ mod tests {
             "the new file did not get the current header"
         );
         assert_eq!(text.lines().count(), 2, "old rows leaked into the new file");
-        let kept = std::fs::read_to_string(dir.join("history.tsv.old")).unwrap();
+        let kept = std::fs::read_to_string(dir.path().join("history.tsv.old")).unwrap();
         assert!(
             kept.contains("old_column"),
             "the old run data was destroyed"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

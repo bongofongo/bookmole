@@ -244,6 +244,7 @@ fn owned(s: Option<&str>) -> Option<String> {
     s.map(str::to_string)
 }
 
+#[expect(clippy::too_many_lines)]
 pub(crate) fn parse(
     node: &Node,
     unique_id: Option<&str>,

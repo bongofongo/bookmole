@@ -2256,6 +2256,7 @@ pub enum DiagnosticKindDto {
 }
 
 impl From<DiagnosticKind> for DiagnosticKindDto {
+    #[expect(clippy::too_many_lines)]
     fn from(k: DiagnosticKind) -> Self {
         use DiagnosticKind as K;
         match k {
@@ -5246,6 +5247,7 @@ impl From<bookmole::BookStanding> for BookStandingDto {
     ts(export, export_to = "bindings.ts")
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct LibraryCopyRowDto {
     pub book_id: i64,
     /// A copy whose `have_now` is not false.

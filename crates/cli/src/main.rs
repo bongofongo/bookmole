@@ -479,6 +479,7 @@ enum CardsCmd {
 }
 
 #[tokio::main]
+#[expect(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet);

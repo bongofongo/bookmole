@@ -44,3 +44,9 @@ toml.workspace = true
 # this crate is synchronous and the pull is one request at a time anyway.
 reqwest = { workspace = true, features = ["blocking"] }
 flate2.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

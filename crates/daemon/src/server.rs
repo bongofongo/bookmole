@@ -167,16 +167,7 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     async fn test_api(root: &Path) -> Api {
-        let config = EngineConfig {
-            db_url: "sqlite::memory:".into(),
-            images_dir: root.join("images"),
-            files_dir: root.join("files"),
-            vault_dir: root.join("vault"),
-            log_dir: root.join("logs"),
-            exports_dir: root.join("exports"),
-            google_api_key: None,
-            calibre_bin_dir: None,
-        };
+        let config = EngineConfig::in_memory(root);
         Api::new(Arc::new(Engine::open(config).await.expect("engine")))
     }
 

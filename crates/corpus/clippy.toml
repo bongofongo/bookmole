@@ -1,3 +1,5 @@
+# Replaces the root clippy.toml rather than extending it; keep the root's entries here too.
+too-many-lines-threshold = 120
 # The generator's output is a function of its seed and inputs alone.
 disallowed-types = [
     { path = "rand::rngs::StdRng", reason = "its algorithm may change between rand versions; use ChaCha8Rng", allow-invalid = true },
@@ -7,6 +9,7 @@ disallowed-types = [
 disallowed-methods = [
     { path = "std::env::set_var", reason = "races every other thread in the process; inject the value, or set it on a child Command" },
     { path = "std::env::remove_var", reason = "races every other thread in the process; inject the value, or remove it on a child Command" },
+    { path = "std::env::temp_dir", reason = "use tempfile: a unique, private path that is cleaned up" },
     { path = "std::time::SystemTime::now", reason = "a clock in the generator churns every golden; use a fixed epoch" },
     { path = "rand::random", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
     { path = "rand::rng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
