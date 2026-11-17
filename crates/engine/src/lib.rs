@@ -439,7 +439,7 @@ impl Engine {
         let client = Client::builder()
             .user_agent(concat!("bookmole/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        let storage = Storage::connect(&config.db_url).await?;
+        let storage = Storage::open(&config.db_url).await?;
         reroot_covers(&storage, &config.images_dir).await;
         if let Err(e) = storage.purge_search_cache(storage::now_unix()).await {
             tracing::warn!(class = ?ErrorClass::from(&e), "could not purge kept searches");
