@@ -388,6 +388,14 @@ pub(crate) fn merge_columns() -> impl Iterator<Item = &'static str> {
     MERGE_RULES.iter().map(|r| r.col)
 }
 
+/// The columns a provider can supply, so a provider claim may name them; `Local` ones are ours.
+pub(crate) fn provider_columns() -> impl Iterator<Item = &'static str> {
+    MERGE_RULES
+        .iter()
+        .filter(|r| !matches!(r.federated, Federated::Local))
+        .map(|r| r.col)
+}
+
 /// `None` both for an unknown column and for a record silent about it.
 pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
     MERGE_RULES

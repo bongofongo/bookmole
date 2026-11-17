@@ -815,3 +815,76 @@ async fn an_undated_finished_row_is_not_being_read() {
     assert!(engine.history_reading_now().await.unwrap().is_empty());
     assert!(!on_timeline(&engine, id).await);
 }
+
+async fn starts(engine: &Engine, title: &str) -> Vec<Option<i64>> {
+    let id = book(engine, title).await.id.unwrap();
+    engine
+        .list_readings(id)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.started_at)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_date_started_lands_on_one_reading_and_a_re_import_changes_nothing() {
+    let (tmp, engine) = common::engine().await;
+    let path = tmp_csv(
+        tmp.path(),
+        "reread.csv",
+        "Title,Author,Exclusive Shelf,Read Count,Date Started,Date Read\n\
+         Middlemarch,George Eliot,read,2,2024/01/05,2024/03/27\n",
+    );
+    engine.import_goodreads(&path, creating()).await.unwrap();
+    let first = starts(&engine, "Middlemarch").await;
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first
+            .iter()
+            .filter(|s| **s == Some(unix("2024-01-05")))
+            .count(),
+        1,
+        "{first:?}"
+    );
+    let id = book(&engine, "Middlemarch").await.id.unwrap();
+    let before = (
+        snapshot(&engine).await,
+        engine.list_readings(id).await.unwrap(),
+    );
+
+    engine.import_goodreads(&path, creating()).await.unwrap();
+    let after = (
+        snapshot(&engine).await,
+        engine.list_readings(id).await.unwrap(),
+    );
+    assert_eq!(
+        after, before,
+        "every reading column, last_modified included"
+    );
+}
+
+#[tokio::test]
+async fn a_growing_read_count_does_not_copy_the_start() {
+    let (tmp, engine) = common::engine().await;
+    let row = |count: i64| {
+        format!(
+            "Title,Author,Exclusive Shelf,Read Count,Date Started,Date Read\n\
+             Middlemarch,George Eliot,read,{count},2024/01/05,2024/03/27\n"
+        )
+    };
+    let once = tmp_csv(tmp.path(), "once.csv", &row(1));
+    engine.import_goodreads(&once, creating()).await.unwrap();
+    let twice = tmp_csv(tmp.path(), "twice.csv", &row(2));
+    engine.import_goodreads(&twice, creating()).await.unwrap();
+
+    let all = starts(&engine, "Middlemarch").await;
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        all.iter()
+            .filter(|s| **s == Some(unix("2024-01-05")))
+            .count(),
+        1,
+        "{all:?}"
+    );
+}

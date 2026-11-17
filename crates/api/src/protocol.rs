@@ -47,7 +47,8 @@ pub enum Request {
     },
     /// Save a search result as `save_book` does, recording each field in `claims` as supplied by its
     /// provider. Send the result's `book` and `claims` as search returned them; a field the user
-    /// owns keeps its value. Refused with `invalid_input` when a claim names no book field.
+    /// owns keeps its value. Refused with `invalid_input` when a claim names a field no provider
+    /// supplies, or one field twice. A client that edits a field before saving drops its claim.
     SaveSearchResult {
         book: BookDto,
         claims: Vec<FieldClaimDto>,
@@ -155,7 +156,7 @@ pub enum Request {
     },
     /// Put the book's open read down: it stays open and in the book's reads, marked `abandoned` with
     /// `put_down_at`, and leaves currently-reading, reading-now and the timeline. Refused with
-    /// `invalid_input` when no read is open or it is already put down.
+    /// `invalid_input` unless the open read is in state `reading`.
     PutDownReading {
         book_id: i64,
     },
@@ -546,7 +547,9 @@ pub enum Request {
     ListSettings {
         prefix: String,
     },
-    /// Every read in the span — open, finished, put down — newest end first.
+    /// The reads the timeline can place that meet the span, newest end first: a read with both a
+    /// start and a finish, or an open read in state `reading`. A put-down read, or one missing a
+    /// date, is left out here and stays in the book's reads and the figures.
     /// `since` inclusive, `until` exclusive, unix seconds; either may be
     /// absent. An inverted span is `invalid_input`.
     HistoryTimeline {
