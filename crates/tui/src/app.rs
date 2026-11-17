@@ -3376,32 +3376,37 @@ mod tests {
     use bookmole::{EngineConfig, NewNoteInput};
     use ratatui::backend::TestBackend;
 
-    async fn test_app() -> App {
+    /// An `App` with the scratch directory its engine and config live in, removed on drop.
+    struct TestApp {
+        app: App,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestApp {
+        type Target = App;
+        fn deref(&self) -> &App {
+            &self.app
+        }
+    }
+
+    impl std::ops::DerefMut for TestApp {
+        fn deref_mut(&mut self) -> &mut App {
+            &mut self.app
+        }
+    }
+
+    async fn test_app() -> TestApp {
         // `None`: detection falls through to `PATH`, so results differ between a dev machine and CI.
         test_app_with_calibre(None).await
     }
 
     /// `find_tool` searches `calibre_bin_dir` before `PATH`, so a fake binary gives the same answer
     /// everywhere; editing `PATH` is `unsafe` in edition 2024 and races other tests.
-    #[expect(clippy::disallowed_methods)]
-    async fn test_app_with_calibre(calibre_bin_dir: Option<PathBuf>) -> App {
-        // A unique dir per call: tests share a process, so a per-pid vault would let them wipe each other.
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp =
-            std::env::temp_dir().join(format!("bookmole-tui-tests-{}-{n}", std::process::id()));
-        std::fs::remove_dir_all(&tmp).ok();
-        let config = EngineConfig {
-            db_url: "sqlite::memory:".into(),
-            images_dir: tmp.join("images"),
-            files_dir: tmp.join("files"),
-            vault_dir: tmp.join("vault"),
-            log_dir: tmp.join("logs"),
-            exports_dir: tmp.join("exports"),
-            google_api_key: None,
-            calibre_bin_dir,
-        };
+    async fn test_app_with_calibre(calibre_bin_dir: Option<PathBuf>) -> TestApp {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let tmp = dir.path();
+        let mut config = EngineConfig::in_memory(tmp);
+        config.calibre_bin_dir = calibre_bin_dir;
         let engine = Engine::open(config).await.expect("engine");
         let book = engine
             .save_book(&Book {
@@ -3461,11 +3466,11 @@ mod tests {
         app.calibre_library = Some(calibre_library);
         let root = write_device_tree(&tmp.join("device"));
         app.finish_scan(&root).await.expect("scan");
-        app
+        TestApp { app, _dir: dir }
     }
 
     /// Reached through `activate_menu`, not by assigning `screen`, so the back trail is the real one.
-    async fn home_app() -> App {
+    async fn home_app() -> TestApp {
         let mut app = test_app().await;
         app.menu_index = menu_row(MenuItem::Home);
         app.handle(Action::Select).await.expect("home");
@@ -4152,25 +4157,17 @@ mod tests {
         }
     }
 
-    #[expect(clippy::disallowed_methods)]
-    fn scratch(tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("bookmole-tui-{tag}-{}-{n}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
+    fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir().expect("scratch dir")
     }
 
     /// The stub fails: tests using it expect a refusal before calibre is spawned, so reaching the
     /// binary must be loud.
     #[cfg(unix)]
-    fn fake_calibre(tag: &str, name: &str) -> PathBuf {
+    fn fake_calibre(name: &str) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
-        let dir = scratch(tag);
-        let bin = dir.join(name);
+        let dir = scratch();
+        let bin = dir.path().join(name);
         std::fs::write(
             &bin,
             "#!/bin/sh\necho 'the fake calibre was run' >&2\nexit 1\n",
@@ -6263,7 +6260,8 @@ mod tests {
         app.calibre_state.select(Some(0));
         // A directory with no `metadata.db`: the engine refuses before calibredb runs, so this needs no
         // calibre.
-        app.calibre_library = Some(scratch("nolib"));
+        let nolib = scratch();
+        app.calibre_library = Some(nolib.path().to_path_buf());
 
         app.handle(Action::Sync).await.expect("sync");
         assert_eq!(
@@ -6414,11 +6412,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_conversion_over_an_existing_file_asks_first() {
-        let mut app =
-            test_app_with_calibre(Some(fake_calibre("convert-bin", "ebook-convert"))).await;
-        let dir = scratch("convert");
-        let input = dir.join("in.epub");
-        let output = dir.join("out.azw3");
+        let bin = fake_calibre("ebook-convert");
+        let mut app = test_app_with_calibre(Some(bin.path().to_path_buf())).await;
+        let dir = scratch();
+        let input = dir.path().join("in.epub");
+        let output = dir.path().join("out.azw3");
         std::fs::write(&input, b"epub").unwrap();
         std::fs::write(&output, b"already here").unwrap();
 
@@ -6480,7 +6478,8 @@ mod tests {
             "Title,Author,ISBN,My Rating,Date Read,Date Added,Bookshelves,Review\n",
             "Middlemarch,George Eliot,,4,2019/03/12,2018/12/01,,\n"
         );
-        let path = scratch("csv").join("export.csv");
+        let dir = scratch();
+        let path = dir.path().join("export.csv");
         std::fs::write(&path, csv).unwrap();
 
         app.screen = Screen::Goodreads;
@@ -6560,7 +6559,8 @@ mod tests {
     #[tokio::test]
     async fn exporting_writes_the_csv_and_names_where_it_went() {
         let mut app = test_app().await;
-        let out = scratch("export").join("goodreads.csv");
+        let dir = scratch();
+        let out = dir.path().join("goodreads.csv");
 
         app.screen = Screen::Goodreads;
         app.handle(Action::Export).await.expect("x");
@@ -6664,8 +6664,9 @@ mod tests {
         }
         app.refresh_library().await.expect("refresh");
 
-        app.library_state.select(Some(app.library.len() - 1));
-        let standing_on = app.library[app.library.len() - 1].id;
+        let last = app.library.len() - 1;
+        app.library_state.select(Some(last));
+        let standing_on = app.library[last].id;
         assert!(standing_on.is_some());
 
         while app.library_sort != Sort::Author {
@@ -6907,7 +6908,7 @@ mod tests {
     }
 
     /// The seeded note, selected in its book's Notes tab, and the vault folder it lives in.
-    async fn on_seeded_note() -> (App, PathBuf, PathBuf) {
+    async fn on_seeded_note() -> (TestApp, PathBuf, PathBuf) {
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
         app.open_book(book).await.expect("open");

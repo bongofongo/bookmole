@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EngineConfig {
     pub db_url: String,
     pub images_dir: PathBuf,
