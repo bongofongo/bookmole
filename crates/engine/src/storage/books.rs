@@ -556,6 +556,34 @@ fn guards_user(source: Option<Source>) -> bool {
     source != Some(Source::User)
 }
 
+/// A write is guarded unless every field it claims is the user's own.
+fn guards_all(claims: &[(&'static str, Source)]) -> bool {
+    claims.iter().all(|(_, s)| guards_user(Some(*s)))
+}
+
+/// Stamps each claimed field the record actually says, per source, inside the write's transaction.
+async fn stamp_claims(
+    conn: &mut sqlx::SqliteConnection,
+    book_id: i64,
+    book: &Book,
+    claims: &[(&'static str, Source)],
+    guard_user: bool,
+) -> Result<()> {
+    let said = fields_said(book);
+    for source in Source::ALL {
+        let fields: Vec<&'static str> = claims
+            .iter()
+            .filter(|(field, s)| *s == source && said.contains(field))
+            .map(|(field, _)| *field)
+            .collect();
+        let fields = claimable(&mut *conn, book_id, &fields, guard_user).await?;
+        if !fields.is_empty() {
+            field_provenance::stamp(&mut *conn, book_id, &fields, source).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Columns the record has something to say about; exactly those get a `field_provenance` row.
 pub(crate) fn fields_said(book: &Book) -> Vec<&'static str> {
     MERGE_RULES
@@ -643,9 +671,23 @@ impl Storage {
     /// Ignores `Book`'s progress fields: reading state is written only by `update_progress`.
     /// `source` stamps provenance on every field the record supplies; `None` stamps nothing.
     pub async fn upsert_book(&self, book: &Book, source: Option<Source>) -> Result<i64> {
+        let claims: Vec<(&'static str, Source)> = match source {
+            Some(source) => fields_said(book).into_iter().map(|f| (f, source)).collect(),
+            None => Vec::new(),
+        };
+        self.upsert_book_attributed(book, &claims).await
+    }
+
+    /// `upsert_book` where fields came from different sources, each named; a field with no claim
+    /// gets no provenance row.
+    pub async fn upsert_book_attributed(
+        &self,
+        book: &Book,
+        claims: &[(&'static str, Source)],
+    ) -> Result<i64> {
         // One transaction: a row whose values landed but whose provenance did not can never be repaired.
         let mut tx = self.pool().begin().await?;
-        let id = upsert_book_in(&mut tx, book, source).await?;
+        let id = upsert_book_in(&mut tx, book, claims).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -668,7 +710,7 @@ impl Storage {
             .fetch_one(&mut *tx)
             .await?;
         }
-        let id = upsert_book_in(&mut tx, book, None).await?;
+        let id = upsert_book_in(&mut tx, book, &[]).await?;
         if !existed {
             copies::insert_copy(&mut tx, &first_copy(id)).await?;
         }
@@ -680,11 +722,12 @@ impl Storage {
 async fn upsert_book_in(
     conn: &mut sqlx::SqliteConnection,
     book: &Book,
-    source: Option<Source>,
+    claims: &[(&'static str, Source)],
 ) -> Result<i64> {
+    let guard_user = guards_all(claims);
     let set_clause = format!(
         "{},\n            last_modified = excluded.last_modified",
-        merge_set(Winner::Incoming, guards_user(source), |_, col| format!(
+        merge_set(Winner::Incoming, guard_user, |_, col| format!(
             "excluded.{col}"
         ))
     );
@@ -714,16 +757,7 @@ async fn upsert_book_in(
         .fetch_one(&mut *conn)
         .await?;
     let id: i64 = row.try_get("id")?;
-    if let Some(source) = source {
-        let fields = claimable(
-            &mut *conn,
-            id,
-            &fields_said(book),
-            guards_user(Some(source)),
-        )
-        .await?;
-        field_provenance::stamp(&mut *conn, id, &fields, source).await?;
-    }
+    stamp_claims(&mut *conn, id, book, claims, guard_user).await?;
     // After the stamp: a `Source::User` claim on `sort_title` tells the derivation to leave it alone.
     refresh_sort_keys(&mut *conn, id).await?;
     Ok(id)
@@ -755,7 +789,7 @@ impl Storage {
         book: &Book,
         claims: &[(&'static str, Source)],
     ) -> Result<()> {
-        let guard_user = claims.iter().all(|(_, s)| guards_user(Some(*s)));
+        let guard_user = guards_all(claims);
         let (modified, id) = tail_params();
         let sql = format!(
             "UPDATE books SET {}, last_modified = {modified} WHERE id = {id}",
@@ -767,19 +801,7 @@ impl Storage {
             .bind(book_id)
             .execute(&mut *tx)
             .await?;
-
-        let said = fields_said(book);
-        for source in Source::ALL {
-            let fields: Vec<&'static str> = claims
-                .iter()
-                .filter(|(field, s)| *s == source && said.contains(field))
-                .map(|(field, _)| *field)
-                .collect();
-            let fields = claimable(&mut tx, book_id, &fields, guard_user).await?;
-            if !fields.is_empty() {
-                field_provenance::stamp(&mut tx, book_id, &fields, source).await?;
-            }
-        }
+        stamp_claims(&mut tx, book_id, book, claims, guard_user).await?;
         refresh_sort_keys(&mut tx, book_id).await?;
         tx.commit().await?;
         Ok(())

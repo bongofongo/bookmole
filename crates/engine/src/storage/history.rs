@@ -15,8 +15,6 @@ use crate::error::Result;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadFacts {
     pub reading: Reading,
-    /// Set only while the status is `abandoned`; a stale stamp on a resumed reading is ignored.
-    pub put_down_at: Option<i64>,
     pub count: ReadCount,
     pub rating: Option<Rating>,
 }
@@ -62,8 +60,6 @@ impl Storage {
         let sibling = reading_age_key("sib");
         let sql = format!(
             "SELECT {reading},
-                    CASE WHEN readings.status = 'abandoned' THEN readings.put_down_at END
-                        AS put_down_at,
                     (SELECT count(*) FROM readings sib
                       WHERE sib.book_id = readings.book_id) AS of_reads,
                     (SELECT count(*) FROM readings sib
@@ -83,7 +79,6 @@ impl Storage {
                 let value: Option<f64> = r.try_get("rating_value")?;
                 Ok(ReadFacts {
                     reading: row_to_reading_prefixed(r, "r_")?,
-                    put_down_at: r.try_get("put_down_at")?,
                     count: ReadCount::new(r.try_get("read_number")?, r.try_get("of_reads")?),
                     rating: value
                         .map(|value| row_to_scale(r).map(|scale| Rating { scale, value }))

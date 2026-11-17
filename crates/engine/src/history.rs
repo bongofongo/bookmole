@@ -144,6 +144,16 @@ impl HistoryRead {
             .min(self.at)
     }
 
+    /// Whether the timeline can place this read: it has a start and a finish, or it is open and being
+    /// read. A put-down read never is, and no date is guessed to make one placeable.
+    pub fn is_placeable(&self) -> bool {
+        match self.state {
+            ReadingState::Abandoned => false,
+            ReadingState::Reading if self.reading.finished_at.is_none() => true,
+            _ => self.reading.started_at.is_some() && self.reading.finished_at.is_some(),
+        }
+    }
+
     pub fn in_progress_at(&self, t: i64) -> bool {
         if self.begin() > t {
             return false;
@@ -235,10 +245,7 @@ fn summarise(
 ) -> HistoryRead {
     let r = &rf.reading;
     let state = ReadingState::from(r.status.as_str());
-    let put_down_at = match state {
-        ReadingState::Abandoned => rf.put_down_at.or(r.finished_at),
-        _ => None,
-    };
+    let put_down_at = r.put_down_at;
     let ended_at = match state {
         ReadingState::Abandoned => put_down_at,
         _ => r.finished_at,
@@ -285,11 +292,12 @@ fn months_between(a: i64, b: i64) -> Vec<String> {
     out
 }
 
-/// Reads whose `[begin, at]` meets the span, newest end first (`at`, then reading id, descending).
+/// Placeable reads whose `[begin, at]` meets the span, newest end first (`at`, then reading id,
+/// descending). The others stay in the book's reads and in every count.
 pub fn timeline(reads: &[HistoryRead], span: &HistorySpan) -> Vec<HistoryRead> {
     let mut out: Vec<HistoryRead> = reads
         .iter()
-        .filter(|r| span.overlaps(r.begin(), r.at))
+        .filter(|r| r.is_placeable() && span.overlaps(r.begin(), r.at))
         .cloned()
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then(b.reading.id.cmp(&a.reading.id)));

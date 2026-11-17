@@ -3492,6 +3492,7 @@ mod tests {
             ko_rating: None,
             created_at: 0,
             last_modified: 0,
+            put_down_at: None,
         }
     }
 
@@ -5935,6 +5936,7 @@ mod tests {
                 sources: Vec::new(),
                 score: 1.0,
                 shelf_id: b.id,
+                claims: Vec::new(),
             })
             .collect();
         app.search_state.select(Some(0));
@@ -6727,6 +6729,7 @@ mod tests {
                 sources: Vec::new(),
                 score: 1.0,
                 shelf_id: b.id,
+                claims: Vec::new(),
             })
             .collect();
         app.search_state.select(Some(0));

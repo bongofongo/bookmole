@@ -207,21 +207,16 @@ async fn the_timeline_holds_the_years_reads_newest_end_first() {
     let books: Vec<i64> = reads.iter().map(|r| r.reading.book_id).collect();
     assert_eq!(
         books,
-        vec![
-            s.hours,
-            s.orchard,
-            s.arithmetic,
-            s.long_country,
-            s.winter_king
-        ],
-        "the open read first, then each by where it ended; 2025's read and the unread book are not in 2026"
+        vec![s.hours, s.arithmetic, s.long_country, s.winter_king],
+        "the open read first, then each by where it ended; 2025's read, the unread book and the \
+         put-down read are not in 2026's timeline"
     );
     assert!(!books.contains(&s.unread) && !books.contains(&s.inheritance));
 
-    let orchard = &reads[1];
-    assert_eq!(orchard.state, ReadingState::Abandoned);
-    assert_eq!(orchard.put_down_at, Some(at("2026-09-12")));
-    assert_eq!(orchard.days, Some(23), "put down 12 Sep, started 20 Aug");
+    let orchard = engine.list_readings(s.orchard).await.unwrap();
+    assert_eq!(orchard.len(), 1, "the put-down read is still the book's");
+    assert_eq!(orchard[0].status, "abandoned");
+    assert_eq!(orchard[0].put_down_at, Some(at("2026-09-12")));
 
     let wk = reads.iter().find(|r| r.reading.id == s.wk_read).unwrap();
     assert_eq!(wk.months, vec!["2026-01", "2026-02", "2026-03"]);
@@ -466,4 +461,73 @@ async fn settings_round_trip_through_the_facade() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn only_a_read_the_timeline_can_place_is_on_it() {
+    let (_tmp, engine) = engine().await;
+    let dated = book(&engine, "Winter King", "Ruth Lindqvist", 618).await;
+    let finish_only = book(&engine, "The Long Country", "Owen Dziedzic", 526).await;
+    let open = book(&engine, "Winter Hours", "Tobias Eshun", 280).await;
+    let open_undated = book(&engine, "Salt Machine", "Owen Dziedzic", 264).await;
+    let put_down = book(&engine, "The Pale Orchard", "Nadia Grigorescu", 356).await;
+    let s = engine.storage();
+    s.record_reading(
+        dated,
+        Some(at("2026-01-05")),
+        Some(at("2026-03-27")),
+        "finished",
+        "manual",
+    )
+    .await
+    .unwrap();
+    s.record_reading(
+        finish_only,
+        None,
+        Some(at("2026-05-01")),
+        "finished",
+        "goodreads",
+    )
+    .await
+    .unwrap();
+    s.record_reading(open, Some(at("2026-10-20")), None, "reading", "manual")
+        .await
+        .unwrap();
+    s.record_reading(open_undated, None, None, "reading", "goodreads")
+        .await
+        .unwrap();
+    s.record_reading(put_down, Some(at("2026-08-20")), None, "reading", "manual")
+        .await
+        .unwrap();
+    engine.put_down(put_down).await.unwrap();
+
+    let on: Vec<i64> = engine
+        .history_timeline(&HistorySpan::default())
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.reading.book_id)
+        .collect();
+    assert!(on.contains(&dated) && on.contains(&open) && on.contains(&open_undated));
+    assert!(
+        !on.contains(&finish_only),
+        "a read with only a finish cannot be placed"
+    );
+    assert!(
+        !on.contains(&put_down),
+        "a put-down read is never on the timeline"
+    );
+
+    for id in [finish_only, put_down] {
+        assert_eq!(engine.list_readings(id).await.unwrap().len(), 1);
+    }
+    let figures = engine
+        .history_figures(&HistorySpan::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        figures.books_finished, 2,
+        "the finish-only read is still counted"
+    );
+    assert_eq!(figures.put_down, 1);
 }

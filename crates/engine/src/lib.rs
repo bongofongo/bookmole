@@ -139,7 +139,7 @@ pub use search::session::{
 };
 pub use search::wellknown::{Unavailable as OfflineIndexUnavailable, WellKnownWork};
 pub use search::works::{Edition, WorkResult};
-pub use search::{IsbnLookup, RankedResult, SearchOutcome};
+pub use search::{FieldClaim, IsbnLookup, RankedResult, SearchOutcome};
 pub use storage::imported_identity_hash;
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookMatch, BookQuery, BookSort, BookSummary, BookTag,
@@ -255,10 +255,30 @@ fn flatten(done: SearchSnapshot) -> SearchOutcome {
                 sources: row.work.sources.clone(),
                 book: row.work.flattened().clone(),
                 shelf_id: row.work.held.certain(),
+                claims: row.work.flattened_claims(),
             })
             .collect(),
         warnings: done.warnings,
     }
+}
+
+/// A client's claims checked against the book columns; a provider claim never names `user`.
+fn claimed_columns(claims: &[FieldClaim]) -> Result<Vec<(&'static str, storage::Source)>> {
+    let mut out: Vec<(&'static str, storage::Source)> = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let field = storage::merge_columns()
+            .find(|c| *c == claim.field)
+            .ok_or_else(|| {
+                EngineError::InvalidInput(format!("{:?} is not a book field", claim.field))
+            })?;
+        if out.iter().any(|(f, _)| *f == field) {
+            return Err(EngineError::InvalidInput(format!(
+                "{field} is claimed more than once"
+            )));
+        }
+        out.push((field, claim.provider.into()));
+    }
+    Ok(out)
 }
 
 fn suggestion_query(title: &str, author: Option<&str>) -> String {
@@ -870,7 +890,23 @@ impl Engine {
     /// Saves (insert-or-merge) and returns the stored copy.
     /// Writes no field provenance: the merged `Book` no longer says which provider supplied what.
     pub async fn save_book(&self, book: &Book) -> Result<Book> {
-        let id = self.storage.upsert_book(book, None).await?;
+        self.save_book_claimed(book, &[]).await
+    }
+
+    /// [`Engine::save_book`] for a search result: each field the result's `claims` name is stamped
+    /// with its provider. A field the user owns keeps its value and its `user` stamp. A claim naming
+    /// no book column, or a column twice, is refused.
+    pub async fn save_search_result(&self, book: &Book, claims: &[FieldClaim]) -> Result<Book> {
+        let claims = claimed_columns(claims)?;
+        self.save_book_claimed(book, &claims).await
+    }
+
+    async fn save_book_claimed(
+        &self,
+        book: &Book,
+        claims: &[(&'static str, storage::Source)],
+    ) -> Result<Book> {
+        let id = self.storage.upsert_book_attributed(book, claims).await?;
         self.storage
             .get_book(id)
             .await?
@@ -929,7 +965,8 @@ impl Engine {
         self.storage.book_tags(book_id).await
     }
 
-    /// One row per open reading, most recently touched first. The [`Reading`] rides beside the [`Book`]
+    /// One row per open reading not put down, most recently touched first. The [`Reading`] rides beside
+    /// the [`Book`]
     /// because `Book`'s progress fields project the current reading.
     pub async fn currently_reading(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
         self.storage.list_open_readings(limit).await
@@ -1165,7 +1202,8 @@ impl Engine {
     }
 
     /// Writes reading progress and returns the book with its projections refreshed.
-    /// Opens a reading when none is open.
+    /// Opens a reading when none is open. A page alone leaves a put-down reading put down;
+    /// `finished: Some(false)` picks it up as [`Engine::pick_up`] does, and `Some(true)` finishes it.
     pub async fn update_progress(
         &self,
         book_id: i64,
@@ -1215,8 +1253,51 @@ impl Engine {
         self.set_book_fields(book_id, &fields).await
     }
 
+    /// Closes the open reading and opens a new one. A put-down reading stays put down, closed at the
+    /// instant it was put down; any other open reading is finished.
     pub async fn reread(&self, book_id: i64) -> Result<i64> {
         self.storage.reread(book_id).await
+    }
+
+    /// The reader puts the book's open reading down. It stays open, so picking it up is not a reread,
+    /// but it leaves the currently-reading list, reading-now and the timeline. Refused when there
+    /// is no open reading or it is already put down.
+    pub async fn put_down(&self, book_id: i64) -> Result<(Reading, Progress)> {
+        let open = self.open_reading_of(book_id, "put down").await?;
+        if ReadingState::from(open.status.as_str()) == ReadingState::Abandoned {
+            return Err(EngineError::InvalidInput(format!(
+                "book id {book_id}'s open reading is already put down"
+            )));
+        }
+        self.storage.abandon_reading(book_id).await?;
+        self.reading_after(open.id).await
+    }
+
+    /// The reader picks a put-down reading back up: it is `reading` again and its put-down instant
+    /// is cleared. Refused when the open reading is not put down.
+    pub async fn pick_up(&self, book_id: i64) -> Result<(Reading, Progress)> {
+        let open = self.open_reading_of(book_id, "pick up").await?;
+        if !self.storage.pick_up_reading(book_id).await? {
+            return Err(EngineError::InvalidInput(format!(
+                "book id {book_id}'s open reading is not put down"
+            )));
+        }
+        self.reading_after(open.id).await
+    }
+
+    async fn open_reading_of(&self, book_id: i64, verb: &str) -> Result<Reading> {
+        if self.storage.get_book(book_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!("book id {book_id}")));
+        }
+        self.storage.active_reading(book_id).await?.ok_or_else(|| {
+            EngineError::InvalidInput(format!("book id {book_id} has no open reading to {verb}"))
+        })
+    }
+
+    async fn reading_after(&self, reading_id: i64) -> Result<(Reading, Progress)> {
+        self.reading_with_progress(reading_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("reading id {reading_id}")))
     }
 
     /// Rebuilds the activity log from what is already in the database; idempotent.
@@ -2522,6 +2603,31 @@ impl Engine {
         candidate: &Book,
         note: Option<&str>,
     ) -> Result<ListEntry> {
+        self.add_claimed_candidate_to_list(list_id, candidate, &[], note)
+            .await
+    }
+
+    /// [`Engine::add_candidate_to_list`] for a search result: a book it creates is stamped as
+    /// [`Engine::save_search_result`] stamps one. A book already known is reused and not written.
+    pub async fn add_search_result_to_list(
+        &self,
+        list_id: i64,
+        candidate: &Book,
+        claims: &[FieldClaim],
+        note: Option<&str>,
+    ) -> Result<ListEntry> {
+        let claims = claimed_columns(claims)?;
+        self.add_claimed_candidate_to_list(list_id, candidate, &claims, note)
+            .await
+    }
+
+    async fn add_claimed_candidate_to_list(
+        &self,
+        list_id: i64,
+        candidate: &Book,
+        claims: &[(&'static str, storage::Source)],
+        note: Option<&str>,
+    ) -> Result<ListEntry> {
         // A missing list is `NotFound` before a book is created for it.
         self.storage.get_list(list_id).await?;
         let mut found = None;
@@ -2549,7 +2655,7 @@ impl Engine {
             None => {
                 let mut fresh = candidate.clone();
                 fresh.id = None;
-                self.save_book(&fresh)
+                self.save_book_claimed(&fresh, claims)
                     .await?
                     .id
                     .ok_or_else(|| EngineError::Other("a stored book has an id".into()))?

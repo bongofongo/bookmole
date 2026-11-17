@@ -44,7 +44,6 @@ pub struct WorkResult {
     /// The default edition filled from the work's other records with everything not specific to one
     /// edition. What `Engine::search` returns and ranking reads.
     pub(crate) flat: Book,
-    #[allow(dead_code)]
     pub(crate) flat_claims: FieldClaims,
 }
 
@@ -55,6 +54,11 @@ impl WorkResult {
 
     pub fn flattened(&self) -> &Book {
         &self.flat
+    }
+
+    /// Who supplied each field of [`WorkResult::flattened`].
+    pub fn flattened_claims(&self) -> Vec<super::FieldClaim> {
+        self.flat_claims.to_vec()
     }
 
     pub(crate) fn has_isbn(&self, isbn: &str) -> bool {

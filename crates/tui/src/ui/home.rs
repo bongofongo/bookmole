@@ -114,6 +114,7 @@ mod tests {
             ko_rating: None,
             created_at: 0,
             last_modified: 0,
+            put_down_at: None,
         }
     }
 

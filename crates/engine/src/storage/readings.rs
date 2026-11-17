@@ -91,10 +91,13 @@ pub struct Reading {
     pub ko_rating: Option<i64>,
     pub created_at: i64,
     pub last_modified: i64,
+    /// When the read was put down: `Some` only while `status` is `abandoned`, and `None` for a read put
+    /// down before the instant was recorded. A merge-closed read with no stamp gives its `finished_at`.
+    pub put_down_at: Option<i64>,
 }
 
 pub(super) const READING_COLUMNS: &str = "id, book_id, started_at, finished_at, status, source, current_page, \
-     ko_status, ko_percent, ko_rating, created_at, last_modified";
+     ko_status, ko_percent, ko_rating, created_at, last_modified, put_down_at";
 
 /// Prefix for the reading's columns in a joined row; six names collide with `BOOK_COLUMNS`.
 const JOINED_READING_PREFIX: &str = "r_";
@@ -117,12 +120,21 @@ fn row_to_reading(row: &SqliteRow) -> Result<Reading> {
 
 pub(super) fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<Reading> {
     let col = |name: &str| format!("{prefix}{name}");
+    let status: String = row.try_get(col("status").as_str())?;
+    let finished_at: Option<i64> = row.try_get(col("finished_at").as_str())?;
+    // A picked-up read may keep a stale stamp, so the column means something only while abandoned.
+    let put_down_at = match status.as_str() {
+        STATUS_ABANDONED => row
+            .try_get::<Option<i64>, _>(col("put_down_at").as_str())?
+            .or(finished_at),
+        _ => None,
+    };
     Ok(Reading {
         id: row.try_get(col("id").as_str())?,
         book_id: row.try_get(col("book_id").as_str())?,
         started_at: row.try_get(col("started_at").as_str())?,
-        finished_at: row.try_get(col("finished_at").as_str())?,
-        status: row.try_get(col("status").as_str())?,
+        finished_at,
+        status,
         source: row.try_get(col("source").as_str())?,
         current_page: row.try_get(col("current_page").as_str())?,
         ko_status: row.try_get(col("ko_status").as_str())?,
@@ -130,6 +142,7 @@ pub(super) fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<R
         ko_rating: row.try_get(col("ko_rating").as_str())?,
         created_at: row.try_get(col("created_at").as_str())?,
         last_modified: row.try_get(col("last_modified").as_str())?,
+        put_down_at,
     })
 }
 
@@ -294,13 +307,14 @@ impl Storage {
         rows.iter().map(row_to_reading).collect()
     }
 
-    /// Books with an open reading (abandoned included), newest of book/reading `last_modified` first.
+    /// Books with an open reading that is not put down, newest of book/reading `last_modified` first.
     /// Keep `cur.id IS NOT NULL`: the LEFT JOIN yields all-NULL `cur` rows for books with no reading.
     pub(crate) async fn list_open_readings(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
         let reading = reading_columns_as("cur", JOINED_READING_PREFIX);
         let sql = format!(
             "SELECT {BOOK_COLUMNS}, {reading} {BOOK_FROM}
              WHERE cur.id IS NOT NULL AND cur.finished_at IS NULL
+               AND cur.status IS NOT '{STATUS_ABANDONED}'
              ORDER BY MAX(books.last_modified, cur.last_modified) DESC, books.id DESC
              LIMIT ?"
         );
@@ -454,6 +468,24 @@ impl Storage {
         Ok(row.try_get("id")?)
     }
 
+    /// Gives a reading the start an import learned later; a start already recorded is kept.
+    pub(crate) async fn fill_reading_start(
+        &self,
+        reading_id: i64,
+        started_at: i64,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE readings SET started_at = ?2, last_modified = ?3
+             WHERE id = ?1 AND started_at IS NULL",
+        )
+        .bind(reading_id)
+        .bind(started_at)
+        .bind(now_unix())
+        .execute(self.pool())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// Lets an importer count only the readings it recorded itself.
     pub(crate) async fn readings_from_source(
         &self,
@@ -521,6 +553,22 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Returns the put-down open reading to `reading` and forgets when it was put down; `false` when
+    /// the book has no open reading or it is not put down.
+    pub(crate) async fn pick_up_reading(&self, book_id: i64) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE readings SET status = ?2, put_down_at = NULL, last_modified = ?4
+             WHERE book_id = ?1 AND finished_at IS NULL AND status = ?3",
+        )
+        .bind(book_id)
+        .bind(STATUS_READING)
+        .bind(STATUS_ABANDONED)
+        .bind(now_unix())
+        .execute(self.pool())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// The current reading's id, opening one only if the book has none at all, not none open:
     /// a `complete` sidecar closes its reading and the idempotent import would otherwise open one per
     /// run.
@@ -545,7 +593,17 @@ impl Storage {
     }
 
     /// Close the open reading (if any), then open a new one; the unique index allows only that order.
+    /// A put-down reading closes as put down, at the instant it was put down, rather than as finished.
     pub async fn reread(&self, book_id: i64) -> Result<i64> {
+        sqlx::query(
+            "UPDATE readings SET finished_at = COALESCE(put_down_at, last_modified), last_modified = ?3
+             WHERE book_id = ?1 AND finished_at IS NULL AND status = ?2",
+        )
+        .bind(book_id)
+        .bind(STATUS_ABANDONED)
+        .bind(now_unix())
+        .execute(self.pool())
+        .await?;
         self.finish_reading(book_id).await?;
         self.open_reading(book_id, Some(now_unix()), "manual").await
     }
@@ -601,6 +659,7 @@ impl Storage {
                    finished_at   = CASE WHEN ?4 = 1 THEN COALESCE(finished_at, ?3)
                                         WHEN ?4 = 0 THEN NULL
                                         ELSE finished_at END,
+                   put_down_at   = CASE WHEN ?4 = 0 THEN NULL ELSE put_down_at END,
                    last_modified = ?3
                WHERE id = ?1"#,
         )
@@ -880,14 +939,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_abandoned_reading_is_still_listed_and_says_so() {
+    async fn an_abandoned_reading_is_not_currently_read_but_stays_the_books() {
         let (s, id) = seeded().await;
         s.update_progress(id, Some(60), None).await.unwrap();
         assert!(s.abandon_reading(id).await.unwrap());
 
-        let open = s.list_open_readings(10).await.unwrap();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].1.status, STATUS_ABANDONED);
+        assert!(s.list_open_readings(10).await.unwrap().is_empty());
+        let open = s.active_reading(id).await.unwrap().expect("still open");
+        assert_eq!(open.status, STATUS_ABANDONED);
+        assert!(open.put_down_at.is_some());
     }
 
     #[tokio::test]
