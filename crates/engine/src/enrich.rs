@@ -31,7 +31,9 @@ pub struct EnrichCandidate {
 pub enum EnrichOutcome {
     Enriched(EnrichMatch),
     /// Nothing was written. `candidates` is empty when results came back but none resembled this book.
-    Refused { candidates: Vec<EnrichCandidate> },
+    Refused {
+        candidates: Vec<EnrichCandidate>,
+    },
     NothingFound,
     /// Nothing came back and some provider failed or timed out. Never reported as "no provider knows
     /// this book".

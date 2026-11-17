@@ -257,9 +257,13 @@ pub struct VaultStir(pub PathBuf);
 /// to log them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultEvent {
-    Reindexed { note_id: i64 },
+    Reindexed {
+        note_id: i64,
+    },
     /// Nothing was written: absence is never destructive.
-    Vanished { note_id: i64 },
+    Vanished {
+        note_id: i64,
+    },
 }
 
 impl VaultEvent {

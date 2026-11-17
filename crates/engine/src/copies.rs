@@ -230,13 +230,8 @@ pub struct LibraryCopies {
 pub enum PlaceAttach {
     Added,
     Present,
-    Merged {
-        absorbed: i64,
-    },
-    OtherBook {
-        book_id: i64,
-        copy_id: i64,
-    },
+    Merged { absorbed: i64 },
+    OtherBook { book_id: i64, copy_id: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

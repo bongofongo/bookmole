@@ -105,7 +105,10 @@ fn expand(value: &str, self_title: &str) -> String {
 
 #[derive(Debug)]
 enum Observed {
-    Stored { value: String, path: Option<String> },
+    Stored {
+        value: String,
+        path: Option<String>,
+    },
     #[allow(dead_code)]
     Refused(String),
     Dropped,

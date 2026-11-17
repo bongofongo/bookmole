@@ -259,9 +259,7 @@ pub enum ReadingStateDto {
     Reading,
     Finished,
     Abandoned,
-    Other {
-        raw: String,
-    },
+    Other { raw: String },
 }
 
 impl From<ReadingState> for ReadingStateDto {
@@ -1431,11 +1429,18 @@ impl From<bookmole::NoteLink> for NoteLinkDto {
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum GraphScopeDto {
     Everything,
-    Recent { since: i64 },
-    Book { book_id: i64 },
+    Recent {
+        since: i64,
+    },
+    Book {
+        book_id: i64,
+    },
     /// One note and its neighbours out to `steps` (1 or 2, else `invalid_input`), plus up to five
     /// unlinked mentions.
-    Around { note_id: i64, steps: u8 },
+    Around {
+        note_id: i64,
+        steps: u8,
+    },
 }
 
 impl From<GraphScopeDto> for bookmole::GraphScope {
@@ -2844,7 +2849,9 @@ impl From<PluginStatus> for PluginStatusDto {
 pub enum ListenerModeDto {
     Off,
     /// Bound until `until` (unix seconds) or until a push completes, whichever is first.
-    Window { until: i64 },
+    Window {
+        until: i64,
+    },
     Always,
 }
 
@@ -3643,7 +3650,10 @@ impl From<MonthActivity> for MonthActivityDto {
 pub enum MomentKindDto {
     ReadingClosed,
     FirstAnnotation,
-    ReflectionReached { note_id: i64, reached_book_id: i64 },
+    ReflectionReached {
+        note_id: i64,
+        reached_book_id: i64,
+    },
     /// A run of consecutive days with activity that has already ended; there is no variant for a
     /// run in progress.
     RunEnded {
@@ -3808,7 +3818,9 @@ impl From<FieldSource> for FieldSourceDto {
 pub enum EnrichMatchDto {
     /// By ISBN, an identity: this edition.
     Isbn,
-    Title { score: f64 },
+    Title {
+        score: f64,
+    },
 }
 
 impl From<EnrichMatch> for EnrichMatchDto {
@@ -5398,7 +5410,9 @@ impl From<bookmole::PreviewBookImport> for PreviewImportDto {
 pub enum AppleBooksMatchDto {
     /// Imported before: its `apple_books` place.
     Place,
-    File { file_match: FileMatchDto },
+    File {
+        file_match: FileMatchDto,
+    },
     StoreId,
     /// Title and author, auto-match band.
     Title,
@@ -5431,12 +5445,16 @@ pub enum AppleBooksOutcomeDto {
         by: AppleBooksMatchDto,
     },
     /// Nothing matched or came close, and it had highlights: a book was made.
-    Created { book_id: i64 },
+    Created {
+        book_id: i64,
+    },
     WouldCreate,
     /// Nothing matched outright and nothing was written. The candidates are
     /// the decision (`LinkAppleBooksAsset`); empty when the asset has no
     /// title to make a book from.
-    Unmatched { candidates: Vec<MatchCandidateDto> },
+    Unmatched {
+        candidates: Vec<MatchCandidateDto>,
+    },
 }
 
 impl From<bookmole::AssetOutcome> for AppleBooksOutcomeDto {
