@@ -82,7 +82,14 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// For tests outside the crate; behind `internals` so no frontend can open the database itself.
+    #[cfg(any(test, feature = "internals"))]
+    #[doc(hidden)]
     pub async fn connect(db_url: &str) -> Result<Storage> {
+        Self::open(db_url).await
+    }
+
+    pub(crate) async fn open(db_url: &str) -> Result<Storage> {
         let opts = SqliteConnectOptions::from_str(db_url)?
             .create_if_missing(true)
             .foreign_keys(true);
