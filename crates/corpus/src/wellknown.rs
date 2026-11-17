@@ -1040,6 +1040,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Today's date in UTC, `YYYY-MM-DD`: the build date stamped on the file.
+#[allow(clippy::disallowed_methods)]
 fn today_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

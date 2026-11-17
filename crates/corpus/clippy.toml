@@ -1,0 +1,14 @@
+# The generator's output is a function of its seed and inputs alone.
+disallowed-types = [
+    { path = "rand::rngs::StdRng", reason = "its algorithm may change between rand versions; use ChaCha8Rng", allow-invalid = true },
+    { path = "rand::rngs::ThreadRng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+    { path = "rand_core::OsRng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+]
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "a clock in the generator churns every golden; use a fixed epoch" },
+    { path = "rand::random", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+    { path = "rand::rng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+    { path = "rand::thread_rng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+    { path = "rand_core::SeedableRng::from_os_rng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+    { path = "rand_core::SeedableRng::try_from_os_rng", reason = "unseeded; use ChaCha8Rng from the seed", allow-invalid = true },
+]
