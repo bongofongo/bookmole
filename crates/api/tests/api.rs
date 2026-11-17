@@ -3907,3 +3907,58 @@ async fn the_copies_place_round_trips_through_dispatch() {
         ErrorCode::InvalidInput
     );
 }
+
+/// `first_published` is not on the wire, so a client cannot send it back; an absent field must not
+/// clear what the library already holds.
+#[tokio::test]
+async fn a_book_sent_back_by_a_client_keeps_what_the_wire_does_not_carry() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let engine = Arc::new(
+        Engine::open(EngineConfig::in_memory(tmp.path()))
+            .await
+            .expect("engine"),
+    );
+    let api = Api::new(engine.clone());
+    let id = engine
+        .save_book(&bookmole::Book {
+            title: Some("Middlemarch".into()),
+            authors: vec!["George Eliot".into()],
+            isbn_13: Some("9780141439549".into()),
+            first_published: Some(1871),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    let list = api.create_list("To reread", None).await.unwrap();
+
+    let as_sent = || {
+        let read = api.get_book(id);
+        async move {
+            let dto = read.await.unwrap().expect("stored");
+            let wire = serde_json::to_string(&dto).unwrap();
+            serde_json::from_str::<BookDto>(&wire).unwrap()
+        }
+    };
+    let requests = [
+        Request::SaveBook {
+            book: as_sent().await,
+        },
+        Request::SetBookFields {
+            book_id: id,
+            fields: as_sent().await,
+        },
+        Request::AddCandidateToList {
+            list_id: list.id,
+            book: as_sent().await,
+            note: None,
+        },
+    ];
+    for request in requests {
+        let name = format!("{request:?}");
+        ok(api.dispatch(request).await);
+        let stored = engine.get_book(id).await.unwrap().unwrap();
+        assert_eq!(stored.first_published, Some(1871), "after {name}");
+    }
+}
