@@ -374,6 +374,7 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
     let captured = Captured::default();
     // **No level filter at all.** This is the one secret `trace!` may not carry.
     let subscriber = Registry::default().with(captured.clone());
+    #[allow(clippy::disallowed_methods)]
     let guard = tracing::subscriber::set_default(subscriber);
 
     let listener = Arc::new(Listener::new());
