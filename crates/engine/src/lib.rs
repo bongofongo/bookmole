@@ -965,9 +965,9 @@ impl Engine {
         self.storage.book_tags(book_id).await
     }
 
-    /// One row per open reading not put down, most recently touched first. The [`Reading`] rides beside
-    /// the [`Book`]
-    /// because `Book`'s progress fields project the current reading.
+    /// One row per book being read now (an open reading in state `reading`), most recently touched
+    /// first. The [`Reading`] rides beside the [`Book`] because `Book`'s progress fields project the
+    /// current reading.
     pub async fn currently_reading(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
         self.storage.list_open_readings(limit).await
     }

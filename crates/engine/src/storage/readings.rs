@@ -307,14 +307,16 @@ impl Storage {
         rows.iter().map(row_to_reading).collect()
     }
 
-    /// Books with an open reading that is not put down, newest of book/reading `last_modified` first.
+    /// Books being read now: an open reading whose status is `reading`, newest of book/reading
+    /// `last_modified` first. Open is not enough, since a put-down reading and an import's undated
+    /// `finished` one are open too.
     /// Keep `cur.id IS NOT NULL`: the LEFT JOIN yields all-NULL `cur` rows for books with no reading.
     pub(crate) async fn list_open_readings(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
         let reading = reading_columns_as("cur", JOINED_READING_PREFIX);
         let sql = format!(
             "SELECT {BOOK_COLUMNS}, {reading} {BOOK_FROM}
              WHERE cur.id IS NOT NULL AND cur.finished_at IS NULL
-               AND cur.status IS NOT '{STATUS_ABANDONED}'
+               AND cur.status = '{STATUS_READING}'
              ORDER BY MAX(books.last_modified, cur.last_modified) DESC, books.id DESC
              LIMIT ?"
         );

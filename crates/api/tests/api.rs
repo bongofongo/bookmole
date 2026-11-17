@@ -4144,3 +4144,41 @@ async fn a_put_down_read_leaves_currently_reading_and_keeps_its_date_in_the_book
         ErrorCode::NotFound
     );
 }
+
+/// An import can leave a read open with status `finished`; open alone is not "reading now".
+#[tokio::test]
+async fn currently_reading_lists_only_reads_in_state_reading() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let engine = Arc::new(
+        Engine::open(EngineConfig::in_memory(tmp.path()))
+            .await
+            .expect("engine"),
+    );
+    let api = Api::new(engine.clone());
+    let csv = tmp.path().join("undated.csv");
+    std::fs::write(
+        &csv,
+        "Title,Author,Exclusive Shelf\nMiddlemarch,George Eliot,read\n",
+    )
+    .unwrap();
+    engine
+        .import_goodreads(
+            &csv,
+            bookmole::GoodreadsImportOptions {
+                create_ambiguous: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let reading = seed(&api).await;
+    api.update_progress(reading, Some(10), None).await.unwrap();
+
+    match ok(api.dispatch(Request::CurrentlyReading { limit: 20 }).await) {
+        Response::OpenReadings(rows) => {
+            let ids: Vec<Option<i64>> = rows.iter().map(|r| r.book.id).collect();
+            assert_eq!(ids, vec![Some(reading)]);
+        }
+        other => panic!("{other:?}"),
+    }
+}
