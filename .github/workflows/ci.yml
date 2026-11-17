@@ -40,6 +40,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # A gate target whose tool is missing fails here instead of printing SKIPPED.
+  BOOKMOLE_REQUIRE_TOOLS: "1"
+
+# Every check is a Makefile target, so `make ci` locally runs these same commands.
 
 jobs:
   check:
@@ -53,29 +57,10 @@ jobs:
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - run: cargo fmt --all --check
-
-      # --all-targets subsumes `cargo check`, so there is no separate build job.
-      # And it covers the *whole workspace*, not just the engine: an engine-only
-      # gate that lets a change to `SearchOutcome` break the CLI is not a gate.
-      # `-D warnings` lives here rather than in RUSTFLAGS — as an env var it
-      # would invalidate the cache against every local build.
-      #
-      # `--locked` on both: Cargo.lock is committed, and a lockfile once picked
-      # up a breaking change in a patch release (the old `epub` crate, since
-      # replaced; `lopdf` is pinned exactly for the same reason). Without
-      # --locked nothing detects that recurring.
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      # Not redundant with the line above, and the difference is the point.
-      # `--all-targets` resolves dev-dependencies, and `crates/tui`'s switch on
-      # the engine's `internals` feature — the door left open so test fixtures
-      # can reach `Engine::storage()` while frontends go through the engine's
-      # public methods and `bookmole-api`. Under clippy that door is open
-      # for the shipped binaries too. This is the build where it is shut, so a
-      # frontend that reopens the seam in production code fails here and only
-      # here.
-      - run: cargo check --workspace --locked
+      - run: make fmt-check
+      - run: make lint
+      # Not redundant with lint: see the Makefile's build-check.
+      - run: make build-check
 
   test:
     name: tests — ${{ matrix.scope }} (${{ matrix.os }})
@@ -102,10 +87,10 @@ jobs:
         include:
           - os: ubuntu-26.04
             scope: whole workspace
-            args: --workspace
+            target: test
           - os: macos-latest
             scope: engine
-            args: -p bookmole
+            target: test-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,13 +100,7 @@ jobs:
         with:
           tool: nextest
 
-      # --profile ci: no fail-fast (the whole picture in one pass, same reason
-      # as elsewhere in this file), explicit zero retries so a flaky test is
-      # reported rather than quietly re-run clean, and a junit.xml artifact for
-      # whatever wants to read one later. .config/nextest.toml also sets a
-      # slow-timeout on the default profile — a hung test must not hang this
-      # job for its full 30-minute budget.
-      - run: cargo nextest run ${{ matrix.args }} --locked --profile ci
+      - run: make ${{ matrix.target }} NEXTEST_PROFILE=ci
 
   migrations:
     name: migrations are append-only
@@ -136,39 +115,10 @@ jobs:
           # does not have.
           fetch-depth: 0
 
-      # "Never edit an applied migration" as a check rather than a convention.
-      # sqlx records a checksum of every migration it has applied, so editing
-      # one in place breaks every database that already ran it — with an error
-      # that names the checksum and not the cause. Parallel branches are what
-      # make this worth mechanising: the rule is easy to keep on one branch and
-      # easy to forget across several.
-      #
-      # M, D and R alike: a migration that is modified, deleted, or renamed is a
-      # migration whose recorded checksum no longer describes it.
       - name: refuse a modified, deleted or renamed migration
-        run: |
-          # `*.sql` only, not the whole directory. What sqlx checksums is the
-          # migration files; anything else kept beside them (notes about
-          # writing a migration, say) is not an applied migration, and without
-          # the glob this gate would fail any PR that edits such a file.
-          #
-          # The exclusions, listed in .github/amended-migrations.txt, are the
-          # migrations whose comments were amended after they shipped (`AMENDED`
-          # in crates/engine/src/storage/mod.rs repairs the recorded checksum).
-          # They are not open to edit: that table pins each file's current
-          # checksum and a test fails on any further change.
-          mapfile -t skip < <(grep -v '^#' .github/amended-migrations.txt | sed 's/^/:!/')
-          changed=$(git diff --diff-filter=MDR --name-only \
-            "${{ github.event.pull_request.base.sha }}...HEAD" \
-            -- 'crates/engine/migrations/*.sql' "${skip[@]}")
-          if [ -n "$changed" ]; then
-            echo "::error::an applied migration was changed, not added:"
-            echo "$changed"
-            echo
-            echo "Add a new numbered migration instead; never edit an applied one."
-            exit 1
-          fi
-          echo "migrations are append-only in this PR."
+        run: make migrations-check
+        env:
+          MIGRATIONS_BASE: ${{ github.event.pull_request.base.sha }}
 
   deny:
     name: cargo-deny
@@ -187,4 +137,4 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny
-      - run: cargo deny check bans licenses sources
+      - run: make deny

@@ -14,6 +14,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  BOOKMOLE_REQUIRE_TOOLS: "1"
 
 # Read-only unless a job says otherwise; none here writes.
 permissions:
@@ -81,7 +82,7 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny
-      - run: cargo deny check advisories
+      - run: make advisories
 
   # Mutation testing, and deliberately not on the PR gate: a full sweep of the
   # engine is 2566 mutants, measured at ~10 minutes for 34 mutants of one
@@ -179,6 +180,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # RUSTUP_TOOLCHAIN is what overrides rust-toolchain.toml's pin — this is
       # the one job that deliberately ignores it.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: make lint
         env:
           RUSTUP_TOOLCHAIN: stable

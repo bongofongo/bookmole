@@ -4,25 +4,27 @@
 # installed every target degrades to plain `cargo test` so nothing hard-requires
 # it. Install for faster parallel runs: `cargo install cargo-nextest`.
 
-# Detect nextest once.
+# CI passes NEXTEST_PROFILE=ci (no fail-fast, junit.xml); see .config/nextest.toml.
+NEXTEST_PROFILE ?= default
 NEXTEST := $(shell command -v cargo-nextest 2>/dev/null)
 ifdef NEXTEST
-  RUN = cargo nextest run
-  RUN_FILTER = cargo nextest run -E
+  RUN = cargo nextest run --profile $(NEXTEST_PROFILE)
+else ifeq ($(BOOKMOLE_REQUIRE_TOOLS),1)
+  RUN = $(error cargo-nextest not installed and BOOKMOLE_REQUIRE_TOOLS=1)
 else
   RUN = cargo test
-  RUN_FILTER = cargo test --test
 endif
 
-# Detected the same way, the same reason: a target reaching for one of these
-# must degrade to a stated `SKIPPED:` rather than an opaque "command not
-# found", on a machine that has not installed the tool.
+# A target whose tool is missing prints `SKIPPED:` and passes, or fails when
+# BOOKMOLE_REQUIRE_TOOLS=1, which CI sets so a gate cannot pass without its tool.
+skip = @if [ "$(BOOKMOLE_REQUIRE_TOOLS)" = 1 ]; then echo "MISSING: $(1)" >&2; exit 1; fi; echo "SKIPPED: $(1)"
+
 DENY := $(shell command -v cargo-deny 2>/dev/null)
 LLVM_COV := $(shell command -v cargo-llvm-cov 2>/dev/null)
 MUTANTS := $(shell command -v cargo-mutants 2>/dev/null)
 CARGO_FUZZ := $(shell command -v cargo-fuzz 2>/dev/null)
 
-.PHONY: help test test-engine test-import test-fast search-bench search-bench-record wellknown skips golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check deny migrations-check nightly coverage coverage-html mutants mutants-diff fuzz check ci clean dist bench bench-box bench-trend perf dev-db corpus-layers corpus-build corpus-verify corpus-all
+.PHONY: help test test-engine test-import test-fast search-bench search-bench-record wellknown skips golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check deny advisories migrations-check nightly coverage coverage-html mutants mutants-diff fuzz check ci clean dist bench bench-box bench-trend perf dev-db corpus-layers corpus-build corpus-verify corpus-all
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -182,8 +184,9 @@ perf: ## Cost + wire-rate sweeps, both renderers (release, ignored tests)
 	  --ignored --nocapture --test-threads 1 \
 	  glyph_cost raster_cost frame_budget glyph_wire_rate wire_rate
 
-lint: ## Clippy across the workspace (warnings are errors, same as CI)
-	cargo clippy --workspace --all-targets -- -D warnings
+lint: ## Clippy across the workspace, warnings as errors
+	@# -D warnings as an argument: in RUSTFLAGS it would invalidate the build cache.
+	cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # NOT subsumed by `lint`, and the difference is load-bearing. `--all-targets`
 # resolves dev-dependencies, and `crates/tui`'s dev-dependencies switch on the
@@ -202,22 +205,29 @@ fmt: ## Format all crates
 fmt-check: ## Verify formatting without writing
 	cargo fmt --all --check
 
-deny: ## cargo-deny: bans + licenses + sources — the same scope as CI's `deny` job
+deny: ## cargo-deny: bans + licenses + sources
 ifdef DENY
 	cargo deny check bans licenses sources
 else
-	@echo "SKIPPED: cargo-deny not installed — 'cargo install cargo-deny'."
+	$(call skip,cargo-deny not installed — 'cargo install cargo-deny'.)
 endif
 
-migrations-check: ## Local twin of CI's migrations job — refuse an applied migration that changed
-	@# sqlx records a checksum of every migration it has applied, so editing one
-	@# in place breaks every database that already ran it. CI enforces this as
-	@# its own PR-only job (it needs the PR's merge base); this is the same
-	@# check against origin/main, for before you push. The exclusions, listed in
-	@# .github/amended-migrations.txt, are the comment-only amendments that `AMENDED`
-	@# (crates/engine/src/storage/mod.rs) repairs and pins.
+advisories: ## cargo-deny: security advisories (scheduled, never a PR gate)
+ifdef DENY
+	cargo deny check advisories
+else
+	$(call skip,cargo-deny not installed — 'cargo install cargo-deny'.)
+endif
+
+# CI passes the pull request's base commit.
+MIGRATIONS_BASE ?= origin/main
+
+migrations-check: ## Refuse an applied migration that was modified, deleted or renamed since MIGRATIONS_BASE
+	@# sqlx checksums every applied migration, so an edited one breaks every
+	@# database that ran it. The exclusions in .github/amended-migrations.txt are
+	@# the comment-only amendments that `AMENDED` (storage/mod.rs) repairs.
 	@changed=$$(git diff --diff-filter=MDR --name-only \
-	  "$$(git merge-base origin/main HEAD)...HEAD" -- 'crates/engine/migrations/*.sql' \
+	  "$(MIGRATIONS_BASE)...HEAD" -- 'crates/engine/migrations/*.sql' \
 	  $$(grep -v '^#' .github/amended-migrations.txt | sed 's/^/:!/')); \
 	if [ -n "$$changed" ]; then \
 	  echo "an applied migration was changed, not added:"; \
@@ -285,21 +295,9 @@ dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vau
 	@echo "dev library at $(DEV_DB_DIR) — counts above, from the generator."
 	@echo "What each edge case is for: $(DEV_DB_SRC)/manifest.json"
 
-check: fmt-check lint build-check deny migrations-check test ## Local gate: everything CI runs
+check: fmt-check lint build-check deny migrations-check test ## Local gate: ci plus the PR-only migrations check
 
-# What .github/workflows/ci.yml runs, in the same order. Kept as a separate
-# target from `check` even when the two agree: it is the name people reach for,
-# and they diverge the moment the workflow grows a step with no local equivalent.
-# Keep them in step — a change here belongs in the workflow too.
-#
-# CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
-# explained in the workflow and is not worth reproducing locally.
-#
-# `deny` joined because it IS a CI job (`deny` in ci.yml) and `ci` claiming to
-# reproduce the gate while skipping one of its jobs was simply wrong.
-# `migrations-check` deliberately did NOT: CI runs it as its own job gated
-# `if: github.event_name == 'pull_request'`, so it is not part of the gate a
-# push to main passes through, and `check` is where it belongs instead.
+# The targets ci.yml calls on a push to main; its macOS leg runs `test-engine` instead of `test`.
 ci: fmt-check lint build-check deny test ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only, full proptest count — CI's macOS leg
@@ -331,7 +329,7 @@ corpus-layers: ## Generate every corpus layer in order (KOReader, calibre, reade
 ifdef CALIBREDB
 	cargo run -q -p corpus -- gen-calibre --seed $(CORPUS_SEED)
 else
-	@echo "SKIPPED: gen-calibre — calibredb not installed; the committed calibre layer stays as it is, and a recipe with a calibre-import step builds without it (its lock is then skipped, not compared)."
+	$(call skip,gen-calibre — calibredb not installed; the committed calibre layer stays as it is and a recipe with a calibre-import step builds without it (its lock is then skipped and not compared).)
 endif
 	cargo run -q -p corpus -- gen-reader --seed $(CORPUS_SEED)
 
@@ -341,14 +339,14 @@ ifdef SQLITE3
 	rm -rf "$(DIR)"
 	$(or $(CARGO_TARGET_DIR),target)/debug/corpus build-recipe "$(RECIPE)" --data-dir "$(DIR)" $(if $(filter update,$(EXPECT)),--update-expect,)
 else
-	@echo "SKIPPED: corpus-build needs the sqlite3 CLI to count what it built."
+	$(call skip,corpus-build needs the sqlite3 CLI to count what it built.)
 endif
 
 corpus-verify: ## The recipe invariant suite on a fresh build of RECIPE; fails if a layer is missing
 ifdef SQLITE3
 	BOOKMOLE_RECIPE="$(RECIPE)" BOOKMOLE_REQUIRE_FIXTURES=1 cargo test -p bookmole-cli --test recipes -- --nocapture
 else
-	@echo "SKIPPED: corpus-verify needs the sqlite3 CLI."
+	$(call skip,corpus-verify needs the sqlite3 CLI.)
 endif
 
 corpus-all: ## Layers, then build and verify every committed recipe
@@ -369,21 +367,11 @@ kostats: ## Regenerate the committed KOReader statistics fixture (SQL + expected
 	cargo run -p corpus -- gen-kostats --seed $(CORPUS_SEED)
 
 nightly: ## Reproduce .github/workflows/scheduled.yml locally: advisories, floating-stable clippy, tier-2 corpus
-	@# The scheduled workflow was red for ten nights (2026-10-07 to 16) and
-	@# nothing local said so — `gh run list` is the other half of this check,
-	@# since this target can only run what scheduled.yml runs, not read what it
-	@# last reported.
-ifdef DENY
-	cargo deny check advisories
-else
-	@echo "SKIPPED: cargo-deny not installed — 'cargo install cargo-deny'."
-endif
-	@# Advisory only, same as scheduled.yml's `continue-on-error: true` — this
-	@# exists so a new lint on floating stable is visible before
-	@# rust-toolchain.toml's pin is bumped, never so it blocks anything. The
-	@# leading `-` is `continue-on-error` read by `make`.
-	@echo "clippy on floating stable (advisory, mirrors continue-on-error):"
-	-RUSTUP_TOOLCHAIN=stable cargo clippy --workspace --all-targets -- -D warnings
+	@# This runs what scheduled.yml runs; `gh run list` says what it last reported.
+	$(MAKE) advisories
+	@# Advisory, as scheduled.yml's `continue-on-error: true`; the leading `-` is make's spelling of it.
+	@echo "clippy on floating stable (advisory):"
+	-RUSTUP_TOOLCHAIN=stable $(MAKE) lint
 	$(MAKE) corpus-check
 	@# The recipe invariant suite on the whole corpus. Nightly and never `ci`:
 	@# it needs a minute or more of debug-build imports.
@@ -402,7 +390,7 @@ coverage: ## Engine line coverage (cargo-llvm-cov + nextest)
 ifdef LLVM_COV
 	cargo llvm-cov nextest -p bookmole --locked --summary-only $(COVERAGE_ARGS)
 else
-	@echo "SKIPPED: cargo-llvm-cov not installed — 'cargo install cargo-llvm-cov'."
+	$(call skip,cargo-llvm-cov not installed — 'cargo install cargo-llvm-cov'.)
 endif
 
 coverage-html: ## Same, as a browsable report under target/llvm-cov/html
@@ -410,7 +398,7 @@ ifdef LLVM_COV
 	cargo llvm-cov nextest -p bookmole --locked --html $(COVERAGE_ARGS)
 	@echo "report: target/llvm-cov/html/index.html"
 else
-	@echo "SKIPPED: cargo-llvm-cov not installed — 'cargo install cargo-llvm-cov'."
+	$(call skip,cargo-llvm-cov not installed — 'cargo install cargo-llvm-cov'.)
 endif
 
 MUTANTS_FILE ?=
@@ -428,7 +416,7 @@ ifdef MUTANTS
 	cargo mutants -p bookmole --test-tool nextest --in-place \
 	  $(if $(MUTANTS_FILE),-f $(MUTANTS_FILE)) $(MUTANTS_ARGS)
 else
-	@echo "SKIPPED: cargo-mutants not installed — 'cargo install cargo-mutants'."
+	$(call skip,cargo-mutants not installed — 'cargo install cargo-mutants'.)
 endif
 
 mutants-diff: ## Mutation testing scoped to lines this branch changed vs main
@@ -438,39 +426,42 @@ ifdef MUTANTS
 	cargo mutants -p bookmole --test-tool nextest --in-place --in-diff "$$tmp" $(MUTANTS_ARGS); \
 	rm -f "$$tmp"
 else
-	@echo "SKIPPED: cargo-mutants not installed — 'cargo install cargo-mutants'."
+	$(call skip,cargo-mutants not installed — 'cargo install cargo-mutants'.)
 endif
 
 FUZZ_TARGET ?= parse_sidecar
 FUZZ_SECONDS ?= 60
 
 fuzz: ## Run one fuzz target for FUZZ_SECONDS (needs a nightly toolchain; never a PR gate)
-	@# Flags mirror fuzz.yml / fuzz/README.md: `-s none` because ASAN cannot
-	@# survive mlua's longjmp error propagation here; the explicit host triple
-	@# because cargo-fuzz's prebuilt binary defaults to musl, which has no std
-	@# for this nightly; `-timeout=10` is how a non-terminating Lua chunk is
-	@# caught at all; `-rss_limit_mb=2048` matches the CI job.
+	@# `-s none`: ASAN cannot survive mlua's longjmp error propagation (fuzz/README.md).
+	@# The host triple, because a prebuilt cargo-fuzz defaults to its own (musl) triple.
+	@# `-timeout=10` is how a non-terminating Lua chunk is caught at all.
+	@# The first directory is libFuzzer's writable corpus; the committed seeds are only read.
 ifdef CARGO_FUZZ
 	mkdir -p fuzz/corpus/$(FUZZ_TARGET)
-	cargo +nightly fuzz run -s none --target x86_64-unknown-linux-gnu $(FUZZ_TARGET) -- \
+	cargo +nightly fuzz run -s none --target $(shell rustc +nightly -vV | sed -n 's|^host: ||p') $(FUZZ_TARGET) -- \
 	  -max_total_time=$(FUZZ_SECONDS) -timeout=10 -rss_limit_mb=2048 \
 	  fuzz/corpus/$(FUZZ_TARGET) fuzz/seeds/$(FUZZ_TARGET)
 else
-	@echo "SKIPPED: cargo-fuzz not installed — 'cargo install cargo-fuzz'."
+	$(call skip,cargo-fuzz not installed — 'cargo install cargo-fuzz'.)
 endif
 
-dist: ## Build this machine's release archive into dist/, exactly as CI would
-	@set -eu; \
-	target=$$(rustc -vV | sed -n 's|^host: ||p'); \
-	version=v$$(cargo pkgid -p bookmole-tui | sed 's/.*[#@]//'); \
-	name="bookmole-$${version}-$${target}"; \
-	cargo build --profile dist --locked --target "$$target" -p bookmole-tui -p bookmole-cli; \
-	rm -rf "dist/$${name}"; mkdir -p "dist/$${name}"; \
-	cp "target/$${target}/dist/bookmole-tui" "target/$${target}/dist/bookmole" \
-	   LICENSE README.md "dist/$${name}/"; \
-	tar -C dist -czf "dist/$${name}.tar.gz" "$${name}"; \
-	rm -rf "dist/$${name}"; \
-	ls -lh "dist/$${name}.tar.gz"
+# release.yml passes both: a cross target, and the tag (or a -dev name) as the version.
+DIST_TARGET ?= $(shell rustc -vV | sed -n 's|^host: ||p')
+HASH := \#
+DIST_VERSION ?= v$(shell cargo pkgid -p bookmole-tui | sed 's/.*[$(HASH)@]//')
+DIST_NAME = bookmole-$(DIST_VERSION)-$(DIST_TARGET)
+
+dist: ## Build the release archive dist/bookmole-<version>-<target>.tar.gz (this machine's target by default)
+	@# The two terminal frontends only; LICENSE travels with them (MPL-2.0 asks a binary to say where its source is).
+	cargo build --profile dist --locked --target "$(DIST_TARGET)" -p bookmole-tui -p bookmole-cli
+	rm -rf "dist/$(DIST_NAME)" && mkdir -p "dist/$(DIST_NAME)"
+	cp "$(or $(CARGO_TARGET_DIR),target)/$(DIST_TARGET)/dist/bookmole-tui" \
+	   "$(or $(CARGO_TARGET_DIR),target)/$(DIST_TARGET)/dist/bookmole" \
+	   LICENSE README.md "dist/$(DIST_NAME)/"
+	tar -C dist -czf "dist/$(DIST_NAME).tar.gz" "$(DIST_NAME)"
+	rm -rf "dist/$(DIST_NAME)"
+	@ls -lh "dist/$(DIST_NAME).tar.gz"
 
 clean: ## cargo clean
 	cargo clean
