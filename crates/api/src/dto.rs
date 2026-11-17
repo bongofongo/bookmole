@@ -16,17 +16,17 @@ use bookmole::{
     BookSummary, BookTag, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport, CloudFolder,
     CloudService, Confidence, CreatedNote, DayActivity, DayRange, DeviceBook, DeviceScan,
     DeviceState, Diagnostic, DiagnosticKind, EditionShape, EnrichCandidate, EnrichMatch,
-    EnrichOutcome, EnrichReport, ErrorClass, ExpandedPaths, FieldChange, FieldSource, FileIdentity,
-    FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow, FractionSource,
-    GoodreadsBookReport, GoodreadsReport, HeldField, Highlight, ImportReport, InstallReport,
-    KoStatus, LibraryLocation, LinkContext, LinkDirection, ListenerMode, ListenerStatus,
-    MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind, MonthActivity, MountSync,
-    NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, PairedDevice, Pairing,
-    PluginCondition, PluginStatus, Progress, PullReport, RankedResult, Rating, RatingScale,
-    Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingState,
-    ReadingYears, RefillReport, SavedAnkiExport, SearchHit, SearchOutcome, SearchRequest,
-    SearchSource, Severity, ShapeSource, SkippedEntries, Source, StatsImportReport, StatusFilter,
-    TableOfContents, TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
+    EnrichOutcome, EnrichReport, ErrorClass, ExpandedPaths, FieldChange, FieldClaim, FieldSource,
+    FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow,
+    FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight, ImportReport,
+    InstallReport, KoStatus, LibraryLocation, LinkContext, LinkDirection, ListenerMode,
+    ListenerStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind, MonthActivity,
+    MountSync, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, PairedDevice,
+    Pairing, PluginCondition, PluginStatus, Progress, PullReport, RankedResult, Rating,
+    RatingScale, Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort,
+    ReadingState, ReadingYears, RefillReport, SavedAnkiExport, SearchHit, SearchOutcome,
+    SearchRequest, SearchSource, Severity, ShapeSource, SkippedEntries, Source, StatsImportReport,
+    StatusFilter, TableOfContents, TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
 };
 
 fn path_str(p: &Path) -> String {
@@ -710,6 +710,10 @@ pub struct ReadingDto {
     pub last_modified: i64,
     /// This reading's progress, not the book's.
     pub progress: ProgressDto,
+    /// When the reader put this read down. Set only while `status` is `abandoned`; `null` there means
+    /// it was put down before the date was recorded.
+    #[serde(default)]
+    pub put_down_at: Option<i64>,
 }
 
 impl ReadingDto {
@@ -736,9 +740,11 @@ impl ReadingDto {
             ko_rating,
             created_at,
             last_modified,
+            put_down_at,
         } = r;
         ReadingDto {
             progress: ProgressDto::Untouched,
+            put_down_at,
             id,
             book_id,
             started_at,
@@ -2239,6 +2245,48 @@ impl From<ProviderId> for ProviderIdDto {
     }
 }
 
+impl From<ProviderIdDto> for ProviderId {
+    fn from(p: ProviderIdDto) -> Self {
+        match p {
+            ProviderIdDto::OpenLibrary => ProviderId::OpenLibrary,
+            ProviderIdDto::GoogleBooks => ProviderId::GoogleBooks,
+        }
+    }
+}
+
+/// One field of a search result and the provider whose value it holds. `field` uses the names
+/// `FieldSourceDto::field` reports. Only a provider can be named, never the user.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldClaimDto {
+    pub field: String,
+    pub provider: ProviderIdDto,
+}
+
+impl From<FieldClaim> for FieldClaimDto {
+    fn from(c: FieldClaim) -> Self {
+        let FieldClaim { field, provider } = c;
+        FieldClaimDto {
+            field,
+            provider: provider.into(),
+        }
+    }
+}
+
+impl From<FieldClaimDto> for FieldClaim {
+    fn from(c: FieldClaimDto) -> Self {
+        let FieldClaimDto { field, provider } = c;
+        FieldClaim {
+            field,
+            provider: provider.into(),
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -2253,6 +2301,11 @@ pub struct RankedResultDto {
     /// or opens.
     #[serde(default)]
     pub shelf_id: Option<i64>,
+    /// Which provider supplied each field of `book`. Sent back unchanged with `save_search_result`
+    /// or `add_search_result_to_list`, it records where the saved book's fields came from. `null`
+    /// only from an engine that does not report it.
+    #[serde(default)]
+    pub claims: Option<Vec<FieldClaimDto>>,
 }
 
 impl From<RankedResult> for RankedResultDto {
@@ -2262,12 +2315,14 @@ impl From<RankedResult> for RankedResultDto {
             sources,
             score,
             shelf_id,
+            claims,
         } = r;
         RankedResultDto {
             book: book.into(),
             sources: sources.into_iter().map(Into::into).collect(),
             score,
             shelf_id,
+            claims: Some(claims.into_iter().map(Into::into).collect()),
         }
     }
 }

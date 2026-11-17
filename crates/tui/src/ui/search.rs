@@ -91,6 +91,7 @@ mod tests {
             sources: Vec::new(),
             score: 1.0,
             shelf_id: None,
+            claims: Vec::new(),
         }
     }
 

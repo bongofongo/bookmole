@@ -8,6 +8,7 @@ VerifyGoogleKey key
 Search request
 LookupIsbn isbn
 SaveBook book
+SaveSearchResult book claims
 ListBooks limit sort offset filter
 CountBooks filter
 BookSummaries book_ids
@@ -30,6 +31,8 @@ ActiveReading book_id
 UpdateProgress book_id page finished
 Reread book_id
 FinishReading book_id finished_on
+PutDownReading book_id
+PickUpReading book_id
 SetPageCount book_id page_count
 ListHighlights book_id
 HighlightsForReading reading_id
@@ -161,6 +164,7 @@ MoveInList list_id book_id to
 SetListNote list_id book_id note
 ListsForBook book_id
 AddCandidateToList list_id book note
+AddSearchResultToList list_id book claims note
 ListTimeline list_id
 ShelfSuggestions preview
 KeepShelf source tag

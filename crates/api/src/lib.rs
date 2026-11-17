@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use bookmole::{
     Book, BookFilter, BookQuery, CalibreImportOptions, DayRange, Engine, EngineError, EntryShow,
-    EntrySort, FileImportOptions, GoodreadsImportOptions, LearnedFrom, NewCopy, NoteKind,
-    NoteRecord, NoteScope, RatingScale, ReadingFilter, ReadingQuery,
+    EntrySort, FieldClaim, FileImportOptions, GoodreadsImportOptions, LearnedFrom, NewCopy,
+    NoteKind, NoteRecord, NoteScope, RatingScale, ReadingFilter, ReadingQuery,
 };
 
 pub use bookmole::data_dir;
@@ -89,6 +89,19 @@ impl Api {
 
     pub async fn save_book(&self, book: BookDto) -> ApiResult<BookDto> {
         Ok(self.engine.save_book(&book.into()).await?.into())
+    }
+
+    pub async fn save_search_result(
+        &self,
+        book: BookDto,
+        claims: Vec<FieldClaimDto>,
+    ) -> ApiResult<BookDto> {
+        let claims: Vec<FieldClaim> = claims.into_iter().map(Into::into).collect();
+        Ok(self
+            .engine
+            .save_search_result(&book.into(), &claims)
+            .await?
+            .into())
     }
 
     pub async fn list_books(&self, query: BookQueryDto) -> ApiResult<Vec<BookDto>> {
@@ -238,6 +251,16 @@ impl Api {
             .finish_reading_on(book_id, finished_on.as_deref())
             .await?
             .into())
+    }
+
+    pub async fn put_down_reading(&self, book_id: i64) -> ApiResult<ReadingDto> {
+        let (r, p) = self.engine.put_down(book_id).await?;
+        Ok(ReadingDto::new(r, p))
+    }
+
+    pub async fn pick_up_reading(&self, book_id: i64) -> ApiResult<ReadingDto> {
+        let (r, p) = self.engine.pick_up(book_id).await?;
+        Ok(ReadingDto::new(r, p))
     }
 
     pub async fn set_page_count(&self, book_id: i64, page_count: i64) -> ApiResult<BookDto> {
@@ -1158,6 +1181,9 @@ impl Api {
             R::LookupIsbn { isbn } => Response::Book(self.lookup_isbn(&isbn).await?),
 
             R::SaveBook { book } => Response::Book(Some(self.save_book(book).await?)),
+            R::SaveSearchResult { book, claims } => {
+                Response::Book(Some(self.save_search_result(book, claims).await?))
+            }
             R::ListBooks {
                 limit,
                 sort,
@@ -1221,6 +1247,12 @@ impl Api {
                 finished,
             } => Response::Book(Some(self.update_progress(book_id, page, finished).await?)),
             R::Reread { book_id } => Response::Id(self.reread(book_id).await?),
+            R::PutDownReading { book_id } => {
+                Response::Reading(Some(self.put_down_reading(book_id).await?))
+            }
+            R::PickUpReading { book_id } => {
+                Response::Reading(Some(self.pick_up_reading(book_id).await?))
+            }
             R::FinishReading {
                 book_id,
                 finished_on,
@@ -1704,6 +1736,15 @@ impl Api {
                 self.add_candidate_to_list(list_id, book, note.as_deref())
                     .await?,
             ),
+            R::AddSearchResultToList {
+                list_id,
+                book,
+                claims,
+                note,
+            } => Response::ListEntry(
+                self.add_search_result_to_list(list_id, book, claims, note.as_deref())
+                    .await?,
+            ),
             R::KeepCopyHere { copy_id } => Response::Copy(self.keep_copy_here(copy_id).await?),
             R::HighlightOrigins { book_id } => {
                 Response::HighlightOrigins(self.highlight_origins(book_id).await?)
@@ -1971,6 +2012,21 @@ impl Api {
         Ok(self
             .engine
             .add_candidate_to_list(list_id, &book.into(), note)
+            .await?
+            .into())
+    }
+
+    pub async fn add_search_result_to_list(
+        &self,
+        list_id: i64,
+        book: BookDto,
+        claims: Vec<FieldClaimDto>,
+        note: Option<&str>,
+    ) -> ApiResult<ListEntryDto> {
+        let claims: Vec<FieldClaim> = claims.into_iter().map(Into::into).collect();
+        Ok(self
+            .engine
+            .add_search_result_to_list(list_id, &book.into(), &claims, note)
             .await?
             .into())
     }

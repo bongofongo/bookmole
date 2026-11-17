@@ -414,6 +414,7 @@ mod tests {
                 sources: row.work.sources.clone(),
                 score: row.work.score,
                 shelf_id: None,
+                claims: row.work.flattened_claims(),
             })
             .collect();
         (results, done.warnings)

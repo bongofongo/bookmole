@@ -714,3 +714,84 @@ async fn a_goodreads_id_and_a_calibre_uuid_do_not_collide() {
         b.id
     );
 }
+
+fn unix(day: &str) -> i64 {
+    bookmole::history::midnight(bookmole::history::parse_day(day).unwrap())
+}
+
+async fn on_timeline(engine: &Engine, book_id: i64) -> bool {
+    engine
+        .history_timeline(&bookmole::HistorySpan::default())
+        .await
+        .unwrap()
+        .iter()
+        .any(|r| r.reading.book_id == book_id)
+}
+
+#[tokio::test]
+async fn a_date_started_column_places_the_read_and_its_absence_is_silent() {
+    let (tmp, engine) = common::engine().await;
+    let path = tmp_csv(
+        tmp.path(),
+        "started.csv",
+        "Title,Author,Exclusive Shelf,Date Started,Date Read\n\
+         Middlemarch,George Eliot,read,2024/01/05,2024/03/27\n\
+         Silas Marner,George Eliot,read,,2024/05/01\n\
+         Romola,George Eliot,read,2024/09/01,2024/08/01\n\
+         Adam Bede,George Eliot,currently-reading,2024/10/20,\n",
+    );
+    let report = engine.import_goodreads(&path, creating()).await.unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+    let both = book(&engine, "Middlemarch").await.id.unwrap();
+    let r = engine.list_readings(both).await.unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].started_at, Some(unix("2024-01-05")));
+    assert_eq!(r[0].finished_at, Some(unix("2024-03-27")));
+    assert!(on_timeline(&engine, both).await);
+
+    let finish_only = book(&engine, "Silas Marner").await.id.unwrap();
+    let r = engine.list_readings(finish_only).await.unwrap();
+    assert_eq!(r.len(), 1, "imported and listed in the book's reads");
+    assert_eq!(r[0].started_at, None, "no start is invented");
+    assert_eq!(r[0].finished_at, Some(unix("2024-05-01")));
+    assert!(!on_timeline(&engine, finish_only).await);
+    let figures = engine
+        .history_figures(&bookmole::HistorySpan::default())
+        .await
+        .unwrap();
+    assert_eq!(figures.books_finished, 3, "every finished read is counted");
+
+    let backwards = book(&engine, "Romola").await.id.unwrap();
+    let r = engine.list_readings(backwards).await.unwrap();
+    assert_eq!(r[0].started_at, None, "a start after the finish is dropped");
+
+    let open = book(&engine, "Adam Bede").await.id.unwrap();
+    let r = engine.list_readings(open).await.unwrap();
+    assert_eq!(r[0].started_at, Some(unix("2024-10-20")));
+    assert!(on_timeline(&engine, open).await);
+}
+
+#[tokio::test]
+async fn a_later_export_with_a_start_fills_the_read_already_imported() {
+    let (tmp, engine) = common::engine().await;
+    let first = tmp_csv(
+        tmp.path(),
+        "first.csv",
+        "Title,Author,Exclusive Shelf,Date Read\nMiddlemarch,George Eliot,read,2024/03/27\n",
+    );
+    engine.import_goodreads(&first, creating()).await.unwrap();
+    let later = tmp_csv(
+        tmp.path(),
+        "later.csv",
+        "Title,Author,Exclusive Shelf,Date Started,Date Read\n\
+         Middlemarch,George Eliot,read,2024/01/05,2024/03/27\n",
+    );
+    let report = engine.import_goodreads(&later, creating()).await.unwrap();
+    assert_eq!(report.books[0].readings_added, 0);
+
+    let id = book(&engine, "Middlemarch").await.id.unwrap();
+    let r = engine.list_readings(id).await.unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].started_at, Some(unix("2024-01-05")));
+}

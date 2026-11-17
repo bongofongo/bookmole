@@ -45,6 +45,13 @@ pub enum Request {
     SaveBook {
         book: BookDto,
     },
+    /// Save a search result as `save_book` does, recording each field in `claims` as supplied by its
+    /// provider. Send the result's `book` and `claims` as search returned them; a field the user
+    /// owns keeps its value. Refused with `invalid_input` when a claim names no book field.
+    SaveSearchResult {
+        book: BookDto,
+        claims: Vec<FieldClaimDto>,
+    },
     ListBooks {
         /// Negative is no limit.
         limit: i64,
@@ -145,6 +152,17 @@ pub enum Request {
         book_id: i64,
         #[serde(default)]
         finished_on: Option<String>,
+    },
+    /// Put the book's open read down: it stays open and in the book's reads, marked `abandoned` with
+    /// `put_down_at`, and leaves currently-reading, reading-now and the timeline. Refused with
+    /// `invalid_input` when no read is open or it is already put down.
+    PutDownReading {
+        book_id: i64,
+    },
+    /// Pick a put-down read back up: `reading` again, `put_down_at` cleared. Refused with
+    /// `invalid_input` when the open read is not put down.
+    PickUpReading {
+        book_id: i64,
     },
     /// Set the edition's page count, stamped `user`; refused below 1.
     SetPageCount {
@@ -797,6 +815,15 @@ pub enum Request {
     AddCandidateToList {
         list_id: i64,
         book: BookDto,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// `AddCandidateToList` for a search result: a book it creates records `claims` as
+    /// `SaveSearchResult` does. A book already known is reused unchanged.
+    AddSearchResultToList {
+        list_id: i64,
+        book: BookDto,
+        claims: Vec<FieldClaimDto>,
         #[serde(default)]
         note: Option<String>,
     },

@@ -3962,3 +3962,185 @@ async fn a_book_sent_back_by_a_client_keeps_what_the_wire_does_not_carry() {
         assert_eq!(stored.first_published, Some(1871), "after {name}");
     }
 }
+
+fn claim(field: &str, provider: bookmole_api::ProviderIdDto) -> bookmole_api::FieldClaimDto {
+    bookmole_api::FieldClaimDto {
+        field: field.into(),
+        provider,
+    }
+}
+
+/// A frontend sends back the result's `book` and `claims` as search gave them.
+#[tokio::test]
+async fn a_search_result_is_saved_and_listed_with_where_its_fields_came_from() {
+    use bookmole_api::ProviderIdDto::{GoogleBooks, OpenLibrary};
+    let (api, _tmp) = api().await;
+    let book = BookDto {
+        title: Some("Middlemarch".into()),
+        authors: vec!["George Eliot".into()],
+        isbn_13: Some("9781900000178".into()),
+        page_count: Some(880),
+        language: Some("en".into()),
+        ..Default::default()
+    };
+    let claims = vec![
+        claim("title", OpenLibrary),
+        claim("authors", OpenLibrary),
+        claim("isbn_13", OpenLibrary),
+        claim("page_count", OpenLibrary),
+        claim("language", GoogleBooks),
+    ];
+    let saved = match ok(api
+        .dispatch(Request::SaveSearchResult {
+            book: book.clone(),
+            claims: claims.clone(),
+        })
+        .await)
+    {
+        Response::Book(Some(b)) => b,
+        other => panic!("{other:?}"),
+    };
+    let sources = |rows: Vec<bookmole_api::FieldSourceDto>| -> Vec<(String, String)> {
+        rows.into_iter().map(|f| (f.field, f.source)).collect()
+    };
+    let stamped = sources(api.field_provenance(saved.id.unwrap()).await.unwrap());
+    assert_eq!(
+        stamped,
+        vec![
+            ("authors".into(), "openlibrary".into()),
+            ("isbn_13".into(), "openlibrary".into()),
+            ("language".into(), "googlebooks".into()),
+            ("page_count".into(), "openlibrary".into()),
+            ("title".into(), "openlibrary".into()),
+        ]
+    );
+
+    let plain = api
+        .save_book(BookDto {
+            title: Some("Silas Marner".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        api.field_provenance(plain.id.unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
+        "a plain save records nothing"
+    );
+
+    let list = api.create_list("Victorians", None).await.unwrap();
+    let entry = match ok(api
+        .dispatch(Request::AddSearchResultToList {
+            list_id: list.id,
+            book: BookDto {
+                title: Some("Romola".into()),
+                authors: vec!["George Eliot".into()],
+                publisher: Some("Smith, Elder".into()),
+                ..Default::default()
+            },
+            claims: vec![
+                claim("title", GoogleBooks),
+                claim("authors", GoogleBooks),
+                claim("publisher", OpenLibrary),
+            ],
+            note: None,
+        })
+        .await)
+    {
+        Response::ListEntry(e) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        sources(api.field_provenance(entry.book.id).await.unwrap()),
+        vec![
+            ("authors".into(), "googlebooks".into()),
+            ("publisher".into(), "openlibrary".into()),
+            ("title".into(), "googlebooks".into()),
+        ]
+    );
+
+    let err = api
+        .dispatch(Request::SaveSearchResult {
+            book,
+            claims: vec![claim("not_a_field", OpenLibrary)],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+}
+
+#[test]
+fn a_search_results_claims_cross_the_wire() {
+    let result = bookmole::RankedResult {
+        book: bookmole::Book {
+            title: Some("Middlemarch".into()),
+            ..Default::default()
+        },
+        sources: vec![bookmole::providers::ProviderId::GoogleBooks],
+        score: 1.0,
+        shelf_id: None,
+        claims: vec![bookmole::FieldClaim {
+            field: "title".into(),
+            provider: bookmole::providers::ProviderId::GoogleBooks,
+        }],
+    };
+    let json = serde_json::to_value(bookmole_api::RankedResultDto::from(result)).unwrap();
+    assert_eq!(
+        json["claims"],
+        serde_json::json!([{ "field": "title", "provider": "google_books" }])
+    );
+}
+
+#[tokio::test]
+async fn a_put_down_read_leaves_currently_reading_and_keeps_its_date_in_the_books_reads() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+    api.update_progress(id, Some(40), None).await.unwrap();
+
+    let down = match ok(api.dispatch(Request::PutDownReading { book_id: id }).await) {
+        Response::Reading(Some(r)) => r,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(down.status, ReadingStateDto::Abandoned);
+    assert!(down.put_down_at.is_some());
+    assert!(api.currently_reading(20).await.unwrap().is_empty());
+    assert!(api.history_reading_now().await.unwrap().is_empty());
+
+    let listed = api.list_readings(id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].put_down_at, down.put_down_at);
+    let rows = api
+        .list_reading_rows(ReadingQueryDto::default())
+        .await
+        .unwrap();
+    assert_eq!(rows[0].reading.put_down_at, down.put_down_at);
+    let json = serde_json::to_value(&listed[0]).unwrap();
+    assert_eq!(json["put_down_at"], serde_json::json!(down.put_down_at));
+
+    let code = |r: Request| {
+        let api = api.clone();
+        async move { api.dispatch(r).await.unwrap_err().code }
+    };
+    assert_eq!(
+        code(Request::PutDownReading { book_id: id }).await,
+        ErrorCode::InvalidInput
+    );
+
+    let up = match ok(api.dispatch(Request::PickUpReading { book_id: id }).await) {
+        Response::Reading(Some(r)) => r,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(up.status, ReadingStateDto::Reading);
+    assert_eq!(up.put_down_at, None);
+    assert_eq!(api.currently_reading(20).await.unwrap().len(), 1);
+    assert_eq!(
+        code(Request::PickUpReading { book_id: id }).await,
+        ErrorCode::InvalidInput
+    );
+    assert_eq!(
+        code(Request::PutDownReading { book_id: 9_999 }).await,
+        ErrorCode::NotFound
+    );
+}

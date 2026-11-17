@@ -60,6 +60,8 @@ pub struct GoodreadsRow {
     pub page_count: Option<i64>,
     pub publish_year: Option<i64>,
     pub date_read: Option<i64>,
+    /// `Date Started`, which Goodreads' own export does not carry; absent is the ordinary case.
+    pub date_started: Option<i64>,
     pub date_added: Option<i64>,
     pub shelves: Vec<String>,
     pub exclusive_shelf: Option<Shelf>,
@@ -87,6 +89,13 @@ impl GoodreadsRow {
 
     fn is_currently_reading(&self) -> bool {
         self.exclusive_shelf == Some(Shelf::CurrentlyReading)
+    }
+
+    /// The row's start for a reading that ends at `finish` (`None` is open). A start after the finish
+    /// is a contradiction the file cannot resolve, so it is dropped rather than repaired.
+    fn start_before(&self, finish: Option<i64>) -> Option<i64> {
+        self.date_started
+            .filter(|start| finish.is_none_or(|end| *start <= end))
     }
 }
 
@@ -212,6 +221,7 @@ pub fn parse_csv(path: &Path) -> Result<Vec<GoodreadsRow>> {
                         .and_then(|s| s.parse().ok())
                 }),
             date_read: get("date read").and_then(parse_date),
+            date_started: get("date started").and_then(parse_date),
             date_added: get("date added").and_then(parse_date),
             shelves: get("bookshelves")
                 .unwrap_or("")
@@ -585,7 +595,8 @@ async fn apply(
 }
 
 /// `Read Count` becomes readings; only one may be open (`idx_readings_one_open`), so earlier ones
-/// close at the row's `Date Read` and every `started_at` is NULL. With no date, one open reading.
+/// close at the row's `Date Read`. Only the first reading recorded takes a `Date Started`, since the
+/// file gives one start for all of them; the rest have none. With no date, one open reading.
 async fn reconcile_readings(
     storage: &Storage,
     row: &GoodreadsRow,
@@ -595,16 +606,29 @@ async fn reconcile_readings(
     let want = row.wanted_readings();
     let have = storage.readings_from_source(book_id, SOURCE).await?.len() as i64;
     let mut missing = (want - have).max(0);
+    let stamp = row.date_read.or(row.date_added);
     if missing == 0 {
+        let Some(last) = storage.readings_from_source(book_id, SOURCE).await?.pop() else {
+            return Ok(0);
+        };
+        let mut finished_at = last.finished_at;
         // A book that was `currently-reading` and is now `read` has the right count but wrong end date.
         if let Some(when) = row.date_read
             && !row.is_currently_reading()
-            && let Some(last) = storage.readings_from_source(book_id, SOURCE).await?.last()
-            && last.finished_at.is_none()
+            && finished_at.is_none()
         {
             storage
                 .close_reading_at(last.id, when, STATUS_FINISHED)
                 .await?;
+            finished_at = Some(when);
+        }
+        // Only the reading this row's dates describe gains its start, and a start already known stays.
+        let described = match finished_at {
+            None => row.is_currently_reading(),
+            Some(end) => Some(end) == stamp,
+        };
+        if described && let Some(start) = row.start_before(finished_at) {
+            storage.fill_reading_start(last.id, start).await?;
         }
         return Ok(0);
     }
@@ -615,18 +639,24 @@ async fn reconcile_readings(
             return Ok(0);
         }
         storage
-            .record_reading(book_id, None, None, STATUS_READING, SOURCE)
+            .record_reading(
+                book_id,
+                row.start_before(None),
+                None,
+                STATUS_READING,
+                SOURCE,
+            )
             .await?;
         return Ok(1);
     }
 
-    let stamp = row.date_read.or(row.date_added);
     let mut added = 0;
     match stamp {
         Some(when) => {
+            let mut start = row.start_before(Some(when));
             while missing > 0 {
                 storage
-                    .record_reading(book_id, None, Some(when), STATUS_FINISHED, SOURCE)
+                    .record_reading(book_id, start.take(), Some(when), STATUS_FINISHED, SOURCE)
                     .await?;
                 added += 1;
                 missing -= 1;
@@ -636,7 +666,13 @@ async fn reconcile_readings(
             // Only one undated reading is representable, and only with no other open reading.
             if storage.active_reading(book_id).await?.is_none() {
                 storage
-                    .record_reading(book_id, None, None, STATUS_FINISHED, SOURCE)
+                    .record_reading(
+                        book_id,
+                        row.start_before(None),
+                        None,
+                        STATUS_FINISHED,
+                        SOURCE,
+                    )
                     .await?;
                 added += 1;
                 missing -= 1;

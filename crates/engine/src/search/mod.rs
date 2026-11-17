@@ -77,6 +77,17 @@ pub struct RankedResult {
     pub score: f64,
     /// `None` from the federated search itself; `Engine::shelf_of` fills it by ISBN afterwards.
     pub shelf_id: Option<i64>,
+    /// Which provider supplied each field of `book`, as the merge decided. Handing these back to
+    /// `Engine::save_search_result` is what attributes a saved result.
+    pub claims: Vec<FieldClaim>,
+}
+
+/// One field of a search result and the provider whose value it holds. `field` is a book column
+/// name, the same vocabulary `Storage::field_provenance` reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldClaim {
+    pub field: String,
+    pub provider: ProviderId,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +138,16 @@ impl FieldClaims {
     pub(crate) fn source_of(&self, field: &str) -> Option<ProviderId> {
         self.0.iter().find(|(f, _)| *f == field).map(|(_, p)| *p)
     }
+
+    pub(crate) fn to_vec(&self) -> Vec<FieldClaim> {
+        self.0
+            .iter()
+            .map(|(field, provider)| FieldClaim {
+                field: (*field).to_string(),
+                provider: *provider,
+            })
+            .collect()
+    }
 }
 
 pub async fn federated_search(
@@ -135,7 +156,13 @@ pub async fn federated_search(
 ) -> Result<SearchOutcome> {
     let (results, warnings) = federated_search_claimed(providers, req).await?;
     Ok(SearchOutcome {
-        results: results.into_iter().map(|(r, _)| r).collect(),
+        results: results
+            .into_iter()
+            .map(|(r, claims)| RankedResult {
+                claims: claims.to_vec(),
+                ..r
+            })
+            .collect(),
         warnings,
     })
 }
@@ -186,6 +213,7 @@ pub(crate) async fn federated_search_claimed(
                     sources: m.sources,
                     score: m.score,
                     shelf_id: None,
+                    claims: Vec::new(),
                 },
                 m.claims,
             )
