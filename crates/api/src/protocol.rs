@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::dto::*;
 use crate::error::ApiError;
 
-/// Bumped only when an existing method or shape changes meaning or is removed; additions do not
-/// bump it.
+/// Bumped when an existing request's fields or meaning change, or a request is removed. A new
+/// request does not bump it.
 pub const API_VERSION: u32 = 2;
 
 /// The build, for a human reading a log. Never branch on it.
