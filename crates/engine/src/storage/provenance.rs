@@ -83,14 +83,15 @@ impl Storage {
         .bind(book_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| BookTag {
-                tag: r.get("tag"),
-                source: r.get("source"),
-                raw: r.get("raw"),
+        rows.iter()
+            .map(|r| {
+                Ok(BookTag {
+                    tag: r.try_get("tag")?,
+                    source: r.try_get("source")?,
+                    raw: r.try_get("raw")?,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 

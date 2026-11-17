@@ -190,13 +190,14 @@ impl Storage {
             q = q.bind(id);
         }
         let rows = q.bind(limit).fetch_all(self.pool()).await?;
-        Ok(rows
-            .iter()
-            .map(|r| SearchHit::Note {
-                note: row_to_note(r),
-                snippet: r.get("snip"),
+        rows.iter()
+            .map(|r| {
+                Ok(SearchHit::Note {
+                    note: row_to_note(r)?,
+                    snippet: r.try_get("snip")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn search_highlight_index(
@@ -218,13 +219,14 @@ impl Storage {
             q = q.bind(id);
         }
         let rows = q.bind(limit).fetch_all(self.pool()).await?;
-        Ok(rows
-            .iter()
-            .map(|r| SearchHit::Highlight {
-                highlight: row_to_highlight(r),
-                snippet: r.get("snip"),
+        rows.iter()
+            .map(|r| {
+                Ok(SearchHit::Highlight {
+                    highlight: row_to_highlight(r)?,
+                    snippet: r.try_get("snip")?,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 

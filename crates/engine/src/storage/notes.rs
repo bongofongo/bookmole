@@ -126,20 +126,21 @@ pub(super) fn qualified(columns: &str, alias: &str) -> String {
         .join(", ")
 }
 
-pub(super) fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> NoteRecord {
-    NoteRecord {
-        id: r.get("id"),
-        book_id: r.get("book_id"),
-        reading_id: r.get("reading_id"),
-        highlight_id: r.get("highlight_id"),
-        page: r.get("page"),
-        location: r.get("location"),
-        file_path: r.get("file_path"),
-        title: r.get("title"),
-        kind: r.get("kind"),
-        created_at: OffsetDateTime::from_unix_timestamp(r.get::<i64, _>("created_at")).ok(),
-        last_modified: OffsetDateTime::from_unix_timestamp(r.get::<i64, _>("last_modified")).ok(),
-    }
+pub(super) fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> Result<NoteRecord> {
+    Ok(NoteRecord {
+        id: r.try_get("id")?,
+        book_id: r.try_get("book_id")?,
+        reading_id: r.try_get("reading_id")?,
+        highlight_id: r.try_get("highlight_id")?,
+        page: r.try_get("page")?,
+        location: r.try_get("location")?,
+        file_path: r.try_get("file_path")?,
+        title: r.try_get("title")?,
+        kind: r.try_get("kind")?,
+        created_at: OffsetDateTime::from_unix_timestamp(r.try_get::<i64, _>("created_at")?).ok(),
+        last_modified: OffsetDateTime::from_unix_timestamp(r.try_get::<i64, _>("last_modified")?)
+            .ok(),
+    })
 }
 
 /// Shared by `write_links` and `resolve_title` so previews and saves resolve a link alike; `ORDER
@@ -335,12 +336,13 @@ impl Storage {
     /// adopted.
     pub async fn note_by_path(&self, file_path: &str) -> Result<Option<NoteRecord>> {
         let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE file_path = ?");
-        Ok(sqlx::query(&sql)
+        sqlx::query(&sql)
             .bind(file_path)
             .fetch_optional(self.pool())
             .await?
             .as_ref()
-            .map(row_to_note))
+            .map(row_to_note)
+            .transpose()
     }
 
     /// Not a field of `NoteRecord`: `last_modified` is index bookkeeping and must not reach
@@ -349,15 +351,16 @@ impl Storage {
         let rows = sqlx::query("SELECT id, file_path, title, last_modified FROM notes")
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| NoteFile {
-                id: r.get("id"),
-                file_path: r.get("file_path"),
-                title: r.get("title"),
-                last_modified: r.get("last_modified"),
+        rows.iter()
+            .map(|r| {
+                Ok(NoteFile {
+                    id: r.try_get("id")?,
+                    file_path: r.try_get("file_path")?,
+                    title: r.try_get("title")?,
+                    last_modified: r.try_get("last_modified")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// The FTS table is virtual, so it is cleared explicitly; a foreign key cannot cascade into it.
@@ -395,7 +398,7 @@ impl Storage {
             q = q.bind(id);
         }
         let rows = q.bind(limit).fetch_all(self.pool()).await?;
-        Ok(rows.iter().map(row_to_note).collect())
+        rows.iter().map(row_to_note).collect()
     }
 
     pub async fn note_for_reading(
@@ -409,7 +412,7 @@ impl Storage {
             .bind(kind)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_note))
+        row.as_ref().map(row_to_note).transpose()
     }
 
     pub async fn get_note(&self, note_id: i64) -> Result<Option<NoteRecord>> {
@@ -418,7 +421,7 @@ impl Storage {
             .bind(note_id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_note))
+        row.as_ref().map(row_to_note).transpose()
     }
 
     /// Cites by reference, never by copying text, so device refreshes cannot stale it. Idempotent.
@@ -454,7 +457,7 @@ impl Storage {
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_highlight).collect())
+        rows.iter().map(row_to_highlight).collect()
     }
 
     /// Ids only, one entry per requested id in the order given, empties included (unknown note ids
@@ -492,10 +495,9 @@ impl Storage {
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.get("target_title"), r.get("to_note")))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((r.try_get("target_title")?, r.try_get("to_note")?)))
+            .collect()
     }
 
     /// Ordered by `rowid`, which is body order because `set_note_links` rewrites the whole set.
@@ -510,15 +512,19 @@ impl Storage {
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| OutgoingLink {
-                target_title: r.get("target_title"),
-                // A missed join leaves every `n.` column NULL; read `id` as an `Option` first so a dangling
-                // target is not a decode error.
-                to: r.get::<Option<i64>, _>("id").map(|_| row_to_note(r)),
+        rows.iter()
+            .map(|r| {
+                Ok(OutgoingLink {
+                    target_title: r.try_get("target_title")?,
+                    // A missed join leaves every `n.` column NULL; read `id` as an `Option` first so a
+                    // dangling target is not a decode error.
+                    to: r
+                        .try_get::<Option<i64>, _>("id")?
+                        .map(|_| row_to_note(r))
+                        .transpose()?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Resolved edges only, deliberately: a dangling edge reads as dangling from both ends so the two
@@ -533,7 +539,7 @@ impl Storage {
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_note).collect())
+        rows.iter().map(row_to_note).collect()
     }
 
     /// Like `backlinks` plus `target_title`; excludes self-links, ordered by the source's last write,
@@ -550,10 +556,9 @@ impl Storage {
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("target_title"), row_to_note(r)))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((r.try_get("target_title")?, row_to_note(r)?)))
+            .collect()
     }
 }
 
@@ -631,8 +636,8 @@ impl Storage {
         let mut near = Vec::new();
         let mut rest = Vec::new();
         for row in &rows {
-            let note = row_to_note(row);
-            if row.get::<bool, _>("connected") {
+            let note = row_to_note(row)?;
+            if row.try_get::<bool, _>("connected")? {
                 near.push(note);
             } else {
                 rest.push(note);
@@ -678,8 +683,8 @@ impl Storage {
         let mut near = Vec::new();
         let mut rest = Vec::new();
         for row in &rows {
-            let highlight = row_to_highlight(row);
-            if row.get::<bool, _>("connected") {
+            let highlight = row_to_highlight(row)?;
+            if row.try_get::<bool, _>("connected")? {
                 near.push(highlight);
             } else {
                 rest.push(highlight);

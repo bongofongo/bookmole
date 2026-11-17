@@ -163,9 +163,9 @@ async fn read_days(
         .await?;
     report.books_in_db = books.len();
     for b in &books {
-        let md5: Option<String> = b.get("md5");
+        let md5: Option<String> = b.try_get("md5")?;
         if md5.as_deref().unwrap_or("").is_empty() {
-            let title: Option<String> = b.get("title");
+            let title: Option<String> = b.try_get("title")?;
             report
                 .warnings
                 .push(Diagnostic::statistics_book_not_identified(
@@ -175,15 +175,16 @@ async fn read_days(
     }
 
     let rows = sqlx::query(AGGREGATE).fetch_all(&mut *conn).await?;
-    Ok(rows
-        .iter()
-        .map(|r| MeasuredDay {
-            md5: r.get("md5"),
-            day: r.get("day"),
-            seconds: r.get("seconds"),
-            pages: r.get("pages"),
+    rows.iter()
+        .map(|r| {
+            Ok(MeasuredDay {
+                md5: r.try_get("md5")?,
+                day: r.try_get("day")?,
+                seconds: r.try_get("seconds")?,
+                pages: r.try_get("pages")?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// One `record_reading_events` call, so no-clobber merge and idempotency are `reading_events`' own.

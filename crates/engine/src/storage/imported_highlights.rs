@@ -111,7 +111,7 @@ impl Storage {
             )));
         };
 
-        let id: i64 = row.get("id");
+        let id: i64 = row.try_get("id")?;
         self.stamp_imported(id, h).await?;
         self.refresh_imported_row(id, h).await
     }
@@ -196,7 +196,7 @@ impl Storage {
         .bind(i64::from(h.text_unavailable))
         .fetch_optional(self.pool())
         .await?;
-        Ok(row.map(|r| r.get("id")))
+        Ok(row.map(|r| r.try_get("id")).transpose()?)
     }
 
     async fn refresh_imported_by_hash(
@@ -265,7 +265,7 @@ impl Storage {
         let Some(row) = self.find_imported(book_id, h, scope, &hashes).await? else {
             return Ok(None);
         };
-        let id: i64 = row.get("id");
+        let id: i64 = row.try_get("id")?;
         let sql = format!("SELECT {SOURCE_FIELDS_DIFFER} FROM highlights WHERE id = ?1");
         let differs: bool = sqlx::query_scalar(&sql)
             .bind(id)
@@ -408,6 +408,6 @@ impl Storage {
             .bind(origin.as_str())
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_highlight).collect())
+        rows.iter().map(row_to_highlight).collect()
     }
 }

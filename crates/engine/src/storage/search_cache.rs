@@ -54,14 +54,20 @@ fn kind_of(word: &str) -> RecordKind {
     }
 }
 
-fn row_of(r: &sqlx::sqlite::SqliteRow) -> Option<KeptRow> {
-    Some(KeptRow {
-        key: r.get("key"),
-        kind: kind_of(r.get::<String, _>("kind").as_str()),
-        form: RecordForm::parse(r.get::<String, _>("form").as_str())?,
-        body: r.get("body"),
-        fetched_at: r.get("fetched_at"),
-    })
+/// `None` for a form this build does not know.
+fn row_of(r: &sqlx::sqlite::SqliteRow) -> Result<Option<KeptRow>> {
+    let key = r.try_get("key")?;
+    let kind = kind_of(r.try_get::<String, _>("kind")?.as_str());
+    let Some(form) = RecordForm::parse(r.try_get::<String, _>("form")?.as_str()) else {
+        return Ok(None);
+    };
+    Ok(Some(KeptRow {
+        key,
+        kind,
+        form,
+        body: r.try_get("body")?,
+        fetched_at: r.try_get("fetched_at")?,
+    }))
 }
 
 fn phrase(word: &str) -> String {
@@ -88,8 +94,9 @@ impl Storage {
         else {
             return Ok(None);
         };
-        let fetched_at: i64 = row.get("fetched_at");
-        let Ok(entries) = serde_json::from_str::<Vec<KeptEntry>>(&row.get::<String, _>("results"))
+        let fetched_at: i64 = row.try_get("fetched_at")?;
+        let Ok(entries) =
+            serde_json::from_str::<Vec<KeptEntry>>(&row.try_get::<String, _>("results")?)
         else {
             tracing::debug!(provider = %provider, "a kept search no longer reads; asking again");
             return Ok(None);
@@ -108,11 +115,13 @@ impl Storage {
         .bind(serde_json::to_string(&keys)?)
         .fetch_all(self.pool())
         .await?;
-        let by_key: HashMap<String, KeptRow> = rows
+        let kept: Vec<KeptRow> = rows
             .iter()
-            .filter_map(row_of)
-            .map(|r| (r.key.clone(), r))
-            .collect();
+            .map(row_of)
+            .filter_map(Result::transpose)
+            .collect::<Result<_>>()?;
+        let by_key: HashMap<String, KeptRow> =
+            kept.into_iter().map(|r| (r.key.clone(), r)).collect();
         let mut results = Vec::with_capacity(entries.len());
         for entry in entries {
             let mut records = Vec::with_capacity(entry.records.len());
@@ -221,7 +230,10 @@ impl Storage {
         .bind(i64::from(limit))
         .fetch_all(self.pool())
         .await?;
-        Ok(rows.iter().filter_map(row_of).collect())
+        rows.iter()
+            .map(row_of)
+            .filter_map(Result::transpose)
+            .collect()
     }
 
     pub(crate) async fn library_language(&self) -> Result<Option<String>> {
@@ -273,8 +285,8 @@ impl Storage {
         )
         .fetch_one(self.pool())
         .await?;
-        let oldest: Option<i64> = row.get("oldest");
-        let searches: bool = row.get("searches");
+        let oldest: Option<i64> = row.try_get("oldest")?;
+        let searches: bool = row.try_get("searches")?;
         Ok(SearchCacheStatus {
             anything_kept: searches || oldest.is_some(),
             oldest_record: oldest,
@@ -287,13 +299,13 @@ impl Storage {
         let rows = sqlx::query("SELECT provider, enabled FROM provider_settings")
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .iter()
-            .filter_map(|r| {
-                let p = ProviderId::parse(r.get::<String, _>("provider").as_str())?;
-                Some((p, r.get::<bool, _>("enabled")))
-            })
-            .collect())
+        let mut settings = HashMap::new();
+        for r in &rows {
+            if let Some(p) = ProviderId::parse(r.try_get::<String, _>("provider")?.as_str()) {
+                settings.insert(p, r.try_get::<bool, _>("enabled")?);
+            }
+        }
+        Ok(settings)
     }
 
     pub async fn set_provider_enabled(&self, provider: ProviderId, enabled: bool) -> Result<()> {
@@ -332,10 +344,9 @@ impl Storage {
         )
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get::<String, _>(0), r.get::<String, _>(1)))
-            .collect())
+        rows.iter()
+            .map(|r| Ok((r.try_get::<String, _>(0)?, r.try_get::<String, _>(1)?)))
+            .collect()
     }
 }
 

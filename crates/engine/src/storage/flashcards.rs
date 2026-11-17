@@ -17,16 +17,16 @@ pub struct FlashcardRow {
 const FLASHCARD_COLUMNS: &str =
     "f.id, f.book_id, f.highlight_id, f.word, f.context, f.exported, b.title AS book_title";
 
-fn row_to_flashcard(r: &sqlx::sqlite::SqliteRow) -> FlashcardRow {
-    FlashcardRow {
-        id: r.get("id"),
-        book_id: r.get("book_id"),
-        highlight_id: r.get("highlight_id"),
-        word: r.get("word"),
-        context: r.get("context"),
-        book_title: r.get("book_title"),
-        exported: r.get::<i64, _>("exported") != 0,
-    }
+fn row_to_flashcard(r: &sqlx::sqlite::SqliteRow) -> Result<FlashcardRow> {
+    Ok(FlashcardRow {
+        id: r.try_get("id")?,
+        book_id: r.try_get("book_id")?,
+        highlight_id: r.try_get("highlight_id")?,
+        word: r.try_get("word")?,
+        context: r.try_get("context")?,
+        book_title: r.try_get("book_title")?,
+        exported: r.try_get::<i64, _>("exported")? != 0,
+    })
 }
 
 impl Storage {
@@ -66,7 +66,7 @@ impl Storage {
                {filter} ORDER BY f.created_at ASC"#
         );
         let rows = sqlx::query(&sql).fetch_all(self.pool()).await?;
-        Ok(rows.iter().map(row_to_flashcard).collect())
+        rows.iter().map(row_to_flashcard).collect()
     }
 
     pub async fn list_flashcards_for_book(&self, book_id: i64) -> Result<Vec<FlashcardRow>> {
@@ -79,7 +79,7 @@ impl Storage {
             .bind(book_id)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.iter().map(row_to_flashcard).collect())
+        rows.iter().map(row_to_flashcard).collect()
     }
 
     pub async fn mark_flashcards_exported(&self, ids: &[i64]) -> Result<()> {

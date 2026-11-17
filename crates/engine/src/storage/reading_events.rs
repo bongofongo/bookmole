@@ -230,18 +230,18 @@ const EVENT_DIFFERS: &str = "
 const EVENT_COLUMNS: &str =
     "book_id, reading_id, day, minutes, pages, source, confidence, created_at";
 
-fn row_to_event(r: &sqlx::sqlite::SqliteRow) -> ReadingEvent {
-    let confidence: String = r.get("confidence");
-    ReadingEvent {
-        book_id: r.get("book_id"),
-        reading_id: r.get("reading_id"),
-        day: r.get("day"),
-        minutes: r.get("minutes"),
-        pages: r.get("pages"),
-        source: r.get("source"),
+fn row_to_event(r: &sqlx::sqlite::SqliteRow) -> Result<ReadingEvent> {
+    let confidence: String = r.try_get("confidence")?;
+    Ok(ReadingEvent {
+        book_id: r.try_get("book_id")?,
+        reading_id: r.try_get("reading_id")?,
+        day: r.try_get("day")?,
+        minutes: r.try_get("minutes")?,
+        pages: r.try_get("pages")?,
+        source: r.try_get("source")?,
         confidence: Confidence::from_db(&confidence),
-        created_at: r.get("created_at"),
-    }
+        created_at: r.try_get("created_at")?,
+    })
 }
 
 /// Counts rows because `rows_affected` on an upsert cannot split inserts from changes.
@@ -419,7 +419,7 @@ impl Storage {
         .bind(book_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows.iter().map(row_to_event).collect())
+        rows.iter().map(row_to_event).collect()
     }
 
     /// Counts over instant columns compare the bare column via `unix_bounds` so indexes serve; `day`
@@ -477,8 +477,8 @@ impl Storage {
             activity_days,
             notes_created,
             links_created,
-            minutes: totals.get("minutes"),
-            pages: totals.get("pages"),
+            minutes: totals.try_get("minutes")?,
+            pages: totals.try_get("pages")?,
         })
     }
 
@@ -497,15 +497,16 @@ impl Storage {
         .bind(range.to())
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| DayActivity {
-                day: r.get("day"),
-                books: r.get("books"),
-                minutes: r.get("minutes"),
-                pages: r.get("pages"),
+        rows.iter()
+            .map(|r| {
+                Ok(DayActivity {
+                    day: r.try_get("day")?,
+                    books: r.try_get("books")?,
+                    minutes: r.try_get("minutes")?,
+                    pages: r.try_get("pages")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Grouped by `substr(day, 1, 7)`; a month at the range edge covers only its days inside the
@@ -526,16 +527,17 @@ impl Storage {
         .bind(range.to())
         .fetch_all(self.pool())
         .await?;
-        Ok(rows
-            .iter()
-            .map(|r| MonthActivity {
-                month: r.get("month"),
-                books: r.get("books"),
-                activity_days: r.get("activity_days"),
-                minutes: r.get("minutes"),
-                pages: r.get("pages"),
+        rows.iter()
+            .map(|r| {
+                Ok(MonthActivity {
+                    month: r.try_get("month")?,
+                    books: r.try_get("books")?,
+                    activity_days: r.try_get("activity_days")?,
+                    minutes: r.try_get("minutes")?,
+                    pages: r.try_get("pages")?,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -677,7 +679,7 @@ mod tests {
         .fetch_all(s.pool())
         .await
         .unwrap();
-        rows.iter().map(row_to_event).collect()
+        rows.iter().map(|r| row_to_event(r).unwrap()).collect()
     }
 
     #[test]
@@ -1132,7 +1134,7 @@ mod tests {
         .await
         .unwrap()
         .iter()
-        .map(|r| r.get::<String, _>("detail"))
+        .map(|r| r.try_get::<String, _>("detail").unwrap())
         .collect::<Vec<_>>()
         .join("; ");
         assert!(
@@ -1582,7 +1584,7 @@ mod props {
         .fetch_all(s.pool())
         .await
         .unwrap();
-        rows.iter().map(row_to_event).collect()
+        rows.iter().map(|r| row_to_event(r).unwrap()).collect()
     }
 
     fn rt() -> tokio::runtime::Runtime {

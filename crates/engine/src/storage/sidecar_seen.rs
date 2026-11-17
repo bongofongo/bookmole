@@ -36,17 +36,20 @@ impl Storage {
         .bind(path)
         .fetch_optional(self.pool())
         .await?;
-        Ok(row.map(|r| SidecarFacts {
-            size: r.get("size"),
-            mtime: r.get("mtime"),
-            partial_md5: r.get("partial_md5"),
-            entry_count: r.get("entry_count"),
-            entry_digest: r.get("entry_digest"),
-            title: r.get("title"),
-            authors: r.get("authors"),
-            ko_percent: r.get("ko_percent"),
-            ko_status: r.get("ko_status"),
-        }))
+        row.map(|r| {
+            Ok(SidecarFacts {
+                size: r.try_get("size")?,
+                mtime: r.try_get("mtime")?,
+                partial_md5: r.try_get("partial_md5")?,
+                entry_count: r.try_get("entry_count")?,
+                entry_digest: r.try_get("entry_digest")?,
+                title: r.try_get("title")?,
+                authors: r.try_get("authors")?,
+                ko_percent: r.try_get("ko_percent")?,
+                ko_status: r.try_get("ko_status")?,
+            })
+        })
+        .transpose()
     }
 
     /// Overwrites in full: a sidecar is the complete state, so a vanished field is gone.
