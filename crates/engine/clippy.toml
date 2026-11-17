@@ -1,4 +1,6 @@
 disallowed-methods = [
+    { path = "std::env::set_var", reason = "races every other thread in the process; inject the value, or set it on a child Command" },
+    { path = "std::env::remove_var", reason = "races every other thread in the process; inject the value, or remove it on a child Command" },
     { path = "tracing::subscriber::set_global_default", reason = "the engine emits; a frontend installs the subscriber" },
     { path = "tracing::subscriber::set_default", reason = "the engine emits; a frontend installs the subscriber" },
     { path = "tracing::dispatcher::set_global_default", reason = "the engine emits; a frontend installs the subscriber" },
