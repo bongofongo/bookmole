@@ -1,0 +1,191 @@
+api_version 2
+ApiVersion
+Paths
+LibraryLocation
+GoogleApiKey
+SetGoogleApiKey key
+VerifyGoogleKey key
+Search request
+LookupIsbn isbn
+SaveBook book
+ListBooks limit sort offset filter
+CountBooks filter
+BookSummaries book_ids
+GetBook id
+ResolveBooks selector
+BookTags book_id
+EnrichBook book_id
+SetBookFields book_id fields
+FieldProvenance book_id
+CurrentlyReading limit
+DeleteBook id
+FetchCover book_id
+MergeBooks src dst
+ListReadings book_id
+ListReadingRows limit sort offset filter
+CountReadings filter
+ReadingYears filter
+GetReading id
+ActiveReading book_id
+UpdateProgress book_id page finished
+Reread book_id
+FinishReading book_id finished_on
+SetPageCount book_id page_count
+ListHighlights book_id
+HighlightsForReading reading_id
+CardPassage reading_id
+SetCardPassage reading_id highlight_id
+CardPassageCandidates reading_id
+SetAnnotation highlight_id annotation
+ImportEpub path
+ImportFile path new
+AddFileToBook book_id path
+IdentifyFile path
+ExpandBookPaths paths
+BookFiles book_id
+TableOfContents book_id
+FilePath sha256
+RemoveFile sha256
+ImportKoreader path dry_run
+PullBookFromSidecar path
+SidecarCandidates path
+LinkSidecar path book_id
+CandidateMounts
+IsKoreaderMount path
+ScanDevice root
+SyncDevice paths
+PluginStatus mount
+InstallPlugin mount
+UninstallPlugin mount
+PairedDevices
+ForgetDevice device_id
+RenameDevice device_id label
+SyncMount mount
+ListenerStatus
+StartListening minutes
+StopListening
+PullFromReader device_id
+PairWithReader code host
+ImportDeviceStatistics mount
+RefillReadingEvents
+ReadingEvents book_id
+ActivitySummary from to
+ActivityByDay from to
+ActivityByMonth from to
+PendingMoments limit
+AcknowledgeMoment id
+CreateNote note
+ListNotes book_id reading_id limit
+SearchMarks query source book_id limit
+GetNote id
+ResurfaceNote today
+ResurfacePassage today
+NoteForReading reading_id kind
+NotePath note_id
+NoteBody note_id
+UpdateNoteBody note_id body
+DeleteNote note_id
+RefreshNoteFromDisk note_id
+OutgoingLinks note_id
+Backlinks note_id
+LinkContexts note_id
+ListNoteRows kinds book_id reading_id ids until limit
+NotePeriods
+ThreadsFor note_ids since
+LinksFromNotes note_ids
+NoteGraph scope
+NoteParts note_id
+ContinueNote note_id body page
+UpdateNotePart note_id n body
+UnlinkedMentions note_id limit
+LinkMention from_note_id to_note_id
+CreateHighlight book_id text page chapter
+PreviewLinks title body
+ListNoteRowsAfter kinds book_id reading_id ids until after limit
+GetHighlight id
+BookFaces book_ids
+NoteBooks
+ReadMarks reading_id limit
+GetSetting key
+SetSetting key value
+ListSettings prefix
+HistoryTimeline since until
+HistoryFigures since until
+HistoryRecords since until
+HistorySeries metric group split compare since until
+HistoryKept since until limit
+ExportHistorySeries metric group split compare since until
+LibraryTable
+MatchedParts note_id query
+NotePeriodsIn utc_offset_minutes
+HistoryReadingNow
+OpenReflection book_id reading_id
+OpenReview book_id reading_id
+SetRating note_id value
+ReviewRating note_id
+ClearReviewRating note_id
+GoodreadsRating note_id
+PutRatingScale name min max step
+RatingScales
+ActiveRatingScale
+RatingScaleByName name
+RatingMap scale_id
+MapRating scale_id value goodreads
+Cite note_id highlight_id
+Uncite note_id highlight_id
+CitationsFor note_id
+CitationsForNotes note_ids
+ImportGoodreads path dry_run create_ambiguous
+ExportGoodreads
+LinkGoodreadsRow external_id book_id
+CalibreStatus
+ConvertEbook input output overwrite
+CalibreLibrary library
+ImportCalibreLibrary library dry_run create_ambiguous only
+LinkCalibreBook uuid book_id
+CreateFlashcard book_id highlight_id word context
+ListFlashcards include_exported
+ListFlashcardsForBook book_id
+ExportFlashcards include_exported
+ExportAnki book_id include_exported
+SaveAnkiExport book_id include_exported
+ListLists sort preview
+GetList id
+CreateList name description
+UpdateList id name description
+DeleteList id
+ListEntries list_id show sort
+AddToList list_id book_id note
+RemoveFromList list_id book_id
+MoveInList list_id book_id to
+SetListNote list_id book_id note
+ListsForBook book_id
+AddCandidateToList list_id book note
+ListTimeline list_id
+ShelfSuggestions preview
+KeepShelf source tag
+DismissShelf source tag
+CopiesForBook book_id
+KeepCopyHere copy_id
+HighlightOrigins book_id
+SamePassages book_id
+AddCopy book_id form tenure have_now from_whom app location started_at due_at note
+UpdateCopy copy_id form tenure from_whom app location started_at due_at ended_at lent_to unreadable note
+EndCopy copy_id ended_at
+ResumeCopy copy_id
+DeleteCopy copy_id
+BookStanding book_id
+LibraryCopies
+ImportPreviewAnnotations book_id
+ImportPreviewFile book_id path
+ImportAppleBooks dry_run
+LinkAppleBooksAsset asset_id book_id
+FindKindleClippings
+ImportKindleClippings path dry_run
+ImportMountedKindleClippings dry_run
+AttachKindleTitle path title_line book_id
+ImportKindleNotebook path book_id dry_run
+ResolveLibraryBooks selector
+CopyFiles book_id
+CopyHighlightSources book_id
+RelocateCopyFile copy_id path

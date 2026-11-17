@@ -134,9 +134,10 @@ else
 	cargo test -p bookmole --locked --test koreader_import
 endif
 
-golden: ## Regenerate the golden import snapshots and the committed-epub snapshot
+golden: ## Regenerate the golden import snapshots, the committed-epub snapshot and the request-fields record
 	UPDATE_GOLDEN=1 cargo test -p bookmole --test koreader_import import_matches_golden
 	UPDATE_GOLDEN=1 cargo test -p bookmole --test epub_corpus every_committed_epub_reads_as_the_golden_says
+	UPDATE_GOLDEN=1 cargo test -p bookmole-api --test request_fields
 
 bench: ## Compare renderers end-to-end (REAL, ACTIVE pane; BENCH_REPS=3 to average)
 	@echo "~$$(( ($(BENCH_REPS) * 3 * 265) / 20 ))s, taking over the terminal."
