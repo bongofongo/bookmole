@@ -13,16 +13,7 @@ use bookmole_api::{
 /// The `TempDir` is returned so the vault outlives the test body.
 async fn api() -> (Api, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("images"),
-        files_dir: tmp.path().join("files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let config = EngineConfig::in_memory(tmp.path());
     let engine = Engine::open(config).await.expect("engine");
     (Api::new(Arc::new(engine)), tmp)
 }
@@ -207,16 +198,8 @@ async fn an_absent_calibre_is_a_status_and_never_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let empty = tmp.path().join("no-binaries-here");
     std::fs::create_dir_all(&empty).unwrap();
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("images"),
-        files_dir: tmp.path().join("files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: Some(empty),
-    };
+    let mut config = EngineConfig::in_memory(tmp.path());
+    config.calibre_bin_dir = Some(empty);
     let api = Api::new(Arc::new(Engine::open(config).await.unwrap()));
 
     match ok(api.dispatch(Request::CalibreStatus).await) {
@@ -290,7 +273,10 @@ async fn the_paths_are_the_engines_own() {
     let (api, tmp) = api().await;
     let paths = api.paths();
     assert_eq!(PathBuf::from(&paths.vault_dir), tmp.path().join("vault"));
-    assert_eq!(PathBuf::from(&paths.files_dir), tmp.path().join("files"));
+    assert_eq!(
+        PathBuf::from(&paths.files_dir),
+        tmp.path().join("database/files")
+    );
     assert_eq!(paths.db_url, "sqlite::memory:");
 }
 
@@ -2178,6 +2164,7 @@ async fn link_contexts_cross_the_seam_with_their_paragraph() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines)]
 async fn the_notes_boards_round_trip_through_dispatch() {
     let (api, _tmp) = api().await;
     let book_id = seed(&api).await;
@@ -2371,6 +2358,7 @@ async fn the_notes_boards_round_trip_through_dispatch() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines)]
 async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
     use bookmole_api::{
         HistoryCompareDto, HistoryGroupDto, HistoryMetricDto, HistorySplitDto, NoteCursorDto,
@@ -2718,6 +2706,7 @@ fn list_of(response: Response) -> bookmole_api::ListDto {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines)]
 async fn a_list_is_made_filled_ordered_and_deleted_by_request() {
     let (api, _tmp) = api().await;
     let a = save(&api, "Alpha", "9780000000002").await;
@@ -3512,16 +3501,7 @@ async fn a_kindle_notebook_imports_by_request() {
 /// Points Apple Books at `root` (or nowhere) so no test reads the real container.
 async fn api_with_apple_books(root: Option<PathBuf>) -> (Api, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("images"),
-        files_dir: tmp.path().join("files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let config = EngineConfig::in_memory(tmp.path());
     let engine = Engine::open(config)
         .await
         .expect("engine")
@@ -3531,10 +3511,8 @@ async fn api_with_apple_books(root: Option<PathBuf>) -> (Api, tempfile::TempDir)
 
 #[tokio::test]
 async fn apple_books_with_no_data_is_a_report_and_a_link_makes_a_copy() {
-    for root in [
-        None,
-        Some(std::env::temp_dir().join("bookmole-no-apple-books-here")),
-    ] {
+    let nowhere = tempfile::tempdir().expect("tempdir");
+    for root in [None, Some(nowhere.path().join("no-apple-books-here"))] {
         let (api, _tmp) = api_with_apple_books(root).await;
         let r = match ok(api
             .dispatch(Request::ImportAppleBooks { dry_run: true })

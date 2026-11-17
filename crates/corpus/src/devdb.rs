@@ -49,6 +49,7 @@ pub fn edge_case_count() -> usize {
     edge_cases().len()
 }
 
+#[expect(clippy::too_many_lines)]
 pub fn generate(
     root: &Path,
     data_dir: &Path,
@@ -240,6 +241,7 @@ fn part_marker(n: i64, at: i64, page: Option<i64>) -> String {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn notes_final(
     sql: &mut String,
     vault: &Path,
@@ -705,6 +707,7 @@ fn pages_on(day: i64, book: i64) -> i64 {
 
 /// Measured days are `reading_events` rows (`source = 'koreader'`, `confidence = 'measured'`):
 /// origin data that no device-free filler can produce, so the seed writes them.
+#[expect(clippy::too_many_lines)]
 fn history(
     sql: &mut String,
     vault: &Path,
@@ -1064,6 +1067,7 @@ impl Book {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn edge_cases() -> Vec<Book> {
     let base = |title: &str, why: &'static str| Book {
         id: 0,

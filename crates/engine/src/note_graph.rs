@@ -132,6 +132,7 @@ pub const MENTION_EDGE_CAP: usize = 5;
 
 /// Draws `scope`: edges are the induced edges among chosen nodes, deduped per `(from, to)`.
 /// A note with no edge is not drawn, except `Around`'s own note.
+#[expect(clippy::too_many_lines)]
 pub fn build_graph(
     scope: GraphScope,
     edges: &[LinkEdge],

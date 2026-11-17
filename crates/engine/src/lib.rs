@@ -3265,18 +3265,9 @@ mod tests {
     #[tokio::test]
     async fn reinstalling_the_plugin_keeps_the_pairing_it_already_had() {
         let tmp = tempfile::tempdir().unwrap();
-        let engine = Engine::open(EngineConfig {
-            db_url: "sqlite::memory:".into(),
-            images_dir: tmp.path().join("images"),
-            files_dir: tmp.path().join("files"),
-            vault_dir: tmp.path().join("vault"),
-            log_dir: tmp.path().join("logs"),
-            exports_dir: tmp.path().join("exports"),
-            google_api_key: None,
-            calibre_bin_dir: None,
-        })
-        .await
-        .unwrap();
+        let engine = Engine::open(EngineConfig::in_memory(tmp.path()))
+            .await
+            .unwrap();
 
         let mount = tempfile::tempdir().unwrap();
         device::install_fake_reader(mount.path());
@@ -3315,18 +3306,7 @@ mod tests {
     }
 
     async fn engine_at(tmp: &std::path::Path) -> Engine {
-        Engine::open(EngineConfig {
-            db_url: "sqlite::memory:".into(),
-            images_dir: tmp.join("images"),
-            files_dir: tmp.join("files"),
-            vault_dir: tmp.join("vault"),
-            log_dir: tmp.join("logs"),
-            exports_dir: tmp.join("exports"),
-            google_api_key: None,
-            calibre_bin_dir: None,
-        })
-        .await
-        .unwrap()
+        Engine::open(EngineConfig::in_memory(tmp)).await.unwrap()
     }
 
     #[tokio::test]
@@ -3475,18 +3455,9 @@ mod tests {
     #[tokio::test]
     async fn shelf_of_matches_on_either_isbn_and_claims_nothing_without_one() {
         let tmp = tempfile::tempdir().unwrap();
-        let engine = Engine::open(EngineConfig {
-            db_url: "sqlite::memory:".into(),
-            images_dir: tmp.path().join("images"),
-            files_dir: tmp.path().join("files"),
-            vault_dir: tmp.path().join("vault"),
-            log_dir: tmp.path().join("logs"),
-            exports_dir: tmp.path().join("exports"),
-            google_api_key: None,
-            calibre_bin_dir: None,
-        })
-        .await
-        .unwrap();
+        let engine = Engine::open(EngineConfig::in_memory(tmp.path()))
+            .await
+            .unwrap();
 
         let kept = engine
             .save_book(&Book {
@@ -3527,17 +3498,12 @@ mod tests {
     #[tokio::test]
     async fn opening_a_library_points_its_covers_into_its_own_folder() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = || EngineConfig {
-            db_url: format!("sqlite://{}", tmp.path().join("app.db").display()),
-            images_dir: tmp.path().join("images"),
-            files_dir: tmp.path().join("files"),
-            vault_dir: tmp.path().join("vault"),
-            log_dir: tmp.path().join("logs"),
-            exports_dir: tmp.path().join("exports"),
-            google_api_key: None,
-            calibre_bin_dir: None,
+        let config = || {
+            let mut c = EngineConfig::in_memory(tmp.path());
+            c.db_url = format!("sqlite://{}", tmp.path().join("app.db").display());
+            c
         };
-        let images = tmp.path().join("images");
+        let images = config().images_dir;
         let (relative, moved, gone) = {
             let engine = Engine::open(config()).await.unwrap();
             let mut ids = Vec::new();
@@ -3589,14 +3555,8 @@ mod tests {
     async fn providers_are_built_from_the_defaults_the_reader_s_choices_and_the_key() {
         use providers::ProviderAvailability as A;
         let tmp = tempfile::tempdir().unwrap();
-        let config = EngineConfig {
-            db_url: format!("sqlite://{}", tmp.path().join("app.db").display()),
-            ..EngineConfig::rooted_at(tmp.path())
-        };
-        let config = EngineConfig {
-            google_api_key: None,
-            ..config
-        };
+        let mut config = EngineConfig::in_memory(tmp.path());
+        config.db_url = format!("sqlite://{}", tmp.path().join("app.db").display());
         let engine = Engine::open(config.clone()).await.unwrap();
         let ids = |e: &Engine| e.providers().iter().map(|p| p.id()).collect::<Vec<_>>();
         assert_eq!(

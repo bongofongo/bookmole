@@ -1173,8 +1173,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_note_writes_file_and_indexes() {
-        let vault = std::env::temp_dir().join(format!("rb-vault-test-{}", std::process::id()));
-        std::fs::remove_dir_all(&vault).ok();
+        let scratch = tempfile::tempdir().unwrap();
+        let vault = scratch.path().join("vault");
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
@@ -1214,14 +1214,12 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].as_note().unwrap().id, created.id);
-
-        std::fs::remove_dir_all(&vault).ok();
     }
 
     #[tokio::test]
     async fn anchor_lands_in_frontmatter_and_db() {
-        let vault = std::env::temp_dir().join(format!("rb-vault-anchor-{}", std::process::id()));
-        std::fs::remove_dir_all(&vault).ok();
+        let scratch = tempfile::tempdir().unwrap();
+        let vault = scratch.path().join("vault");
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
@@ -1259,8 +1257,6 @@ mod tests {
         assert_eq!(rec.len(), 1);
         assert_eq!(rec[0].page, Some(128));
         assert_eq!(rec[0].location.as_deref(), Some("Chapter 3"));
-
-        std::fs::remove_dir_all(&vault).ok();
     }
 }
 

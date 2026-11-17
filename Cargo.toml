@@ -55,6 +55,11 @@ strip = "none"
 inherits = "release"
 strip = "debuginfo"
 
+[workspace.lints.clippy]
+struct_excessive_bools = "warn"
+too_many_lines = "warn"
+ignore_without_reason = "warn"
+
 [workspace.dependencies]
 # `default-features = false` is load-bearing: the defaults pull native-tls ->
 # openssl-sys, which a CI runner then needs libssl-dev for. sqlx already speaks

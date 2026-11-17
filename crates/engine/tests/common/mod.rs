@@ -13,24 +13,15 @@ pub const SYNTHETIC: &str = concat!(
     "/tests/fixtures/koreader/synthetic"
 );
 
-/// Built literally, not via `EngineConfig::rooted_at`, which reads `GOOGLE_BOOKS_API_KEY` from
-/// the environment. The caller must hold the `TempDir`.
+/// The caller must hold the `TempDir`.
 pub async fn engine() -> (tempfile::TempDir, Engine) {
     engine_with_calibre(None).await
 }
 
 pub async fn engine_with_calibre(bin_dir: Option<PathBuf>) -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("database/images"),
-        files_dir: tmp.path().join("database/files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: bin_dir,
-    };
+    let mut config = EngineConfig::in_memory(tmp.path());
+    config.calibre_bin_dir = bin_dir;
     let engine = Engine::open(config).await.expect("engine opens");
     (tmp, engine)
 }

@@ -1128,10 +1128,9 @@ mod tests {
 
     #[test]
     fn a_directory_is_not_a_tool() {
-        let dir = std::env::temp_dir().join(format!("rb-tool-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("calibredb")).unwrap();
-        assert!(!is_executable(&dir.join("calibredb")));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("calibredb")).unwrap();
+        assert!(!is_executable(&dir.path().join("calibredb")));
     }
 
     #[test]
@@ -1159,9 +1158,8 @@ mod tests {
 
     #[test]
     fn verb_lines_parse_in_lane_c_shape() {
-        let dir = std::env::temp_dir().join(format!("rb-verbs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("v.jsonl");
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("v.jsonl");
         std::fs::write(
             &f,
             "{\"argv\": [\"note\", \"--\", \"x\"], \"expect\": \"ok\", \"case\": null, \"why\": \"w\"}\n\n\
@@ -1173,7 +1171,6 @@ mod tests {
         assert!(v[0].expect_ok && v[0].case.is_none());
         assert_eq!(v[1].case.as_deref(), Some("page-negative"));
         assert!(!v[1].expect_ok);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

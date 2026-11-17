@@ -11,19 +11,11 @@ use bookmole::{
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(tmp.path().join("database")).unwrap();
-    let config = EngineConfig {
-        db_url: format!(
-            "sqlite://{}?mode=rwc",
-            tmp.path().join("database/app.db").display()
-        ),
-        images_dir: tmp.path().join("database/images"),
-        files_dir: tmp.path().join("database/files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let mut config = EngineConfig::in_memory(tmp.path());
+    config.db_url = format!(
+        "sqlite://{}?mode=rwc",
+        tmp.path().join("database/app.db").display()
+    );
     let engine = Engine::open(config).await.expect("engine opens");
     (tmp, engine)
 }

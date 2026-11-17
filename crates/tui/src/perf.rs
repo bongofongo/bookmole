@@ -440,9 +440,8 @@ mod tests {
     #[test]
     fn a_frame_line_carries_the_byte_split() {
         let _g = guard();
-        let dir = std::env::temp_dir().join("bookmole-perf-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("frames.jsonl");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frames.jsonl");
         let meter = Meter::new();
         let mut rec = Recorder::open(&path, meter.clone()).unwrap();
 

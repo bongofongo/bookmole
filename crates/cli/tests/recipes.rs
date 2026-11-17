@@ -112,7 +112,7 @@ fn build() -> Result<Built, String> {
     })
 }
 
-/// `<temp>/rb-recipe-cache/<recipe>-<key>/`; the key hashes the binary, the recipe file and the
+/// `$CARGO_TARGET_TMPDIR/rb-recipe-cache/<recipe>-<key>/`; the key hashes the binary, the recipe file and the
 /// inputs' size and mtime.
 fn cache_dir(name: &str, recipe_path: &Path, inputs: &BTreeMap<String, (u64, u128)>) -> PathBuf {
     let mut h = DefaultHasher::new();
@@ -134,7 +134,7 @@ fn cache_dir(name: &str, recipe_path: &Path, inputs: &BTreeMap<String, (u64, u12
     for (p, (len, mtime)) in inputs {
         (p, len, mtime).hash(&mut h);
     }
-    std::env::temp_dir()
+    Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("rb-recipe-cache")
         .join(format!("{name}-{:016x}", h.finish()))
 }

@@ -77,6 +77,7 @@ pub struct Report {
     pub path: PathBuf,
 }
 
+#[expect(clippy::too_many_lines)]
 pub fn generate(o: &Options) -> Result<Report, String> {
     std::fs::create_dir_all(&o.scratch).map_err(|e| format!("{}: {e}", o.scratch.display()))?;
     let mut client = if o.assemble_only {
@@ -999,13 +1000,11 @@ mod tests {
 
     #[test]
     fn scratch_rows_round_trip_whatever_they_hold() {
-        let dir = std::env::temp_dir().join(format!("wk-rows-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("r.tsv");
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("r.tsv");
         let rows = vec![row('l', "a\tb\\c\nd", "en", "")];
         write_batch(&p, &[190192, 74287], &rows).unwrap();
         assert_eq!(read_batch(&p).unwrap(), (vec![190192, 74287], rows));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

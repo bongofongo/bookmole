@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -24,14 +24,25 @@ pub struct EngineConfig {
 impl EngineConfig {
     pub fn rooted_at(data_root: impl Into<PathBuf>) -> Self {
         let root: PathBuf = data_root.into();
+        let db_url = format!("sqlite://{}", root.join("database/app.db").display());
+        Self::laid_out(&root, db_url, std::env::var("GOOGLE_BOOKS_API_KEY").ok())
+    }
+
+    /// `rooted_at`'s directories over an in-memory database, with nothing read from the
+    /// environment: no Google Books key, no calibre directory.
+    pub fn in_memory(data_root: impl Into<PathBuf>) -> Self {
+        Self::laid_out(&data_root.into(), "sqlite::memory:".into(), None)
+    }
+
+    fn laid_out(root: &Path, db_url: String, google_api_key: Option<String>) -> Self {
         EngineConfig {
-            db_url: format!("sqlite://{}", root.join("database/app.db").display()),
+            db_url,
             images_dir: root.join("database/images"),
             files_dir: root.join("database/files"),
             vault_dir: root.join("vault"),
             log_dir: root.join("logs"),
             exports_dir: root.join("exports"),
-            google_api_key: std::env::var("GOOGLE_BOOKS_API_KEY").ok(),
+            google_api_key,
             calibre_bin_dir: None,
         }
     }
@@ -50,6 +61,31 @@ mod tests {
         assert_eq!(c.vault_dir, PathBuf::from("/tmp/rb/vault"));
         assert_eq!(c.log_dir, PathBuf::from("/tmp/rb/logs"));
         assert_eq!(c.exports_dir, PathBuf::from("/tmp/rb/exports"));
+    }
+
+    #[test]
+    fn in_memory_keeps_the_layout_and_reads_no_key() {
+        let c = EngineConfig::in_memory("/tmp/rb");
+        let r = EngineConfig::rooted_at("/tmp/rb");
+        assert_eq!(c.db_url, "sqlite::memory:");
+        assert_eq!(c.google_api_key, None);
+        assert_eq!(c.calibre_bin_dir, None);
+        assert_eq!(
+            (
+                c.images_dir,
+                c.files_dir,
+                c.vault_dir,
+                c.log_dir,
+                c.exports_dir
+            ),
+            (
+                r.images_dir,
+                r.files_dir,
+                r.vault_dir,
+                r.log_dir,
+                r.exports_dir
+            )
+        );
     }
 
     #[test]

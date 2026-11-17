@@ -5,16 +5,7 @@ use bookmole_api::{Api, BookDto, ErrorCode, ProgressDto, Request, Response};
 
 async fn api() -> (Api, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("images"),
-        files_dir: tmp.path().join("files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let config = EngineConfig::in_memory(tmp.path());
     let engine = Engine::open(config).await.expect("engine");
     (Api::new(Arc::new(engine)), tmp)
 }

@@ -1669,7 +1669,8 @@ return {{
     async fn import_is_idempotent_and_extracts_flashcards() {
         use crate::book::Book;
 
-        let dir = std::env::temp_dir().join(format!("rb-ko-test-{}", std::process::id()));
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path();
         let sdr = dir.join("Middlemarch.sdr");
         std::fs::create_dir_all(&sdr).unwrap();
         std::fs::write(sdr.join("metadata.epub.lua"), MODERN).unwrap();
@@ -1686,34 +1687,31 @@ return {{
         .await
         .unwrap();
 
-        let report = import(&s, &dir, false).await.unwrap();
+        let report = import(&s, dir, false).await.unwrap();
         assert_eq!(report.imported.len(), 1);
         let stats = &report.imported[0];
         assert_eq!(stats.inserted, 2);
         assert_eq!(stats.skipped, 0);
         assert_eq!(stats.flashcards, 1);
 
-        let report2 = import(&s, &dir, false).await.unwrap();
+        let report2 = import(&s, dir, false).await.unwrap();
         assert_eq!(report2.imported[0].inserted, 0);
         assert_eq!(report2.imported[0].skipped, 2);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
     async fn unmatched_sidecar_reported_not_fatal() {
-        let dir = std::env::temp_dir().join(format!("rb-ko-unmatched-{}", std::process::id()));
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path();
         let sdr = dir.join("Nothing.sdr");
         std::fs::create_dir_all(&sdr).unwrap();
         std::fs::write(sdr.join("metadata.epub.lua"), LEGACY).unwrap();
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        let report = import(&s, &dir, false).await.unwrap();
+        let report = import(&s, dir, false).await.unwrap();
         assert!(report.imported.is_empty());
         assert_eq!(report.unmatched.len(), 1);
         assert_eq!(report.unmatched[0].title.as_deref(), Some("The Trial"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn sdr(dir: &Path, name: &str, src: &str) -> PathBuf {

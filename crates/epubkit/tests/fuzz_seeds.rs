@@ -112,7 +112,7 @@ fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
 /// Regenerates `fuzz/seeds/epubkit_package/epub3-nav.epub` deterministically (no timestamps):
 /// nav, NCX, cover, a clean and a sloppy chapter, so a mutating fuzzer reaches every layer.
 #[test]
-#[ignore]
+#[ignore = "rewrites the committed seed files; run by hand"]
 fn write_generated_seeds() {
     let container = r#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
     let opf = r##"<?xml version="1.0" encoding="UTF-8"?>

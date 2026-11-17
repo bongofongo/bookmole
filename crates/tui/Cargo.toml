@@ -53,3 +53,6 @@ unicode-width = "0.2"
 bookmole = { path = "../engine", features = ["internals"] }
 # `tests/data_dir.rs` runs the binary under a throwaway HOME.
 tempfile = "3"
+
+[lints]
+workspace = true

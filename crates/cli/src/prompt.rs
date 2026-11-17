@@ -37,13 +37,20 @@ pub fn select_element(prompt: &str, len: usize) -> Result<Option<usize>> {
 /// Compose text in $EDITOR (fallback vi) via a temp file.
 pub fn edit_in_editor(initial: &str) -> Result<String> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    let path = std::env::temp_dir().join(format!("bookmole-note-{}.md", std::process::id()));
+    let path = tempfile::Builder::new()
+        .prefix("bookmole-note-")
+        .suffix(".md")
+        .tempfile()?
+        .into_temp_path();
     std::fs::write(&path, initial)?;
     let status = std::process::Command::new(&editor).arg(&path).status()?;
     if !status.success() {
-        anyhow::bail!("{editor} exited with {status}");
+        let kept = path.keep()?;
+        anyhow::bail!(
+            "{editor} exited with {status}; the draft is kept at {}",
+            kept.display()
+        );
     }
     let text = std::fs::read_to_string(&path)?;
-    std::fs::remove_file(&path).ok();
     Ok(text.trim().to_string())
 }

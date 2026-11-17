@@ -121,3 +121,6 @@ tracing-subscriber.workspace = true
 # time, via #[tokio::test(start_paused = true)].
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 serde_json.workspace = true
+
+[lints]
+workspace = true

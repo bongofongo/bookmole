@@ -210,6 +210,7 @@ fn calendar(n: usize, seed: u64) -> Vec<Plan> {
     out
 }
 
+#[expect(clippy::too_many_lines)]
 pub fn generate(
     manifest: &Path,
     epub_dir: &Path,

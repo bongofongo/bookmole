@@ -480,6 +480,7 @@ fn refuse_foreign(out: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines)]
 pub fn generate(
     manifest: &Path,
     epubs: &Path,
@@ -882,7 +883,8 @@ mod tests {
 
     #[test]
     fn a_foreign_library_is_refused() {
-        let tmp = std::env::temp_dir().join(format!("rb-cal-refuse-{}", std::process::id()));
+        let scratch = tempfile::tempdir().unwrap();
+        let tmp = scratch.path().join("lib");
         std::fs::create_dir_all(tmp.join("library")).unwrap();
         std::fs::write(tmp.join("library/metadata.db"), b"x").unwrap();
         assert!(refuse_foreign(&tmp).is_err());

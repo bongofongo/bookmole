@@ -731,6 +731,7 @@ fn operand(doc_ops: &[Object], i: usize) -> f64 {
     if n.is_finite() { n } else { 0.0 }
 }
 
+#[expect(clippy::too_many_lines)]
 fn page_glyphs<'a>(
     doc: &'a Document,
     page_id: ObjectId,

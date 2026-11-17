@@ -786,17 +786,7 @@ fn env_on(name: &str) -> bool {
 
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    // Built literally: `EngineConfig::rooted_at` would read the ambient `GOOGLE_BOOKS_API_KEY`.
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("database/images"),
-        files_dir: tmp.path().join("database/files"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        exports_dir: tmp.path().join("exports"),
-        google_api_key: None,
-        calibre_bin_dir: None,
-    };
+    let config = EngineConfig::in_memory(tmp.path());
     let engine = Engine::open(config).await.expect("engine opens");
     (tmp, engine)
 }
@@ -833,6 +823,7 @@ enum Outcome {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines)]
 async fn search_bench() {
     let record = env_on("BOOKMOLE_SEARCH_RECORD");
     let all = record && env_on("ALL");

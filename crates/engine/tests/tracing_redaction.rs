@@ -371,6 +371,7 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
 
 /// No query, typed ISBN or key above `trace!` on any search path, online or offline.
 #[test]
+#[expect(clippy::too_many_lines)]
 fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
     use bookmole::providers::googlebooks::GoogleBooksProvider;
     use bookmole::providers::openlibrary::OpenLibraryProvider;
@@ -431,12 +432,9 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                         .await;
 
                     let tmp = tempfile::tempdir().unwrap();
-                    let engine = Engine::open(EngineConfig {
-                        google_api_key: None,
-                        ..EngineConfig::rooted_at(tmp.path())
-                    })
-                    .await
-                    .unwrap();
+                    let mut config = EngineConfig::rooted_at(tmp.path());
+                    config.google_api_key = None;
+                    let engine = Engine::open(config).await.unwrap();
                     let client = reqwest::Client::builder().no_proxy().build().unwrap();
                     let providers = |ol: String, gb: String| -> Vec<Box<dyn MetadataProvider>> {
                         vec![

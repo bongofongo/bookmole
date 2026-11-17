@@ -663,6 +663,7 @@ fn ok(argv: Vec<String>, why: impl Into<String>) -> Verb {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn build_verbs(
     rng: &mut ChaCha8Rng,
     bank: &[Hostile],
@@ -1113,17 +1114,11 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn tmp_out(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("corpus-reader-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
-    fn build(tag: &str, seed: u64) -> PathBuf {
-        let out = tmp_out(tag);
+    fn build(seed: u64) -> tempfile::TempDir {
+        let out = tempfile::tempdir().unwrap();
         generate(
             &repo_root().join("corpus/manifest.json"),
-            &out,
+            out.path(),
             &Options { seed },
         )
         .unwrap();
@@ -1132,12 +1127,12 @@ mod tests {
 
     #[test]
     fn same_seed_same_bytes() {
-        let a = build("a", 42);
-        let b = build("b", 42);
+        let a = build(42);
+        let b = build(42);
         for f in ["physical.csv", "verbs.jsonl", "manifest.json"] {
             assert_eq!(
-                std::fs::read(a.join(f)).unwrap(),
-                std::fs::read(b.join(f)).unwrap(),
+                std::fs::read(a.path().join(f)).unwrap(),
+                std::fs::read(b.path().join(f)).unwrap(),
                 "{f} differs between two runs of one seed"
             );
         }
@@ -1145,8 +1140,8 @@ mod tests {
 
     #[test]
     fn csv_has_goodreads_header_and_24_columns() {
-        let out = build("csv", 42);
-        let text = std::fs::read_to_string(out.join("physical.csv")).unwrap();
+        let out = build(42);
+        let text = std::fs::read_to_string(out.path().join("physical.csv")).unwrap();
         let recorded = std::fs::read_to_string(
             repo_root().join("crates/engine/tests/fixtures/goodreads/recorded/library-export.csv"),
         )
@@ -1169,10 +1164,11 @@ mod tests {
 
     #[test]
     fn every_fragment_selects_exactly_one_book() {
-        let out = build("frag", 42);
-        let m: Value =
-            serde_json::from_str(&std::fs::read_to_string(out.join("manifest.json")).unwrap())
-                .unwrap();
+        let out = build(42);
+        let m: Value = serde_json::from_str(
+            &std::fs::read_to_string(out.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
         let mut titles: Vec<String> = m["books"]
             .as_array()
             .unwrap()
@@ -1185,7 +1181,7 @@ mod tests {
             .iter()
             .filter_map(|b| b["isbn13"].as_str().map(str::to_owned))
             .collect();
-        let verbs = std::fs::read_to_string(out.join("verbs.jsonl")).unwrap();
+        let verbs = std::fs::read_to_string(out.path().join("verbs.jsonl")).unwrap();
         for line in verbs.lines() {
             let v: Value = serde_json::from_str(line).unwrap();
             let argv: Vec<&str> = v["argv"]
@@ -1229,10 +1225,11 @@ mod tests {
 
     #[test]
     fn salts_stay_inside_the_budget_and_name_real_cases() {
-        let out = build("salt", 42);
-        let m: Value =
-            serde_json::from_str(&std::fs::read_to_string(out.join("manifest.json")).unwrap())
-                .unwrap();
+        let out = build(42);
+        let m: Value = serde_json::from_str(
+            &std::fs::read_to_string(out.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
         let bank = load_hostile().unwrap();
         let rows = m["files"]["physical.csv"]["rows"].as_u64().unwrap() as usize;
         let lines = m["files"]["verbs.jsonl"]["lines"].as_u64().unwrap() as usize;

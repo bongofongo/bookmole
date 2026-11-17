@@ -892,6 +892,7 @@ impl Storage {
     /// links and files, fills only `dst`'s empty fields, then deletes `src`. A moved highlight that
     /// collides with one on `dst` is dropped after its anchors and cards are repointed.
     /// Repeating it returns a report with `src_existed == false`; a missing `dst` is an error.
+    #[expect(clippy::too_many_lines)]
     pub async fn merge_books(&self, src: i64, dst: i64) -> Result<MergeReport> {
         let mut report = MergeReport::default();
         if src == dst {

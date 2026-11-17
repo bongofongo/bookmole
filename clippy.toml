@@ -1,4 +1,7 @@
+# crates/engine and crates/corpus each have a clippy.toml that replaces this one; repeat every entry there.
+too-many-lines-threshold = 120
 disallowed-methods = [
     { path = "std::env::set_var", reason = "races every other thread in the process; inject the value, or set it on a child Command" },
     { path = "std::env::remove_var", reason = "races every other thread in the process; inject the value, or remove it on a child Command" },
+    { path = "std::env::temp_dir", reason = "use tempfile: a unique, private path that is cleaned up" },
 ]
