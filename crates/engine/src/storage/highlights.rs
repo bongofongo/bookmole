@@ -13,25 +13,7 @@ pub struct NewHighlight {
     pub pos0: Option<String>,
     pub pos1: Option<String>,
     pub ko_datetime: Option<String>,
-    /// KOReader's `datetime_updated`: when the annotation was last *edited* on
-    /// the device, as distinct from when it was created.
-    ///
-    /// **Parsed but not yet persisted**: no column holds it yet. Its use is to
-    /// tell "the device changed this" from "nothing happened" (coalesced as
-    /// `datetime_updated or datetime`, it is the annotation's *last touched*
-    /// stamp). It is carried here so that adding the column will not mean
-    /// reopening the parser, the fixtures and every golden just to add one
-    /// field. It is **not** a "has a note" test: a note written and then
-    /// cleared leaves the stamp behind with no note.
-    ///
-    /// It must never enter `identity_hash`: `datetime` is KOReader's immutable
-    /// creation stamp and this one moves on every edit, so hashing it would
-    /// make an edited highlight re-import as a duplicate row. KOReader's own
-    /// source says so (`readerannotation.lua` builds every annotation with
-    /// `datetime -- creation time, not changeable`, and edits go through
-    /// `onAnnotationsModified`, which writes `datetime_updated` only), and real
-    /// sidecars agree: an annotation edited after a later one was created still
-    /// carries its original `datetime`.
+    /// Parsed but not persisted. Must never enter `identity_hash`: it changes on every edit.
     pub ko_datetime_updated: Option<String>,
     pub color: Option<String>,
     pub note: Option<String>,
@@ -39,12 +21,7 @@ pub struct NewHighlight {
 }
 
 impl NewHighlight {
-    /// Stable identity for idempotent imports.
-    ///
-    /// Deliberately excludes everything the device may rewrite in place:
-    /// `chapter`, `page`, `color`, `note` and `ko_datetime_updated`. Only
-    /// `ko_datetime` (creation time, never changed by KOReader), `pos0` and the
-    /// highlighted text take part.
+    /// Hashes the book id, `ko_datetime`, `pos0` and text only; device-rewritable fields are excluded.
     pub fn identity_hash(&self, book_id: i64) -> String {
         identity_hash_of(
             book_id,
@@ -55,13 +32,7 @@ impl NewHighlight {
     }
 }
 
-/// The identity hash from loose parts.
-///
-/// Exists so [`Storage::merge_books`] can recompute a stored highlight's hash
-/// against its new `book_id` — `book_id` is one of the inputs, so a moved
-/// highlight's hash is stale the moment it moves. Recomputing it there with a
-/// second copy of this formula would be a silent duplicate-detection bug the
-/// day either copy changed, so there is one copy and both callers use it.
+/// The single copy of the formula, so `merge_books` can recompute a moved highlight's hash.
 pub(crate) fn identity_hash_of(
     book_id: i64,
     ko_datetime: Option<&str>,
@@ -79,29 +50,13 @@ pub(crate) fn identity_hash_of(
     format!("{:x}", hasher.finalize())
 }
 
-/// One digest over the device-owned state of a set of highlights.
-///
-/// Exists so the two sides of the device scan's comparison — what the sidecar
-/// file says, and what the library already holds — are hashed by **one** piece
-/// of code. Two copies of this formula would drift the day either changed, and
-/// the symptom would be a scan that silently stopped noticing device edits.
-/// Same rule as [`identity_hash_of`] and `DEVICE_FIELDS_DIFFER`.
-///
-/// The fields are the identity (`ko_datetime`, `pos0`, `text`) plus exactly the
-/// four the device owns. `annotation` is ours and is deliberately absent: a
-/// note the reader wrote here must not make the device look changed.
-///
-/// Sorted in [`DeviceDigest::finish`] rather than by the caller, so neither
-/// side has to promise an ordering — a `SELECT` without an `ORDER BY` and a
-/// sidecar's own sequence are then equally fine.
+/// One piece of code hashes both the sidecar's and the library's device-owned state.
+/// `annotation` is excluded so the reader's own note never looks like a device change.
 #[derive(Default)]
 pub(crate) struct DeviceDigest {
     parts: Vec<String>,
 }
 
-/// One annotation's identity plus the four fields the device owns — the exact
-/// field set [`DeviceDigest`] hashes, named once so a sidecar row and a stored
-/// row cannot be assembled differently.
 pub(crate) struct DeviceEntry<'a> {
     pub ko_datetime: Option<&'a str>,
     pub pos0: Option<&'a str>,
@@ -132,8 +87,7 @@ impl DeviceDigest {
     }
 
     pub(crate) fn add(&mut self, e: DeviceEntry<'_>) {
-        // `\u{1f}` (unit separator) cannot occur in any of these, so no value
-        // can impersonate a field boundary.
+        // `\u{1f}` cannot occur in any field, so no value can impersonate a boundary.
         self.parts.push(format!(
             "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
             e.ko_datetime.unwrap_or(""),
@@ -164,52 +118,26 @@ pub struct Highlight {
     pub text: String,
     pub chapter: Option<String>,
     pub page: Option<i64>,
-    /// The source app's note, theirs. Refreshed from the source on every import.
     pub origin_note: Option<String>,
-    /// The reader's own annotation, ours. Import never touches it.
     pub annotation: Option<String>,
     pub ko_datetime: Option<String>,
-    /// Which reading of the book this was captured during, when that can be
-    /// worked out — [`Storage::attribute_highlights`] matches `ko_datetime` into
-    /// a reading's window and this is its answer.
-    ///
-    /// **`None` is an ordinary outcome, not a failure.** KOReader's sidecar is
-    /// per-file and a reread appends to the same file, so the device cannot
-    /// supply this and a highlight captured between two readings genuinely
-    /// belongs to neither. A frontend showing highlights per reading has to have
-    /// somewhere for these to go; it must not drop them, since `book_id` is
-    /// still authoritative and the highlight is real.
-    ///
-    /// Derived, never entered: it is recomputed from scratch on every import, so
-    /// writing to it directly would be overwritten on the next sync.
+    /// `None` is ordinary: a highlight between readings, or not yet attributed. Derived on import.
     pub reading_id: Option<i64>,
-    /// Legacy provenance word (`koreader` | `user`), kept beside [`Self::origin`]
-    /// by migration `0030`; new code reads `origin`. A device refresh must leave
-    /// it alone.
+    /// Legacy provenance word; new code reads `origin`. A device refresh must leave it alone.
     pub source: String,
-    /// Which app wrote this highlight (migration `0030`). A row stored without
-    /// one reads as the origin its `source` implies.
     pub origin: HighlightOrigin,
     /// The copy it was made in; `None` is history with no (unambiguous) copy.
     pub copy_id: Option<i64>,
-    /// The source's own stable id where it has one (Apple Books). `None` for
-    /// KOReader, which keeps using `identity_hash`.
+    /// The source's own stable id (Apple Books); `None` for KOReader, which uses `identity_hash`.
     pub origin_id: Option<String>,
     /// The unit of the stored position, never converted.
     pub pos_kind: Option<PosKind>,
-    /// The highlight is real but its words could not be extracted (PDF).
     pub text_unavailable: bool,
-    /// When *we* first stored it, unix seconds. Distinct from `ko_datetime`,
-    /// which is when the device captured it, and equally not something a
-    /// refresh may move.
+    /// Unix seconds when first stored; a refresh never moves it.
     pub created_at: i64,
 }
 
-/// Every column a [`Highlight`] is built from, and the mapper that builds it.
-///
-/// Shared rather than inlined per query: `citations_for` in [`super::notes`]
-/// returns highlights too, and a second hand-written projection is how the two
-/// drift into disagreeing about what a highlight is.
+/// Shared with `citations_for`, so every query builds a highlight from one projection.
 pub(super) const HIGHLIGHT_COLUMNS: &str = "id, book_id, text, chapter, page, origin_note, annotation, ko_datetime, reading_id, \
      source, origin, copy_id, origin_id, pos_kind, text_unavailable, created_at";
 
@@ -239,44 +167,24 @@ pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
     }
 }
 
-/// The device-owned payload columns, and the null-safe test for "the sidecar
-/// disagrees with what we stored".
-///
-/// One copy, shared by the conditional `UPDATE` in [`Storage::refresh_device_fields`]
-/// and the read-only `SELECT` in [`Storage::device_fields_differ`], because a
-/// dry run that previewed a different set of changes than the real import would
-/// be worse than no preview at all.
-///
-/// `IS NOT` rather than `!=`: SQLite's `!=` yields NULL when either side is
-/// NULL, so a note the user *deleted* on the device (`'x'` → NULL) would
-/// compare as "no change" and never be removed.
+/// Device-owned columns, shared by the UPDATE and the dry-run SELECT so they agree.
+/// `IS NOT`, not `!=`: NULL-safe, so a note deleted on the device is noticed.
 const DEVICE_FIELDS_DIFFER: &str =
     "(origin_note IS NOT ?3 OR color IS NOT ?4 OR chapter IS NOT ?5 OR page IS NOT ?6)";
 
 impl Storage {
-    /// Insert one highlight; returns Some(id) if newly inserted, None if it
-    /// already existed (identity_hash conflict).
-    ///
-    /// The conflict clause stays `DO NOTHING` on purpose. `DO UPDATE` would
-    /// make `RETURNING id` yield a row on the conflict path too, so `Some(id)`
-    /// would stop meaning "newly inserted" and the inserted/skipped counts —
-    /// which the goldens assert — would collapse into each other. Refreshing a
-    /// row the device changed is [`Storage::refresh_device_fields`]'s job.
+    /// Some(id) only when newly inserted; the conflict clause stays `DO NOTHING` so counts stay exact.
     pub async fn insert_highlight(&self, book_id: i64, h: &NewHighlight) -> Result<Option<i64>> {
         self.insert_highlight_in(book_id, h, None).await
     }
 
-    /// [`Storage::insert_highlight`] stamping the copy the highlight was made
-    /// in. `origin` is derived from `h.source`; `pos_kind` is
-    /// `koreader_xpointer` for a KOReader highlight that has a `pos0`.
     pub async fn insert_highlight_in(
         &self,
         book_id: i64,
         h: &NewHighlight,
         copy_id: Option<i64>,
     ) -> Result<Option<i64>> {
-        // A `source` that names no origin (nothing in the engine writes one)
-        // is stored with none rather than guessed to be KOReader's.
+        // A `source` naming no origin is stored with none rather than guessed to be KOReader's.
         let origin = h.source.parse::<HighlightOrigin>().ok();
         let pos_kind = (origin == Some(HighlightOrigin::Koreader) && h.pos0.is_some())
             .then_some(PosKind::KoreaderXpointer);
@@ -298,11 +206,7 @@ impl Storage {
         .bind(h.ko_datetime.as_ref())
         .bind(h.color.as_ref())
         .bind(h.note.as_ref())
-        // Seeded here as well as in the refresh: we have just seen this value
-        // on the device, and a row whose `origin_note` is set while
-        // `last_seen_origin_note` is NULL would read, to the two-way sync this
-        // column exists for, as "the device never said anything" — which is the
-        // one thing it must never say.
+        // Seeded too: a set `origin_note` with NULL `last_seen_origin_note` reads as "device said nothing".
         .bind(h.note.as_ref())
         .bind(&h.source)
         .bind(h.identity_hash(book_id))
@@ -315,10 +219,7 @@ impl Storage {
         Ok(row.map(|r| r.get("id")))
     }
 
-    /// Stamp the copy on an already-stored highlight that has none (history
-    /// from before `0030`, or one the back-fill could not place). Never
-    /// overwrites a copy already recorded, and is not a change the importer
-    /// counts as `updated`.
+    /// Never overwrites a copy already recorded.
     pub async fn stamp_highlight_copy(
         &self,
         book_id: i64,
@@ -337,24 +238,9 @@ impl Storage {
         Ok(())
     }
 
-    /// Refresh the device-owned payload of an existing highlight. Returns true
-    /// if a column actually changed.
-    ///
-    /// **Straight assignment, not `COALESCE`.** The books upsert's
-    /// `COALESCE(excluded.x, books.x)` no-clobber pattern is right for
-    /// *providers*, which return partial records — a missing field there means
-    /// "I don't know". A sidecar is the *complete* state of that annotation, so
-    /// a missing note means the user **deleted** it, and copying the books
-    /// pattern here would make note deletion impossible to sync, permanently.
-    ///
-    /// Never touches `annotation`, `text`, `source`, `created_at` or `id`. In
-    /// particular the row is updated in place rather than replaced:
-    /// `notes.highlight_id` and `flashcards.highlight_id` are foreign keys, so a
-    /// delete-and-reinsert would null note anchors and cascade flashcards away.
-    ///
-    /// One conditional statement rather than read-compare-write: the comparison
-    /// has to be exact for the caller's counter to mean anything, and doing it
-    /// in SQL keeps it atomic as well as single-copy.
+    /// Refreshes a highlight's device-owned payload; true if a column changed. Straight assignment,
+    /// not COALESCE: a sidecar is complete state, so a missing note means deleted. Updates in place,
+    /// since delete-and-reinsert would null note anchors and cascade flashcards away.
     pub async fn refresh_device_fields(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
         let sql = format!(
             r#"UPDATE highlights SET
@@ -377,8 +263,6 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Would [`Storage::refresh_device_fields`] change anything? Read-only, for
-    /// the dry-run preview.
     pub async fn device_fields_differ(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
         let sql = format!(
             "SELECT count(*) FROM highlights
@@ -396,8 +280,6 @@ impl Storage {
         Ok(n > 0)
     }
 
-    /// Set the reader's own annotation on a highlight. Ours; the device never
-    /// sees it and import never overwrites it.
     pub async fn set_annotation(&self, highlight_id: i64, annotation: Option<&str>) -> Result<()> {
         sqlx::query("UPDATE highlights SET annotation = ? WHERE id = ?")
             .bind(annotation)
@@ -407,17 +289,7 @@ impl Storage {
         Ok(())
     }
 
-    /// The device-owned state of everything this book holds from a device, as
-    /// one digest.
-    ///
-    /// The device scan's cheap half. Compared against the digest cached for a
-    /// sidecar, it decides whether an unmodified file can be called `Unchanged`
-    /// without re-parsing it — and, unlike a row count, it notices a note the
-    /// device rewrote in place, which is the case that would otherwise be
-    /// reported once and then silently forgotten forever.
-    ///
-    /// Restricted to `source = 'koreader'` so a highlight added by any other
-    /// route cannot make a sidecar look imported.
+    /// Restricted to `source = 'koreader'` so other highlights cannot make a sidecar look imported.
     pub async fn device_highlight_digest(&self, book_id: i64) -> Result<String> {
         let rows = sqlx::query(
             "SELECT ko_datetime, pos0, text, origin_note, color, chapter, page
@@ -461,15 +333,7 @@ impl Storage {
         Ok(n > 0)
     }
 
-    /// Which book a highlight belongs to — `None` when there is no such
-    /// highlight.
-    ///
-    /// One statement answering both halves of *is this passage a passage of
-    /// that book*, which is the question `Engine::create_flashcard` has to ask
-    /// before it writes a card pointing at one. Deliberately not a
-    /// `get_highlight`: nothing needs the row, and returning the whole thing
-    /// would put the reader's private text on a path whose only output is a
-    /// yes or a no.
+    /// Returns only the book id, not the row, to keep private text off a yes/no path.
     pub async fn highlight_book(&self, highlight_id: i64) -> Result<Option<i64>> {
         Ok(
             sqlx::query_scalar("SELECT book_id FROM highlights WHERE id = ?")
@@ -491,20 +355,7 @@ impl Storage {
         Ok(rows.iter().map(row_to_highlight).collect())
     }
 
-    /// What was highlighted during one reading, in the same order
-    /// [`Storage::list_highlights`] uses.
-    ///
-    /// A `Reading` is a first-class row that a reflection and a review already
-    /// anchor to, so asking one what was highlighted during it is the natural
-    /// question — and answering it by pulling the whole book's highlights and
-    /// filtering in the frontend is the sort of thing two frontends do
-    /// differently.
-    ///
-    /// It deliberately cannot ask for the **unattributed** ones: `reading_id IS
-    /// NULL` is a property of the *book's* list, not of any reading, and a
-    /// method that answered it here would need a book id anyway. Filter
-    /// `list_highlights` for those — the field is on the row precisely so that
-    /// grouping is a frontend's to do.
+    /// Cannot ask for unattributed highlights (`reading_id IS NULL`); filter `list_highlights`.
     pub async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE reading_id = ?
@@ -517,22 +368,7 @@ impl Storage {
         Ok(rows.iter().map(row_to_highlight).collect())
     }
 
-    /// The passage a reading's card shows — **the one the reader chose** — or
-    /// `None` (migration `0022`).
-    ///
-    /// It was once chosen by a rule (the longest mark of the reading, ties to
-    /// the lowest id), and that rule's cost was plain: it selected for the
-    /// longest *drag*, not the best passage. On 2026-10-23 the rule was retired.
-    /// A reading's card is the reader's own, so its passage is the reader's
-    /// choice, kept in `readings.card_highlight_id`, and a card with none says
-    /// nothing about it — a blank card is still a card, and it does not nag.
-    ///
-    /// What survives from the rule: **it is still a selection predicate below
-    /// the seam**, so every frontend shows the same passage for one reading; it
-    /// is still **scoped to the reading**, so two reads of a book carry their
-    /// own; and `None` is still ordinary — now meaning *not chosen* rather than
-    /// *nothing marked*. The row [`Storage::list_reading_rows`] carries reads
-    /// the same column, so a list of cards and a single card cannot disagree.
+    /// The passage the reader chose for the reading's card; `None` means not chosen.
     pub async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights
@@ -545,20 +381,8 @@ impl Storage {
         Ok(row.as_ref().map(row_to_highlight))
     }
 
-    /// Choose the passage a reading's card shows, or clear it.
-    ///
-    /// **Handles do not cross.** `reading_id` and `highlight_id` arrive from a
-    /// client independently and nothing in the schema stops them naming
-    /// different books, after which a card would carry a sentence from
-    /// somewhere else for ever. So the highlight must be **of the reading's
-    /// book**, and — when it is attributed to a reading at all — of *this*
-    /// reading. Attribution is the weaker test on purpose: `reading_id` is
-    /// `NULL` on an ordinary, well-understood set of marks (every highlight a
-    /// sidecar import ever wrote, until something attributes it), and a rule
-    /// demanding it would make the feature unusable on exactly the libraries
-    /// it exists for. A missing reading or highlight is `NotFound`; a highlight
-    /// of another book, or of another read of this book, is `InvalidInput`,
-    /// never a raw `FOREIGN KEY constraint failed`.
+    /// The highlight must be of the reading's book, and of this reading when attributed at all;
+    /// unattributed is accepted because imported highlights start unattributed.
     pub async fn set_card_passage(&self, reading_id: i64, highlight_id: Option<i64>) -> Result<()> {
         let reading = self
             .get_reading(reading_id)
@@ -590,14 +414,7 @@ impl Storage {
         Ok(())
     }
 
-    /// The passages a reading's card may choose from: the reading's
-    /// book's highlights that are attributed to this reading or to none, in
-    /// [`Storage::list_highlights`]'s order.
-    ///
-    /// A predicate, so it lives in the engine rather than as a filter over
-    /// `list_highlights` in each frontend. It is exactly the set
-    /// [`Storage::set_card_passage`] accepts, which is what makes a chooser
-    /// built on it unable to offer a passage the write then refuses.
+    /// Exactly the set `set_card_passage` accepts, so a chooser never offers a passage it refuses.
     pub async fn card_passage_candidates(&self, reading_id: i64) -> Result<Vec<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights
@@ -613,7 +430,6 @@ impl Storage {
         Ok(rows.iter().map(row_to_highlight).collect())
     }
 
-    /// One highlight by id.
     pub async fn get_highlight(&self, id: i64) -> Result<Option<Highlight>> {
         let sql = format!("SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE id = ?");
         let row = sqlx::query(&sql)
@@ -623,28 +439,10 @@ impl Storage {
         Ok(row.as_ref().map(row_to_highlight))
     }
 
-    /// The passages of a whole page of readings, in **one** statement.
-    ///
-    /// [`Storage::card_passage`] answers one reading and is right for the card
-    /// you reached by choosing a book. A page of cards across the library asks
-    /// the same question twenty times a page, so the passage has to come with
-    /// the list rather than in N calls beside it — the N+1 that paged list
-    /// queries exist to remove.
-    ///
-    /// Keyed by **reading id**, because `reading_id` is on
-    /// [`Highlight`](crate::Highlight) and a caller zipping this against its
-    /// page has readings in hand rather than highlight ids. A reading with no
-    /// attributed highlights is simply absent, which is the same absence
-    /// `card_passage` reports as `None`.
-    ///
-    /// The ids are each row's `readings.card_highlight_id` — the same column
-    /// `card_passage` reads, so a list of cards and a single card cannot choose
-    /// different passages for one reading.
+    /// Fetches a page of passages in one statement, avoiding an N+1 across a page of cards.
     pub(super) async fn highlights_by_ids(&self, ids: &[i64]) -> Result<Vec<Highlight>> {
         let mut out = Vec::with_capacity(ids.len());
-        // `book_summaries`' chunking, for its reason: SQLite's default parameter
-        // ceiling is 999 on older builds and a caller may hand this a whole-
-        // library page (`limit` may be negative, which is *no limit*).
+        // Chunked under SQLite's older 999-parameter ceiling; `limit` may be negative (no limit).
         for chunk in ids.chunks(500) {
             let holes = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
@@ -680,12 +478,6 @@ mod tests {
         }
     }
 
-    /// The invariant KOReader's source establishes (see
-    /// [`NewHighlight::ko_datetime_updated`]), asserted rather than trusted:
-    /// KOReader leaves `datetime` alone when a note is edited and
-    /// stamps `datetime_updated` instead. If that field ever reached the hash,
-    /// every edited highlight would come back as a second row on the next
-    /// import — silently, with nothing on screen looking wrong.
     #[test]
     fn identity_survives_an_edit_on_the_device() {
         let base = hl("a phrase worth keeping");
@@ -693,7 +485,6 @@ mod tests {
         let edited = NewHighlight {
             ko_datetime_updated: Some("2026-06-01 12:00:00".into()),
             note: Some("a note the user typed later".into()),
-            // A re-render moves page numbers with no user action at all.
             page: Some(43),
             chapter: Some("Ch 1 (renamed)".into()),
             color: Some("gray".into()),
@@ -726,8 +517,6 @@ mod tests {
         ] {
             assert_ne!(base.identity_hash(1), changed.identity_hash(1));
         }
-        // book_id is an input, so the same annotation under a different book is
-        // a different row — this is what `merge_books` has to recompute.
         assert_ne!(base.identity_hash(1), base.identity_hash(2));
     }
 
@@ -766,8 +555,6 @@ mod tests {
         (s, book_id)
     }
 
-    /// The counter the CLI prints comes straight off this boolean, so it has to
-    /// be exact in both directions: a no-op refresh must report false.
     #[tokio::test]
     async fn a_refresh_reports_only_a_real_change() {
         let (s, book_id) = seeded().await;
@@ -798,8 +585,6 @@ mod tests {
         );
     }
 
-    /// Every device-owned column, one at a time. A refresh that quietly ignored
-    /// `color` would look exactly like a refresh that worked.
     #[tokio::test]
     async fn every_device_owned_field_refreshes() {
         let base = hl("a phrase worth keeping");
@@ -830,10 +615,6 @@ mod tests {
         }
     }
 
-    /// The `COALESCE` trap, asserted rather than trusted. A note the user
-    /// deleted on the device arrives as absent, and absent means gone — copy
-    /// the books upsert's no-clobber merge here and deletion becomes
-    /// impossible to sync, permanently.
     #[tokio::test]
     async fn deleting_a_note_on_the_device_deletes_it_here() {
         let (s, book_id) = seeded().await;
@@ -854,8 +635,6 @@ mod tests {
         );
     }
 
-    /// Ours survives theirs. `annotation` is the one column import may never
-    /// write, and a refresh is the moment it would be lost.
     #[tokio::test]
     async fn a_refresh_never_touches_our_annotation() {
         let (s, book_id) = seeded().await;
@@ -876,10 +655,6 @@ mod tests {
         assert_eq!(stored.annotation.as_deref(), Some("what I actually think"));
     }
 
-    /// `last_seen_origin_note` is the whole reason the column exists: without it a
-    /// future two-way sync cannot tell "the user changed it here" from "the
-    /// device changed it there". It must track the device from the first insert,
-    /// not only from the first refresh.
     #[tokio::test]
     async fn last_seen_tracks_the_device_from_the_very_first_import() {
         let (s, book_id) = seeded().await;
@@ -907,10 +682,6 @@ mod tests {
         assert_eq!(last_seen(s.clone()).await.as_deref(), Some("as edited"));
     }
 
-    /// A refresh is scoped to one row of one book. Two books can hold the same
-    /// annotation (the identity hash takes `book_id`, so the hashes differ), and
-    /// a `WHERE` clause missing `book_id` would still be green against a
-    /// single-book fixture.
     #[tokio::test]
     async fn a_refresh_does_not_reach_into_another_book() {
         let (s, first) = seeded().await;
@@ -939,8 +710,6 @@ mod tests {
         );
     }
 
-    // ---- the device digest -------------------------------------------------
-
     fn digest_of(hs: &[NewHighlight]) -> String {
         let mut d = DeviceDigest::new();
         for h in hs {
@@ -949,9 +718,6 @@ mod tests {
         d.finish()
     }
 
-    /// The two sides of the scan's comparison arrive in different orders — a
-    /// sidecar's own sequence against a `SELECT` with no `ORDER BY` — so the
-    /// digest cannot depend on one.
     #[test]
     fn the_digest_does_not_depend_on_the_order_it_was_fed() {
         let a = hl("first");
@@ -965,8 +731,6 @@ mod tests {
         assert_eq!(digest_of(&[b, c, a]), forward);
     }
 
-    /// Every field the device owns has to move the digest, or the scan's cheap
-    /// path would call that change "unchanged" and never look again.
     #[test]
     fn every_device_owned_field_moves_the_digest() {
         let base = digest_of(&[hl("passage")]);
@@ -986,8 +750,6 @@ mod tests {
         moves("page", &|h| h.page = Some(43));
     }
 
-    /// A field separator that a value could contain would let two different
-    /// sets of annotations hash the same.
     #[test]
     fn a_value_cannot_impersonate_a_field_boundary() {
         let mut split = hl("a");
@@ -997,8 +759,6 @@ mod tests {
         assert_ne!(digest_of(&[split]), digest_of(&[joined]));
     }
 
-    /// The ownership seam, on the scan's side: `annotation` is ours, and the
-    /// reader writing one must not make the device look like it changed.
     #[tokio::test]
     async fn our_own_annotation_is_not_part_of_the_device_digest() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1031,7 +791,6 @@ mod tests {
             "ours must not read as a device change"
         );
 
-        // A highlight from anywhere else is not the device's either.
         let mut mine = hl("something I typed");
         mine.source = "manual".into();
         s.insert_highlight(book, &mine).await.unwrap();
@@ -1039,13 +798,6 @@ mod tests {
     }
 }
 
-/// Properties of the card's passage rule.
-///
-/// The rule is *an ordering*, and an ordering is the kind of claim more examples
-/// cover badly: whether the right row wins depends on how the lengths happen to
-/// be arranged, and a hand-written case is arranged by whoever wrote the
-/// implementation. Ties are generated deliberately dense here, since a tie is
-/// where "deterministic" stops being free.
 #[cfg(test)]
 mod props {
     use super::*;
@@ -1059,10 +811,7 @@ mod props {
             .unwrap()
     }
 
-    /// A mark of `n + 1` characters, in one of two scripts, with an anchor that
-    /// makes it its own row. The scripts differ in bytes per character, so a
-    /// rule that measured bytes disagrees with the expected answer here rather
-    /// than only in a fixture somebody remembered to write.
+    /// The two scripts differ in bytes per character, so a rule that measured bytes fails here.
     fn mark(n: usize, cjk: bool, seq: usize) -> NewHighlight {
         let text = if cjk { "極" } else { "x" }.repeat(n + 1);
         NewHighlight {
@@ -1080,11 +829,6 @@ mod props {
     }
 
     proptest! {
-        /// The card's passage is exactly the reader's choice: none
-        /// until one is chosen, whatever was marked and however long; then that
-        /// mark and no other; then none again when cleared. The old rule's
-        /// favourite — the longest mark — is inserted every time so that a
-        /// regression to it fails here rather than on somebody's cards.
         #[test]
         fn the_card_passage_is_the_chosen_mark_and_nothing_else(
             marks in proptest::collection::vec((0usize..6, any::<bool>()), 1..9),
@@ -1116,10 +860,8 @@ mod props {
                 let offered = s.card_passage_candidates(reading).await.unwrap();
                 prop_assert_eq!(offered.len(), marks.len());
 
-                // Marks alone choose nothing.
                 prop_assert!(s.card_passage(reading).await.unwrap().is_none());
 
-                // The reader's pick, whichever it is, is the card's.
                 let want = &listed[pick % listed.len()];
                 s.set_card_passage(reading, Some(want.id)).await.unwrap();
                 let got = s.card_passage(reading).await.unwrap().unwrap();
@@ -1128,7 +870,6 @@ mod props {
                 let again = s.card_passage(reading).await.unwrap().unwrap();
                 prop_assert_eq!(again.id, got.id);
 
-                // Cleared, it is gone and the marks are untouched.
                 s.set_card_passage(reading, None).await.unwrap();
                 prop_assert!(s.card_passage(reading).await.unwrap().is_none());
                 prop_assert_eq!(s.highlights_for_reading(reading).await.unwrap().len(), marks.len());

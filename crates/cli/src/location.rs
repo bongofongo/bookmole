@@ -1,20 +1,8 @@
-//! The one line the CLI says when the library sits in a cloud-synced folder.
-//!
-//! The fact is the engine's (`bookmole::cloud_folder`); the sentence is
-//! this frontend's. It goes to **stderr**, once per invocation that opens the
-//! library, and never to stdout, which scripts parse. `--quiet` silences it,
-//! and `config` never reaches it because `config` never opens the engine.
-//!
-//! Once per invocation rather than once ever: each invocation opens the
-//! database again, so the risk the line names is present every time, and a
-//! "shown already" marker would be state written somewhere for a warning's
-//! sake. It is a statement of what is the case, never an instruction, and the
-//! library opens either way.
+//! The one line printed when the library sits in a cloud-synced folder. Goes to stderr once per
+//! invocation, never stdout; `--quiet` silences it; the library opens either way.
 
 use bookmole::{CloudFolder, CloudService};
 
-/// The sync service, as its maker spells it. An unnamed File Provider client
-/// under `~/Library/CloudStorage` is "a cloud storage folder".
 pub fn service_name(s: CloudService) -> &'static str {
     match s {
         CloudService::ICloudDrive => "iCloud Drive",
@@ -27,7 +15,6 @@ pub fn service_name(s: CloudService) -> &'static str {
     }
 }
 
-/// The line, whole.
 pub fn cloud_folder_line(f: &CloudFolder) -> String {
     format!(
         "The library is in {} ({}). Syncing can damage a library while it is open; \
@@ -60,7 +47,6 @@ mod tests {
         );
     }
 
-    /// The axiom's banned words, and no line break: it is one line on stderr.
     #[test]
     fn the_line_is_one_line_and_frames_nothing_as_a_task() {
         for s in [

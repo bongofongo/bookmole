@@ -1,177 +1,55 @@
-//! Asking the library a narrower question than "give me everything".
-//!
-//! [`BookQuery`] is the one argument [`Storage::list_books`] takes, and
-//! [`BookFilter`] is the half of it that also answers
-//! [`Storage::count_books`]. That pairing is the whole reason this module exists
-//! rather than four more parameters on `list_books`: **a count and a page have
-//! to mean the same `WHERE`**, and the only way to guarantee that is for one
-//! function to write it and both to call that function. Two hand-written clauses
-//! that agree today are two clauses that disagree the first time a filter is
-//! added to one of them.
-//!
-//! ## Pagination is an offset, everywhere, on purpose
-//!
-//! Keyset pagination was considered and rejected. [`BookSort::Progress`] has no
-//! stable cursor key, and [`BookSort::Author`] once had no cursor key *and* no
-//! `ORDER BY` — so two of five sorts could not be keyset at all, and those two
-//! were exactly the ones whose pages were already expensive. Keyset would have
-//! bought nothing where it was needed most and cost a second pagination shape
-//! at every call site to buy it. Two further reasons: a **count composes with
-//! an offset and not with a cursor**, and a shelf that knows its total wants
-//! page numbers, which *are* offsets; and the deep-page cost is a sort over a
-//! personal library, not a feed, so an index on the sort key is the real
-//! optimisation and a cursor would not have avoided the sort without one.
-//!
-//! **Migration `0016` halved that tally and the decision still stands.**
-//! `sort_author` is a real column with a real index now, so the author sort has
-//! both an `ORDER BY` and a cursor key; [`BookSort::Progress`] remains a computed ratio
-//! across a `LEFT JOIN` and remains unindexable. What changed is the *cost* of
-//! an offset page, which is what actually hurt — every sort but `Progress` now
-//! walks an index instead of sorting the whole table — and that is the cheaper
-//! half of what keyset was being considered for. Revisit when a page is
-//! measured to be slow, not before.
-//!
-//! What offset pagination *requires*, and what is easy to forget, is a
-//! **total order**. `LIMIT 20 OFFSET 20` is only the successor of `LIMIT 20` if
-//! the two statements break ties the same way, and `books.publish_year DESC`
-//! over a library where four hundred books share a year does not say. SQLite's
-//! sorter is in fact deterministic for one plan over one set of rows — measured,
-//! not assumed: removing the tie-breaks leaves the behavioural test green — so
-//! this is insurance rather than a fix for something observed. It is worth the
-//! line anyway, because the guarantee belongs to the current query plan and not
-//! to the schema, and the failure it would eventually produce is a book on two
-//! pages and another on none, intermittently, with nothing on screen looking
-//! odd. Every arm therefore ends in `books.id`; `order_by_is_a_total_order`
-//! asserts it structurally, since a behavioural test that cannot fail is not the
-//! one guarding this.
-//!
-//! ## Absence is a filter case, not a reading state
-//!
-//! [`StatusFilter`] has four reachable cases and one of them is
-//! [`StatusFilter::NoReading`], which is `cur.id IS NULL` — a book with no
-//! reading at all. It lives *here*, in the question, and deliberately not in
-//! [`ReadingState`] as a `NeverOpened` variant: a variant is a thing a UI
-//! filters on, counts, and eventually puts a badge beside — task-completion
-//! framing, which this app deliberately has none of. A filter case is a
-//! question somebody asked once; a variant is a permanent claim about every
-//! book.
-//!
-//! ## The same shape, one table over
-//!
-//! [`ReadingFilter`] and [`ReadingQuery`] are this module's second pair, and
-//! they are deliberately the *same* shape rather than a better one: one
-//! `predicate()` read by the page and by the count, `Default` meaning every row,
-//! an offset, and an `ORDER BY` that ends in `readings.id`. `readings` had
-//! twelve public methods before this pair existed and every one was scoped to
-//! a single book except `list_open_readings`, which is filtered to `finished_at IS NULL`
-//! — so a *finished* reading was reachable only by already knowing its book,
-//! and `ActivitySummary::books_finished` counted exactly the rows nobody could
-//! list.
-//!
-//! One thing here is not a copy. [`ReadingFilter::finished_in`] is a
-//! [`DayRange`], and it binds **unix seconds** rather than the two day strings
-//! the range is written in — see [`DayRange::unix_bounds`] and migration `0018`.
-//! Every other predicate in this file compares a column to a value; a day
-//! filter's obvious spelling compares a *function of* the column, which is the
-//! one shape an index cannot serve.
+//! `BookQuery` and `BookFilter`: one `WHERE` shared by `list_books` and `count_books` so a count
+//! and a page agree. Paging is by offset, and every `ORDER BY` ends in a row id so pages form a
+//! total order.
 
 use crate::book::ReadingState;
 
 use super::{BookSort, DayRange, ReadingSort};
 
-/// One filter predicate's bound value, in the order the clause names them.
-///
-/// The clause is built as text and the values travel beside it, because the
-/// alternative — interpolating them — is how a title with an apostrophe becomes
-/// a syntax error and a title with a semicolon becomes something worse.
+/// Values travel beside the clause as binds, never interpolated.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Bind {
     Text(String),
     Int(i64),
 }
 
-/// A `WHERE` clause and the values it names, from one [`BookFilter`].
-///
-/// `sql` is either empty or starts with `WHERE `, so a caller interpolates it
-/// without knowing which — a filtered and an unfiltered statement are the same
-/// `format!`.
+/// `sql` is empty or starts with `WHERE `, so callers interpolate it without checking.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Predicate {
     pub(super) sql: String,
     pub(super) binds: Vec<Bind>,
 }
 
-/// Which books the current reading's state puts in the answer.
-///
-/// Four reachable cases over three variants of [`ReadingState`] plus absence —
-/// see the module header for why absence is here and not there.
+/// Absence of a reading is a case here, deliberately not a `ReadingState` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusFilter {
-    /// The book's current reading is in this state. `ReadingState::Other(raw)`
-    /// reaches through unchanged, so a device vocabulary this build does not
-    /// model is still filterable.
+    /// `ReadingState::Other(raw)` passes through, so unmodelled device vocabulary is still
+    /// filterable.
     Is(ReadingState),
-    /// The book has no reading at all.
     NoReading,
 }
 
-/// Which books a list is about, before it is ordered or cut into pages.
-///
-/// `Default` is *every book*, which is what makes the filtered and unfiltered
-/// call sites one code path.
+/// `Default` is every book, so filtered and unfiltered calls share one path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookFilter {
     pub status: Option<StatusFilter>,
-    /// Matched as a **substring of the title**, case-insensitively — the shape
-    /// `author` states one field down, and deliberately so.
-    ///
-    /// This is a *filter*, not a search, and that is the whole of why it is
-    /// `LIKE` rather than a books FTS index. Three reasons, in the order they
-    /// bind. It has to compose with `count_books` and with all five sorts and
-    /// with the offset paging, and `BookFilter::predicate` writes **one**
-    /// `WHERE` for the page and the count alike — an FTS predicate would have to
-    /// arrive as `books.id IN (SELECT rowid FROM …)`, and a second index with a
-    /// second maintenance discipline to keep it honest, for a column that is one
-    /// short line of text. It has to behave like its five neighbours, because a
-    /// struct whose fields match by different rules is a struct whose callers
-    /// guess: `author` finds *Le Guin* inside a JSON array of whole names, and a
-    /// title filter that stemmed and tokenised instead would answer a different
-    /// question in the same call. And **infix is what a shelf filter means** —
-    /// `possess` finds *The Dispossessed* under `LIKE` and finds nothing under
-    /// fts5, whose tokens start at word boundaries.
-    ///
-    /// Relevance lives in [`Storage::search_marks`](crate::Storage), over what
-    /// the reader wrote and kept. A book is neither.
+    /// Case-insensitive substring (`LIKE`), not FTS: it must compose with the count, every sort and
+    /// offsets, and match infix.
     pub title: Option<String>,
-    /// Matched as a **substring of the stored author list**, case-insensitively.
-    ///
-    /// Not `names::sort_key` and not a join: `books.authors` is a JSON array of
-    /// whole names, and the useful question in a library screen is "the ones
-    /// with Le Guin in them". A real author *entity* is a table this schema does
-    /// not have, and inventing one behind a filter would be inventing it badly.
+    /// Case-insensitive substring of the stored JSON author list, not a join.
     pub author: Option<String>,
     pub year: Option<i64>,
-    /// Matched whole and case-insensitively — `en` and `EN` are one language,
-    /// `en-GB` is not `en`. The column holds whatever the origin said and we do
-    /// not normalise it on write, so we do not pretend to on read.
+    /// Matched whole, case-insensitively; `en-GB` is not `en`.
     pub language: Option<String>,
-    /// One of the minted shelves in `book_tags` (Goodreads, calibre), matched
-    /// whole and case-insensitively. Not `books.subjects`, which is a
-    /// bibliographic fact with an origin rather than a shelf.
+    /// A minted shelf in `book_tags`, matched whole and case-insensitively; not `books.subjects`.
     pub tag: Option<String>,
-    /// `Some(true)` is a book with a stored jacket; `Some(false)` is one
-    /// without. `None` is not a third answer, it is not asking.
+    /// `None` means no constraint, not a third answer.
     pub has_cover: Option<bool>,
-    /// Whether the book is in the library (copies, `0027`). **`All` by
-    /// default**, so every caller that does not say keeps its meaning.
     pub library: LibraryScope,
 }
 
-/// Which books a list asks for, by library membership. The rule itself lives
-/// in one place, [`in_library_sql`](super::in_library_sql).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LibraryScope {
-    /// Every book, in the library or not. Not asking.
     #[default]
     All,
     InLibrary,
@@ -179,9 +57,6 @@ pub enum LibraryScope {
 }
 
 impl LibraryScope {
-    /// The SQL condition this scope adds for the book `book_id` (an
-    /// expression), or `None` for [`LibraryScope::All`]. Every scoped query
-    /// takes its clause from here, so the rule is spelled once.
     pub(crate) fn clause(self, book_id: &str) -> Option<String> {
         match self {
             LibraryScope::All => None,
@@ -191,10 +66,7 @@ impl LibraryScope {
     }
 }
 
-/// LIKE's own wildcards, so a search for `100%` is not a search for everything.
-///
-/// `\` is the escape character the clause declares, so it has to be escaped
-/// first or escaping `%` would produce a `\` the next pass escapes again.
+/// Escapes LIKE wildcards; `\` is escaped first so later escapes are not themselves re-escaped.
 fn like_escape(needle: &str) -> String {
     let mut out = String::with_capacity(needle.len());
     for c in needle.chars() {
@@ -207,31 +79,21 @@ fn like_escape(needle: &str) -> String {
 }
 
 impl BookFilter {
-    /// True when this filter asks nothing, so every book is in the answer.
     pub fn is_empty(&self) -> bool {
         *self == BookFilter::default()
     }
 
-    /// The clause, against the aliases `BOOK_FROM` establishes: `books` and the
-    /// current reading `cur`.
-    ///
-    /// Every predicate here is written once and read by both `list_books` and
-    /// `count_books`. See the module header.
     pub(super) fn predicate(&self) -> Predicate {
         let mut parts: Vec<String> = Vec::new();
         let mut binds: Vec<Bind> = Vec::new();
 
         match &self.status {
             Some(StatusFilter::Is(state)) => {
-                // `cur.status` is the stored vocabulary, which is what
-                // `ReadingState::Display` round-trips to — so an `Other(raw)`
-                // filter names the raw word the importer wrote.
+                // `cur.status` holds the stored vocabulary, so `Other(raw)` filters on the raw word.
                 parts.push("cur.status = ?".into());
                 binds.push(Bind::Text(state.to_string()));
             }
-            // Not `cur.status IS NULL`: a reading may exist with a NULL status,
-            // and that book *has* been opened. The join's own absence is the
-            // only honest spelling of "no reading".
+            // Not `status IS NULL`: a reading with a NULL status still counts as opened.
             Some(StatusFilter::NoReading) => parts.push("cur.id IS NULL".into()),
             None => {}
         }
@@ -252,9 +114,7 @@ impl BookFilter {
             binds.push(Bind::Text(language.clone()));
         }
         if let Some(tag) = &self.tag {
-            // EXISTS rather than a join: a book carrying the same tag from two
-            // sources is one book, and a join would list it twice — which would
-            // also make `count_books` disagree with the length of its own page.
+            // EXISTS, not a join: a join would list a book twice for two sources and skew `count_books`.
             parts.push(
                 "EXISTS (SELECT 1 FROM book_tags bt \
                  WHERE bt.book_id = books.id AND bt.tag = ? COLLATE NOCASE)"
@@ -280,30 +140,18 @@ impl BookFilter {
     }
 }
 
-/// A page of the library: which books, in what order, and which slice.
-///
-/// One struct rather than four arguments because `limit` and `offset` are both
-/// `i64` and adjacent, which is a swap nobody's type checker catches.
+/// One struct because adjacent `limit` and `offset` `i64`s are a swap no type checker catches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookQuery {
     pub sort: BookSort,
     pub filter: BookFilter,
-    /// How many rows. **Negative means no limit**, which is SQLite's own reading
-    /// of `LIMIT -1`.
-    ///
-    /// It used to need saying twice — [`BookSort::Author`] sliced in Rust and
-    /// had to be taught the same convention — and since migration `0016` every sort is
-    /// one `LIMIT ? OFFSET ?`, so the convention is the database's alone and
-    /// two arms can no longer mean different things by the same number.
+    /// Negative means no limit, as SQLite reads `LIMIT -1`.
     pub limit: i64,
-    /// How many rows to skip first. Negative is clamped to zero — there is no
-    /// page before the first one.
+    /// Negative is clamped to zero.
     pub offset: i64,
 }
 
 impl Default for BookQuery {
-    /// Every book, most recently touched first. The unfiltered whole-library
-    /// read, which is what a caller with no opinion means.
     fn default() -> Self {
         BookQuery {
             sort: BookSort::LastModified,
@@ -315,8 +163,6 @@ impl Default for BookQuery {
 }
 
 impl BookQuery {
-    /// The first `limit` books by `sort` — what `list_books(limit, sort)` meant
-    /// before filters and offsets existed, spelled the new way.
     pub fn new(limit: i64, sort: BookSort) -> BookQuery {
         BookQuery {
             sort,
@@ -336,62 +182,26 @@ impl BookQuery {
     }
 }
 
-/// Which readings a list is about, before it is ordered or cut into pages.
-///
-/// `Default` is *every reading in the library*, which is what makes the filtered
-/// and unfiltered call sites one code path — [`BookFilter`]'s rule, and for the
-/// same reason.
-///
-/// Four predicates and no fifth, because every one of them is a question a
-/// screen asks: which book's readings (the card page for one book), what state
-/// (the wall of finished reads), open or closed, and **which year**. There is
-/// deliberately no `source` filter and no `has_passage` filter: neither is a
-/// question anything asks, and a filter case nobody asked is a filter case
-/// nobody can be shown to have got right.
+/// `Default` is every reading. Deliberately no `source` or `has_passage` filter: nothing asks for
+/// them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReadingFilter {
-    /// One book's readings. This is what lets the single-book card page ask the
-    /// **same** question as the wall — one call carrying the passage and the
-    /// read number — rather than `ListReadings` plus N `CardPassage` calls
-    /// beside it.
     pub book_id: Option<i64>,
-    /// The reading's own `status`. `ReadingState::Other(raw)` reaches through
-    /// unchanged, so a device vocabulary this build does not model is still
-    /// filterable — [`StatusFilter::Is`]'s rule, one table over.
-    ///
-    /// There is no `NoReading` case here and there cannot be: every row of this
-    /// list *is* a reading, so the absence [`StatusFilter`] had to name is
-    /// unrepresentable rather than merely unwanted.
+    /// `ReadingState::Other(raw)` passes through; there is no `NoReading` case since every row is a
+    /// reading.
     pub status: Option<ReadingState>,
-    /// `Some(true)` is a reading still open — `finished_at IS NULL`, which is
-    /// what open *means* and not a status word.
-    ///
-    /// Not redundant with `status`: `abandon_reading` deliberately leaves the
-    /// reading open, so `abandoned` and `reading` are both open and a wall of
-    /// finished reads cannot be written as a status filter.
+    /// Open means `finished_at IS NULL`, not a status: `abandon_reading` leaves a reading open.
     pub open: Option<bool>,
-    /// Readings that **finished** inside this span of days, UTC.
-    ///
-    /// The year filter, and the reason migration `0018` exists. A
-    /// [`DayRange`] rather than a bare year because the type already validates
-    /// its ends and refuses an inverted span — a backwards range would select
-    /// nothing and report a confident zero — and because a year is two days,
-    /// which is exactly what `ActivitySummary` already asks a client for. It
-    /// binds [`DayRange::unix_bounds`] against the bare column; see there.
+    /// Finished within this UTC day span; binds `unix_bounds` against the bare column.
     pub finished_in: Option<DayRange>,
 }
 
 impl ReadingFilter {
-    /// True when this filter asks nothing, so every reading is in the answer.
     pub fn is_empty(&self) -> bool {
         *self == ReadingFilter::default()
     }
 
-    /// The clause, against the alias `readings`.
-    ///
-    /// Written once and read by both `list_reading_rows` and `count_readings`.
-    /// Nothing here names `books` or `cur`, which is what lets the count drop
-    /// the current-reading join the page needs for its `BookDto`.
+    /// Nothing here names `books` or `cur`, so the count can drop the current-reading join.
     pub(super) fn predicate(&self) -> Predicate {
         let mut parts: Vec<String> = Vec::new();
         let mut binds: Vec<Bind> = Vec::new();
@@ -410,13 +220,8 @@ impl ReadingFilter {
             None => {}
         }
         if let Some(range) = &self.finished_in {
-            // **The bare column, and half-open.** `date(finished_at,
-            // 'unixepoch') BETWEEN ? AND ?` is the obvious spelling and it is
-            // the one thing `idx_readings_finished_at` cannot serve — an
-            // expression over the column, declined as silently as a mismatched
-            // collation is (`0008`). A NULL `finished_at` fails both
-            // comparisons, which is correct: an open reading did not finish in
-            // any year.
+            // Bare column, half-open: `date(finished_at, 'unixepoch')` is an expression
+            // `idx_readings_finished_at` cannot serve.
             let (start, end) = range.unix_bounds();
             parts.push("readings.finished_at >= ? AND readings.finished_at < ?".into());
             binds.push(Bind::Int(start));
@@ -432,32 +237,19 @@ impl ReadingFilter {
     }
 }
 
-/// A page of the library's readings: which ones, in what order, which slice.
-///
-/// [`BookQuery`]'s shape, and the offset is an offset for the same reason (see
-/// the module doc), which applies here more simply: a count composes with an
-/// offset and a shelf that knows its total wants page numbers, which *are*
-/// offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadingQuery {
     pub sort: ReadingSort,
     pub filter: ReadingFilter,
-    /// How many rows. **Negative means no limit**, SQLite's own reading of
-    /// `LIMIT -1` — the convention [`BookQuery::limit`] states.
+    /// Negative means no limit (`LIMIT -1`).
     pub limit: i64,
-    /// How many rows to skip first. Negative is clamped to zero.
+    /// Negative is clamped to zero.
     pub offset: i64,
 }
 
 impl Default for ReadingQuery {
-    /// Every reading, most recently finished first.
-    ///
-    /// Not [`BookQuery`]'s `LastModified`, and the difference is the point: a
-    /// book's recency is when you last touched it, while a *reading* is an
-    /// episode with an end, and `readings.last_modified` moves on a device sync
-    /// that says nothing about when you read. Open readings have no
-    /// `finished_at` and sort last under SQLite's own NULL ordering, which is
-    /// where they belong on a list of reads that ended.
+    /// Most recently finished first, not by `last_modified`, which moves on device sync; open
+    /// readings sort last.
     fn default() -> Self {
         ReadingQuery {
             sort: ReadingSort::Finished,
@@ -488,17 +280,7 @@ impl ReadingQuery {
     }
 }
 
-/// What is behind one book: how many highlights, notes and owned files it has.
-///
-/// **Counts rather than marks**, because the cheap-query argument for a
-/// boolean does not survive contact with the implementation (this is three grouped aggregates
-/// per page either way, not a subquery per row), a count is strictly more
-/// information, and the boolean is one comparison away — [`BookSummary::has`]
-/// is that comparison, written once so twelve components do not each write
-/// `> 0`.
-///
-/// Every count is of **something the user did**: highlights they took, notes
-/// they wrote, files they own. Nothing here counts what has not happened.
+/// Counts rather than booleans: more information, and `has` is the one comparison.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BookSummary {
     pub book_id: i64,
@@ -508,9 +290,6 @@ pub struct BookSummary {
 }
 
 impl BookSummary {
-    /// True when there is anything behind this book at all — the "show a mark"
-    /// reading of the same row, so a frontend that wants the mark does not
-    /// re-derive it.
     pub fn has(&self) -> bool {
         self.highlights > 0 || self.notes > 0 || self.files > 0
     }
@@ -528,9 +307,6 @@ mod tests {
         assert!(BookFilter::default().is_empty());
     }
 
-    /// Absence is the join's, not the status column's. A reading with a NULL
-    /// status is a book that *has* been opened, and folding the two together
-    /// would put it in a filter it does not belong in.
     #[test]
     fn no_reading_is_the_absent_join_and_not_a_null_status() {
         let p = BookFilter {
@@ -546,8 +322,6 @@ mod tests {
         );
     }
 
-    /// An importer's own word survives the round trip into a filter, which is
-    /// the whole reason `ReadingState::Other` carries the raw string.
     #[test]
     fn an_unknown_status_is_filterable_by_its_own_word() {
         let p = BookFilter {
@@ -583,9 +357,7 @@ mod tests {
             ],
             "the clause names six values and `has_cover` names none"
         );
-        // Seven predicates, and `has_cover` is the one that binds nothing. Not
-        // counted by splitting on " AND " — the tag clause contains one of its
-        // own, which is exactly the sort of thing a structural count gets wrong.
+        // Not counted by splitting on " AND ": the tag clause contains one.
         for named in [
             "cur.status",
             "books.title LIKE",
@@ -600,9 +372,6 @@ mod tests {
         assert!(p.sql.starts_with("WHERE "));
     }
 
-    /// A search for `100%` is a search for `100%`. Without the escape it is a
-    /// search for everything beginning `100`, which returns confident nonsense
-    /// rather than an error.
     #[test]
     fn a_wildcard_in_the_needle_is_a_literal() {
         assert_eq!(like_escape("100%"), r"100\%");
@@ -610,11 +379,6 @@ mod tests {
         assert_eq!(like_escape(r"a\b"), r"a\\b");
     }
 
-    /// `title` matches by exactly the rule `author` does, and that is the
-    /// decision rather than an implementation detail — a filter struct whose
-    /// fields match by different rules is a filter struct whose callers guess.
-    /// Structural, because the behavioural version passes just as well against
-    /// an FTS predicate that happens to find the same book.
     #[test]
     fn the_title_filter_matches_the_way_its_neighbours_do() {
         let title = BookFilter {
@@ -638,8 +402,6 @@ mod tests {
             "a filter is not a search: {}",
             title.sql
         );
-        // Infix, which is the half fts5 could not do: `possess` finds
-        // *The Dispossessed*.
         assert_eq!(
             BookFilter {
                 title: Some("possess".into()),
@@ -651,15 +413,6 @@ mod tests {
         );
     }
 
-    /// The whole-library read has one spelling, and it is the one
-    /// `BookQuery::default()` produces.
-    ///
-    /// The `skip`/`take` accessors this used to assert against were
-    /// [`BookSort::Author`]'s Rust slice teaching itself SQLite's convention,
-    /// and migration `0016` deleted the slice — a negative limit is now `LIMIT -1` and
-    /// nothing else reads it. What survives is the contract the callers depend
-    /// on: `koreader::scores_for` and `goodreads::export` used to write `10_000`
-    /// and `i64::MAX` for this.
     #[test]
     fn the_default_query_is_the_whole_library_by_recency() {
         let q = BookQuery::default();

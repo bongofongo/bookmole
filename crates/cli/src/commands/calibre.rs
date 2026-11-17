@@ -1,11 +1,4 @@
-//! `calibre status` / `calibre convert` / `calibre import`.
-//!
-//! Feature-detected all the way out to the surface: with calibre absent these
-//! commands say so and name nothing to install. bookmole never asks the
-//! user to install or configure other software, so `status` reports and stops
-//! — it does not suggest, and it does not fail.
-//!
-//! All the printing lives here; the engine does no terminal I/O.
+//! Absent calibre is reported, never prescribed: nothing here tells the user to install it.
 
 use std::path::{Path, PathBuf};
 
@@ -13,11 +6,6 @@ use anyhow::Result;
 use bookmole::calibre::ImportOptions;
 use bookmole::{CalibreBookReport, CalibreReport, Engine, EngineError};
 
-/// What calibre is available for, and where it was found.
-///
-/// Exists because feature detection is otherwise invisible: with calibre absent
-/// the features are simply not there, and without this the user's only way to
-/// find that out is to try one and read a refusal.
 pub async fn status(engine: &Engine) -> Result<()> {
     let cal = engine.calibre();
     let line = |label: &str, found: Option<&Path>| match found {
@@ -35,14 +23,6 @@ pub async fn status(engine: &Engine) -> Result<()> {
     Ok(())
 }
 
-/// The summary line, as a pure function so its wording can be asserted.
-///
-/// It has to be, and not through the process: detection falls through to `PATH`
-/// and then to the directories calibre installs itself in, so on a machine with
-/// calibre the absent branch is unreachable from outside — which is exactly the
-/// branch with a rule attached to it. bookmole never asks the user to
-/// install or configure other software, so this must report and stop. Not "install calibre to enable these": they are optional
-/// extras on top of an app that works without them.
 fn availability(convert: bool, library: bool) -> &'static str {
     match (convert, library) {
         (true, true) => "conversion and library import are available.",
@@ -52,7 +32,6 @@ fn availability(convert: bool, library: bool) -> &'static str {
     }
 }
 
-/// Tier (i): `ebook-convert IN OUT`.
 pub async fn convert(engine: &Engine, input: &Path, output: &Path, force: bool) -> Result<()> {
     match engine.convert_ebook(input, output, force).await {
         Ok(path) => {
@@ -63,8 +42,6 @@ pub async fn convert(engine: &Engine, input: &Path, output: &Path, force: bool) 
             println!("{e} — conversion needs it, and nothing else here does.");
             Ok(())
         }
-        // An existing output is the one refusal with an obvious next move, so it
-        // names the flag rather than only complaining.
         Err(EngineError::InvalidInput(m)) if m.contains("already exists") => {
             println!("{m}. overwrite it: --force");
             Ok(())
@@ -73,7 +50,6 @@ pub async fn convert(engine: &Engine, input: &Path, output: &Path, force: bool) 
     }
 }
 
-/// Tier (ii): import the books calibre already holds.
 pub async fn import(
     engine: &Engine,
     library: Option<PathBuf>,
@@ -84,8 +60,6 @@ pub async fn import(
         library,
         dry_run,
         create_ambiguous: new,
-        // The whole library. Importing one row of it is a thing you do standing
-        // on that row, which is a frontend with a shelf on screen.
         only: Vec::new(),
     };
     let report = match engine.import_calibre_library(&opts).await {
@@ -104,8 +78,6 @@ pub async fn import(
         println!("{}", book_line(b, &report));
     }
 
-    // Unmatched is a decision, not a dead end — the same shape `ko pull` and
-    // `goodreads import` have: say what it probably is, and name both moves.
     for u in &report.unmatched {
         println!(
             "unmatched: {} — {}",
@@ -187,11 +159,6 @@ fn book_line(b: &CalibreBookReport, report: &CalibreReport) -> String {
 mod tests {
     use super::*;
 
-    /// Absence is a report, and it names nothing to go and install.
-    ///
-    /// The rule is a product rule, and it is the sort that erodes by
-    /// helpfulness: "calibre is not installed — get it from calibre-ebook.com"
-    /// is one obliging edit away and is precisely what this app does not do.
     #[test]
     fn an_absent_calibre_is_reported_and_never_prescribed() {
         let absent = availability(false, false);
@@ -199,8 +166,7 @@ mod tests {
             absent,
             "calibre is not installed; these features are not available."
         );
-        // Phrases, not the bare word "install" — the honest sentence *has* to
-        // say "not installed". What is banned is the imperative that follows it.
+        // Phrases, not the bare word: "not installed" is fine, an install imperative is not.
         for prescription in [
             "install calibre",
             "install it",
@@ -216,8 +182,6 @@ mod tests {
                 "{absent:?} tells the user to go and configure other software ({prescription:?})"
             );
         }
-        // A half install degrades to the half that works, rather than to
-        // nothing — the two tiers are independent features.
         assert!(availability(true, false).starts_with("conversion is available"));
         assert!(availability(false, true).starts_with("library import is available"));
         assert_eq!(

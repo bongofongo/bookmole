@@ -1,16 +1,7 @@
-//! The one status line the TUI shows when the library sits in a cloud-synced
-//! folder.
-//!
-//! The fact is the engine's (`bookmole::cloud_folder`); the sentence is
-//! this frontend's, and deliberately the CLI's sentence without the root's
-//! path, which a one-row status line cannot afford. It is set once, at launch,
-//! through the ordinary status line (`App::status`), and goes the way every
-//! status does: the next thing the app has to say replaces it. The library
-//! opens either way.
+//! The status line shown once at launch when the library sits in a cloud-synced folder.
 
 use bookmole::{CloudFolder, CloudService};
 
-/// The sync service, as its maker spells it.
 fn service_name(s: CloudService) -> &'static str {
     match s {
         CloudService::ICloudDrive => "iCloud Drive",
@@ -23,7 +14,6 @@ fn service_name(s: CloudService) -> &'static str {
     }
 }
 
-/// The line, whole.
 pub fn cloud_folder_line(f: &CloudFolder) -> String {
     format!(
         "The library is in {}. Syncing can damage a library while it is open; \
@@ -52,7 +42,6 @@ mod tests {
         );
     }
 
-    /// The axiom's banned words, and no line break: it is one status row.
     #[test]
     fn the_line_is_one_line_and_frames_nothing_as_a_task() {
         for s in [

@@ -1,17 +1,5 @@
-//! The wireless rendezvous, end to end, with nothing leaving the machine: a
-//! reader pushing to us first, then us pulling from a reader.
-//!
-//! Two rules shape every test here and they are not the same rule:
-//!
-//! - **No broadcast packet is ever emitted.** The UDP half goes through
-//!   [`ScriptedBeacon`], which is `watch.rs`'s injected `MountStir` channel
-//!   applied to discovery: a rendezvous that can only be driven by plugging in
-//!   real hardware is a rendezvous with no tests, and the refusals are exactly
-//!   the part with bugs in it.
-//! - **Loopback is fine.** `tests/provider_http.rs` already binds a real local
-//!   port through `wiremock`. "No network in tests, ever" means nothing leaves
-//!   the machine, so the TCP half is the real socket, the real framing and the
-//!   real import.
+//! The wireless rendezvous end to end. No broadcast packet is emitted (UDP goes through
+//! `ScriptedBeacon`); the TCP half is a real loopback socket.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -27,39 +15,30 @@ use tokio::sync::Mutex;
 
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// The clock, spelled here because `storage::now_unix` is `pub(crate)` — and
-/// it stays that way: a facade that exposed *what time is it* would be a
-/// surface with no product behind it.
+/// `storage::now_unix` is `pub(crate)` on purpose; the facade must not expose the clock.
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-/// A sidecar that **carries a `partial_md5_checksum`**, which is what makes an
-/// import of it idempotent — see `pushing_the_same_thing_twice_changes_nothing`
-/// and the test below it for the case where one does not.
+/// Carries a `partial_md5_checksum`, which makes its import idempotent.
 const SIDECAR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/koreader/synthetic/Multi-Chapter.sdr/metadata.epub.lua"
 );
 
-/// One that does not. `import_book_from_sidecar` says so in its own doc: with
-/// nothing to key a mapping on there is no de-duplication to be had.
+/// No checksum, so there is nothing to key a mapping on and no de-duplication.
 const UNIDENTIFIED_SIDECAR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/koreader/synthetic/The-Trial.sdr/metadata.epub.lua"
 );
 
-// ---- the injected transport ------------------------------------------------
-
-/// A [`Beacon`] made of a queue and a log. Nothing is sent anywhere.
 #[derive(Debug, Default)]
 struct ScriptedBeacon {
     probes: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
     replies: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
-    /// Held open so the responder task parks rather than ending, which is what
-    /// a real socket does between datagrams.
+    /// Held open so the responder parks rather than ending, as a real socket does between datagrams.
     exhausted: tokio::sync::Notify,
 }
 
@@ -89,7 +68,6 @@ impl ScriptedBeacon {
         self.exhausted.notify_waiters();
     }
 
-    /// Wait briefly for the responder to answer, then report what it said.
     async fn answers(&self) -> Vec<Here> {
         for _ in 0..200 {
             {
@@ -112,8 +90,6 @@ impl ScriptedBeacon {
     }
 }
 
-// ---- scaffolding -----------------------------------------------------------
-
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().unwrap();
     let config = EngineConfig {
@@ -129,7 +105,6 @@ async fn engine() -> (tempfile::TempDir, Engine) {
     (tmp, Engine::open(config).await.unwrap())
 }
 
-/// A paired reader, by the same door the installer uses.
 async fn pair(engine: &Engine, tmp: &std::path::Path) -> (String, String) {
     let mount = tmp.join("reader");
     std::fs::create_dir_all(mount.join("koreader/frontend")).unwrap();
@@ -142,8 +117,6 @@ async fn pair(engine: &Engine, tmp: &std::path::Path) -> (String, String) {
             .join("pairing.lua"),
     )
     .unwrap();
-    // The token is only ever on the device and in our own row; the test reads
-    // it the way the plugin does.
     let token = src
         .lines()
         .find_map(|l| l.trim().strip_prefix("token     = "))
@@ -167,7 +140,6 @@ async fn start(listener: &Arc<Listener>, engine: &Engine, beacon: Arc<ScriptedBe
         .unwrap();
 }
 
-/// One push session, spoken by hand the way the plugin's Lua will.
 struct Reader {
     stream: BufReader<TcpStream>,
     nonce: String,
@@ -241,10 +213,6 @@ impl Reader {
     }
 }
 
-// ---- the tests -------------------------------------------------------------
-
-/// The whole verb: a paired reader finds the desktop, connects, proves itself,
-/// and its highlights land through the ordinary import.
 #[tokio::test]
 async fn a_paired_reader_finds_us_and_pushes_its_highlights() {
     let (tmp, engine) = engine().await;
@@ -253,8 +221,6 @@ async fn a_paired_reader_finds_us_and_pushes_its_highlights() {
     let beacon = Arc::new(ScriptedBeacon::default());
     start(&listener, &engine, Arc::clone(&beacon), 5).await;
 
-    // Discovery. The reply proves the desktop holds the token, and the reader
-    // checks that before sending a byte.
     beacon
         .probe(&Hello {
             v: 1,
@@ -271,7 +237,6 @@ async fn a_paired_reader_finds_us_and_pushes_its_highlights() {
         "the reader verifies identity, not address"
     );
 
-    // The push.
     let body = std::fs::read_to_string(SIDECAR).unwrap();
     let (mut reader, ack) = Reader::connect(here[0].tcp_port, &device_id, &token, "push-1").await;
     assert!(ack.ok, "{ack:?}");
@@ -283,13 +248,11 @@ async fn a_paired_reader_finds_us_and_pushes_its_highlights() {
     );
     assert!(reader.done().await.ok);
 
-    // It landed through the same import a cable feeds.
     let books = engine.list_books(&Default::default()).await.unwrap();
     assert_eq!(books.len(), 1, "the sidecar's own book was created");
     let marks = engine.list_highlights(books[0].id.unwrap()).await.unwrap();
     assert!(!marks.is_empty(), "and its highlights came with it");
 
-    // The reader reached us over the LAN. That is not a cable and not a sync.
     let device = engine
         .paired_devices()
         .await
@@ -305,8 +268,6 @@ async fn a_paired_reader_finds_us_and_pushes_its_highlights() {
     );
 }
 
-/// The property a push must have, and the one the sidecar payload was chosen
-/// to give for free: pushing the same reader twice changes nothing.
 #[tokio::test]
 async fn pushing_the_same_thing_twice_changes_nothing() {
     let (tmp, engine) = engine().await;
@@ -317,9 +278,7 @@ async fn pushing_the_same_thing_twice_changes_nothing() {
     let mut counts = Vec::new();
     for nonce in ["a", "b"] {
         let beacon = Arc::new(ScriptedBeacon::default());
-        // `Some(0)` — always — so the first push does not close the door on
-        // the second, which is the point being measured rather than a side
-        // effect being worked around.
+        // `Some(0)`, always: a window would close after the first push and the second could not run.
         listener
             .start(
                 engine.storage().clone(),
@@ -350,16 +309,8 @@ async fn pushing_the_same_thing_twice_changes_nothing() {
     listener.stop().await;
 }
 
-/// And the honest limit of that property, which is easy to overstate.
-///
-/// Idempotence "for free" from the sidecar payload is only true for a sidecar
-/// that carries a `partial_md5_checksum`. Without one there
-/// is nothing to key a mapping on, so `import_book_from_sidecar` creates a book
-/// and warns `SidecarNotIdentified` — over a cable and, necessarily, over the
-/// wire. The transport inherits the import's properties, and that includes this
-/// one. Pinned rather than papered over: a reader that cannot identify a file
-/// will duplicate it on every push, and whoever builds the pull side should
-/// know that before designing around the opposite.
+/// A sidecar without a `partial_md5_checksum` is not idempotent: the import creates a book and
+/// warns `SidecarNotIdentified`, over the wire as over a cable.
 #[tokio::test]
 async fn a_sidecar_with_no_checksum_is_no_more_idempotent_over_the_wire() {
     let (tmp, engine) = engine().await;
@@ -398,7 +349,6 @@ async fn a_sidecar_with_no_checksum_is_no_more_idempotent_over_the_wire() {
     listener.stop().await;
 }
 
-/// A rogue on the LAN gets nothing at all, at either layer.
 #[tokio::test]
 async fn a_stranger_is_answered_with_silence_and_refused_on_connect() {
     let (tmp, engine) = engine().await;
@@ -408,8 +358,7 @@ async fn a_stranger_is_answered_with_silence_and_refused_on_connect() {
     start(&listener, &engine, Arc::clone(&beacon), 5).await;
     let port = listener.status(0).await.tcp_port.unwrap();
 
-    // A probe naming a device we are not paired with is answered with nothing
-    // — not a refusal, which would confirm something is here.
+    // A probe naming an unpaired device gets silence, not a refusal, which would confirm we exist.
     beacon
         .probe(&Hello {
             v: 1,
@@ -419,30 +368,24 @@ async fn a_stranger_is_answered_with_silence_and_refused_on_connect() {
         .await;
     assert!(beacon.silent().await, "an unpaired probe learned we exist");
 
-    // The right device id with the wrong secret is refused, and the session
-    // never opens.
     let (_, ack) = Reader::connect(port, &device_id, "not-the-token", "n2").await;
     assert!(!ack.ok);
     assert!(ack.error.unwrap().contains("prove"), "and it is told why");
 
-    // A device id we have never heard of, likewise.
     let (_, ack) = Reader::connect(port, "nobody", &token, "n3").await;
     assert!(!ack.ok);
 
-    // The real reader still works afterwards: a refusal is not a wedge.
     let (_, ack) = Reader::connect(port, &device_id, &token, "n4").await;
     assert!(ack.ok);
 }
 
-/// A captured session cannot be replayed at the listener that honoured it.
 #[tokio::test]
 async fn a_replayed_nonce_is_refused() {
     let (tmp, engine) = engine().await;
     let (device_id, token) = pair(&engine, tmp.path()).await;
     let listener = Arc::new(Listener::new());
-    // `Always`, because in a *window* the first completed session shuts the
-    // door and a replay has nothing to reach. The nonce check is what protects
-    // the desktop that stays open on the LAN, which is the mode it is for.
+    // `Always`: in a window the first completed session closes the door, leaving a replay nothing
+    // to reach.
     start(&listener, &engine, Arc::new(ScriptedBeacon::default()), 0).await;
     let port = listener.status(0).await.tcp_port.unwrap();
 
@@ -457,22 +400,13 @@ async fn a_replayed_nonce_is_refused() {
     );
     assert!(ack.error.unwrap().contains("already used"));
 
-    // A different nonce on the same open door is fine — the refusal is about
-    // the value, not about the reader having been here before.
     let (_, ack) = Reader::connect(port, &device_id, &token, "different").await;
     assert!(ack.ok);
     listener.stop().await;
 }
 
-/// **The nonce set is per open door, not per lifetime**, and closing clears it.
-///
-/// The scope is deliberate rather than an oversight, and it took writing the
-/// wrong test to see why. Replay protection is defence in depth here: a body
-/// frame's MAC covers the body's *hash*, so an attacker replaying a captured
-/// `open` cannot follow it with bytes of their own — the only thing they can
-/// resend is what they captured, which is the same sidecar, which imports
-/// idempotently. Keeping nonces across a closed door would therefore buy
-/// nothing and cost an unbounded set on a desktop left in `Always` for weeks.
+/// The nonce set is per open door: closing clears it, so a desktop left open for weeks does
+/// not accumulate an unbounded set.
 #[tokio::test]
 async fn closing_the_door_forgets_the_nonces_it_honoured() {
     let (tmp, engine) = engine().await;
@@ -488,8 +422,6 @@ async fn closing_the_door_forgets_the_nonces_it_honoured() {
     }
 }
 
-/// A body that does not match the hash its MAC covers is refused before it is
-/// parsed, and before the credential is even consulted.
 #[tokio::test]
 async fn a_swapped_body_is_refused_before_it_is_parsed() {
     let (tmp, engine) = engine().await;
@@ -501,7 +433,6 @@ async fn a_swapped_body_is_refused_before_it_is_parsed() {
     let (mut reader, ack) = Reader::connect(port, &device_id, &token, "n").await;
     assert!(ack.ok);
 
-    // A well-formed frame whose declared hash belongs to different bytes.
     let body = "return { }";
     let frame = PushFrame::Entry {
         name: "swapped.lua".into(),
@@ -527,9 +458,6 @@ async fn a_swapped_body_is_refused_before_it_is_parsed() {
     );
 }
 
-/// Off is the default, and with the listener closed there is nothing to find
-/// and nothing to connect to. Wireless *fails closed*: nothing listens until
-/// somebody asks it to, and this is that rule at the transport layer.
 #[tokio::test]
 async fn with_the_listener_off_there_is_nothing_to_find() {
     let (tmp, engine) = engine().await;
@@ -547,8 +475,6 @@ async fn with_the_listener_off_there_is_nothing_to_find() {
     let port = listener.status(0).await.tcp_port.unwrap();
     listener.stop().await;
 
-    // A probe after the door shut is not answered, and the port is gone with
-    // it — the UDP responder lives and dies with the TCP listener.
     beacon
         .probe(&Hello {
             v: 1,
@@ -565,8 +491,7 @@ async fn with_the_listener_off_there_is_nothing_to_find() {
     );
     assert_eq!(listener.status(0).await.mode, ListenerMode::Off);
 
-    // Stopping twice is not an error: a frontend cannot know the window did
-    // not expire between drawing the button and the user pressing it.
+    // Stopping twice is not an error: the window may have expired before the user pressed stop.
     assert_eq!(listener.stop().await.mode, ListenerMode::Off);
     assert_eq!(
         engine.stop_listening().await.unwrap().mode,
@@ -574,7 +499,6 @@ async fn with_the_listener_off_there_is_nothing_to_find() {
     );
 }
 
-/// A completed session closes a window and the sockets go with it.
 #[tokio::test]
 async fn a_completed_push_closes_the_window_it_came_through() {
     let (tmp, engine) = engine().await;
@@ -602,8 +526,6 @@ async fn a_completed_push_closes_the_window_it_came_through() {
     );
 }
 
-/// One unreadable sidecar does not end a session carrying good ones — the
-/// provider rule (degrade, never abort) applied to a transport.
 #[tokio::test]
 async fn a_bad_sidecar_is_reported_and_the_session_continues() {
     let (tmp, engine) = engine().await;
@@ -631,14 +553,6 @@ async fn a_bad_sidecar_is_reported_and_the_session_continues() {
     );
 }
 
-// ---- pull -------------------------------------------------------------------
-
-/// The reader's half of a pull, spoken by hand the way the plugin's Lua does.
-///
-/// It exists because the *reader* is the opener here, and there is no Rust
-/// implementation of that side to reuse — which is the point rather than a
-/// shortcut around it: this is the only place the two implementations of one
-/// protocol are checked against each other.
 async fn fake_reader(
     token: String,
     bodies: Vec<(String, String)>,
@@ -652,14 +566,8 @@ async fn fake_reader(
         let (read, mut write) = stream.into_split();
         let mut reader = BufReader::new(read);
 
-        // **Framed the way `SimpleTCPServer` frames it, which is the whole
-        // point of this double.** KOReader's server reads lines and hands the
-        // request to its callback *only* on an empty one — so a double that
-        // accepts a bare line accepts a request the real reader would sit on
-        // until it timed out and closed. It did, and the desktop shipped
-        // without the terminator: every loopback test passed, and the first
-        // real pull answered "the reader said nothing". Requiring the blank
-        // line here is what makes this test able to fail for that reason.
+        // Framed as `SimpleTCPServer` does: KOReader hands a request to its callback only on an empty
+        // line, so a double accepting a bare line would hide a missing terminator.
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         let open: Open = serde_json::from_str(line.trim_end()).unwrap();
@@ -671,8 +579,7 @@ async fn fake_reader(
             "a pull request ends with a blank line; without one KOReader's \
              SimpleTCPServer never calls its receiveCallback at all"
         );
-        // The reader verifies the desktop exactly as the desktop verifies the
-        // reader. The symmetry is the design, not a nicety.
+        // The reader verifies the desktop exactly as the desktop verifies the reader.
         assert_eq!(open.mac, mac(&token, &open_challenge(&open.nonce)));
         write.write_all(b"{\"ok\":true}\n").await.unwrap();
 
@@ -707,8 +614,6 @@ async fn fake_reader(
     (port, task)
 }
 
-/// A beacon that answers one `HELLO` with a `HERE` pointing at a loopback port.
-/// **No packet leaves the machine** — the datagram never reaches a socket.
 #[derive(Debug)]
 struct Responder {
     token: String,
@@ -735,8 +640,6 @@ impl Beacon for Responder {
         if let Some(next) = self.replies.lock().await.pop() {
             return Some(next);
         }
-        // Nothing queued: the seeker's own deadline ends this, and parking is
-        // what a real socket does meanwhile.
         std::future::pending().await
     }
     async fn send_to(&self, bytes: &[u8], _to: SocketAddr) -> std::io::Result<()> {
@@ -766,8 +669,6 @@ async fn device_row(engine: &Engine, device_id: &str) -> bookmole::PairedDevice 
         .unwrap()
 }
 
-/// The whole verb, the other way round: the desktop seeks, the reader answers,
-/// and the highlights land through the identical import.
 #[tokio::test]
 async fn the_desktop_can_pull_from_a_reader_whose_window_is_open() {
     let (tmp, engine) = engine().await;
@@ -803,29 +704,22 @@ async fn the_desktop_can_pull_from_a_reader_whose_window_is_open() {
             .is_empty()
     );
 
-    // Pull stamps the breadcrumb a push does — same wire, same reader — and is
-    // no more a *sync* than a push is.
     let after = device_row(&engine, &device_id).await;
     assert!(after.last_wireless_at.is_some());
     assert_eq!(after.last_lan_addr.as_deref(), Some("127.0.0.1"));
     assert_eq!(after.last_synced_at, None);
 
-    // No listener was ever started: a seeker sends first, so pulling with the
-    // door shut is the ordinary case rather than a special one.
     assert_eq!(
         engine.listener_status().await.unwrap().mode,
         ListenerMode::Off
     );
 }
 
-/// The property that makes the whole design worth its complexity, asserted from
-/// the seeking side this time: **a rogue that answers first gets nothing.**
 #[tokio::test]
 async fn a_responder_that_cannot_prove_the_token_is_never_connected_to() {
     let (tmp, engine) = engine().await;
     let (device_id, token) = pair(&engine, tmp.path()).await;
 
-    // A port that records any connection we might wrongly make to it.
     let trap = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -842,9 +736,8 @@ async fn a_responder_that_cannot_prove_the_token_is_never_connected_to() {
     let mut beacon = Responder::new(&token, port);
     beacon.key = Some("a-rogue-on-the-cafe-lan".into());
 
-    // The seeker keeps reading rather than trusting whoever replied first, so
-    // with only a rogue answering it never stops waiting — which is what the
-    // real socket's deadline turns into a refusal.
+    // The seeker keeps reading rather than trusting the first reply, so a lone rogue leaves it
+    // waiting until the real socket's deadline.
     let outcome = tokio::time::timeout(
         std::time::Duration::from_millis(300),
         bookmole::wireless::pull_from(
@@ -872,14 +765,11 @@ async fn a_responder_that_cannot_prove_the_token_is_never_connected_to() {
     );
 }
 
-/// Nobody answering is a refusal with an action in it — not a hang, and not a
-/// silent success.
 #[tokio::test]
 async fn a_reader_whose_window_is_shut_is_a_refusal_that_says_what_to_do() {
     let (tmp, engine) = engine().await;
     let (device_id, _) = pair(&engine, tmp.path()).await;
 
-    /// A LAN where the reader's window is shut.
     #[derive(Debug)]
     struct Silence;
     #[async_trait::async_trait]
@@ -904,12 +794,10 @@ async fn a_reader_whose_window_is_shut_is_a_refusal_that_says_what_to_do() {
     .unwrap_err();
     assert!(err.to_string().contains("window"), "{err}");
 
-    // And nothing was stamped: a pull that found nobody is not a contact.
     assert_eq!(device_row(&engine, &device_id).await.last_wireless_at, None);
 }
 
-/// A reader we have no row for cannot be pulled from, and the refusal lands
-/// **before any packet is built** — there is no token to challenge with.
+/// The refusal lands before any packet is built: there is no token to challenge with.
 #[tokio::test]
 async fn pulling_from_a_reader_we_never_paired_with_is_refused() {
     let (_tmp, engine) = engine().await;

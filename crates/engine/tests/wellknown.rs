@@ -1,12 +1,5 @@
-//! The embedded offline index of well-known works: **the one test that
-//! opens the real file.** Every other test of suggestions and correction runs
-//! against a fixture built in code.
-//!
-//! It checks the bytes are the ones `wellknown.json` records, and measures the
-//! three budgets it was built to — built in 5 s, a lookup in 15 ms, 100 MB on
-//! disk — printing them (`--nocapture`). The time
-//! budgets are the shipped build's: an unoptimised test build is given a
-//! multiple of them, and still fails if it is wildly over.
+//! The one test that opens the real embedded index of well-known works: checks its bytes
+//! against `wellknown.json` and measures the build, lookup and disk budgets.
 
 #![cfg(feature = "wellknown")]
 
@@ -17,17 +10,13 @@ use bookmole::search::wellknown::{
 };
 use sha2::{Digest, Sha256};
 
-/// The budgets.
 const BUILD: Duration = Duration::from_secs(5);
 const LOOKUP: Duration = Duration::from_millis(15);
 const DISK: u64 = 100 * 1024 * 1024;
 const EMBEDDED: usize = 12 * 1024 * 1024;
 
-/// How far over a time budget a run may land before it fails. The budgets are
-/// the shipped build's, measured and reported by this test in release; the
-/// assertion is a tripwire for a gross regression, not the measurement — a
-/// test machine running the whole suite at once is not the user's, and an
-/// unoptimised build is several times slower than the shipped one.
+/// Time budgets are the shipped build's; this slack makes the assertion a tripwire for gross
+/// regressions in a slow unoptimised or loaded test run.
 fn slack() -> u32 {
     if cfg!(debug_assertions) { 20 } else { 2 }
 }
@@ -52,7 +41,6 @@ async fn the_embedded_index_is_the_recorded_file_and_opens_within_budget() {
     );
     let works = parse_works(&gunzip(bytes).unwrap()).unwrap();
     assert_eq!(works.len(), record.works, "the file holds what it says");
-    // Sorted by Q-number, one line a work: the file is diffable by tool.
     assert!(works.windows(2).all(|w| w[0].wikidata < w[1].wikidata));
 
     let dir = tempfile::tempdir().unwrap();
@@ -68,14 +56,12 @@ async fn the_embedded_index_is_the_recorded_file_and_opens_within_budget() {
         .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
         .sum();
 
-    // Reopened, not rebuilt.
     let started = Instant::now();
     let wk = WellKnown::on_disk(dir.path(), &record, bytes)
         .await
         .unwrap();
     let reopen = started.elapsed();
 
-    // The slowest of a spread of lookups, each kind the search makes.
     let words = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
     let mut slowest: Vec<(&str, Duration)> = Vec::new();
     let mut time =
@@ -135,7 +121,6 @@ async fn the_embedded_index_is_the_recorded_file_and_opens_within_budget() {
     assert!(build <= BUILD * slack(), "built in {build:?}");
     assert!(worst <= LOOKUP * slack(), "a lookup took {worst:?}");
 
-    // What the benchmark's typos need is in it.
     let dune = wk.suggest("dune", 3).await.unwrap();
     assert!(
         dune.iter()

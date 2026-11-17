@@ -1,39 +1,6 @@
-//! The offline index of well-known works.
-//!
-//! It exists because the as-you-type feel cannot come from third parties:
-//! asking providers on every keystroke would send a readable prefix of what
-//! the user is typing to each of them, blow through Open Library's one request
-//! a second, and land answers for prefixes already typed past. So suggestions
-//! and typo correction come from data already on the machine, and providers
-//! are asked only when the user presses Enter.
-//!
-//! A table of works **about the world, not about you**: pulled once from
-//! Wikidata (CC0) by `cargo run -p corpus -- gen-wellknown`, committed as
-//! `crates/engine/data/wellknown.tsv.gz`, embedded behind the default-on
-//! `wellknown` feature, and **never updated from use**. Nothing in it comes
-//! from a library, and nothing a search does writes to it.
-//!
-//! It is opened as a **derived SQLite file** beside the database
-//! (`database/wellknown-<stamp>.db`, `<stamp>` from the embedded file's
-//! sha256 and [`INDEX_LAYOUT`]), built on first use and rebuilt whenever it is missing, half
-//! written or from another stamp. It is not part of `app.db` and has no
-//! migration: deleting it costs one rebuild.
-//!
-//! Three things read it: suggestions as you type ([`WellKnown::suggest`]),
-//! correction ([`WellKnown::candidates`], `search/correct.rs`), and the
-//! standing signal in `rank()` ([`WellKnown::notability`]). It also knows
-//! authors' names, which the query parser believes ([`WellKnown::authors_named`]).
-//!
-//! **The loader is injectable** ([`Loader`]): tests build a tiny index from
-//! works written in code, and only one test ever opens the embedded file.
-//!
-//! # The file
-//!
-//! Read here against the description in `crates/corpus/src/wellknown.rs`,
-//! sharing no code with it: a gzip of UTF-8 lines sorted by Q-number, `#`
-//! lines for comments, then `qid sitelinks year ol_works author series
-//! series_pos title…`, each title `[flags]langs=text` with `*` for the
-//! original title and `~` for an English alias.
+//! The offline index of well-known works: suggestions and typo correction come from data on the
+//! machine, so providers are asked only on Enter and never see a keystroke prefix.
+//! Built from Wikidata alone and never updated from use: nothing a search does writes to it.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
@@ -47,17 +14,13 @@ use super::query::{fold, is_filler, title_key};
 use crate::diagnostic::ErrorClass;
 use crate::error::{EngineError, Result};
 
-/// The layout version this reader knows. The generator writes it on the
-/// first line; another number is refused rather than guessed at.
+/// The layout version this reader knows; another number is refused rather than guessed at.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// The derived database's own layout, part of its file name. Bump it with
-/// any change to [`build`] or the schema, so an index built by an older
-/// engine is rebuilt rather than read wrong.
+/// Layout of the derived database, part of its file name; bump with any change to [`build`] or the
+/// schema.
 pub const INDEX_LAYOUT: u32 = 1;
 
-/// The embedded file and its record (`wellknown.json`: sha256, build date,
-/// count). Absent when the `wellknown` feature is off.
 #[cfg(feature = "wellknown")]
 pub(crate) const EMBEDDED: Option<(&[u8], &str)> = Some((
     include_bytes!(concat!(
@@ -69,7 +32,6 @@ pub(crate) const EMBEDDED: Option<(&[u8], &str)> = Some((
 #[cfg(not(feature = "wellknown"))]
 pub(crate) const EMBEDDED: Option<(&[u8], &str)> = None;
 
-/// The embedded file's record, as `wellknown.json` states it.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct EmbeddedRecord {
     pub sha256: String,
@@ -78,51 +40,39 @@ pub struct EmbeddedRecord {
     pub bytes: usize,
 }
 
-/// The record of the embedded file, when this build has one.
 pub fn embedded_record() -> Option<EmbeddedRecord> {
     EMBEDDED.and_then(|(_, meta)| serde_json::from_str(meta).ok())
 }
 
-/// The embedded file's bytes, when this build has one. For the one test that
-/// checks them against their recorded sha256.
 pub fn embedded_bytes() -> Option<&'static [u8]> {
     EMBEDDED.map(|(b, _)| b)
 }
 
-// ---- the works --------------------------------------------------------------
-
-/// One work of the index, as the file states it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WellKnownWork {
-    /// The Wikidata id's number (`Q190192` → 190192).
+    /// The Wikidata id's number (`Q190192` is 190192).
     pub wikidata: u64,
     /// Notability: how many Wikimedia sites have a page about it.
     pub sitelinks: u32,
     pub year: Option<i32>,
     /// Open Library work ids, bare (`OL893414W`).
     pub ol_works: Vec<String>,
-    /// The first author, as Wikidata labels them.
     pub author: Option<String>,
     pub series: Option<String>,
     pub series_position: Option<f64>,
     pub titles: Vec<WellKnownTitle>,
 }
 
-/// One of a work's titles.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WellKnownTitle {
     pub text: String,
     /// The languages whose label this is (two-letter, or `mul`).
     pub langs: Vec<String>,
-    /// The work's original title.
     pub original: bool,
-    /// An English alias rather than a label.
     pub alias: bool,
 }
 
 impl WellKnownWork {
-    /// The title to show: the English label, else the original title, else
-    /// the first there is.
     pub fn display_title(&self) -> &str {
         let pick = |f: &dyn Fn(&WellKnownTitle) -> bool| self.titles.iter().find(|t| f(t));
         pick(&|t| !t.alias && t.langs.iter().any(|l| l == "en"))
@@ -134,8 +84,7 @@ impl WellKnownWork {
     }
 }
 
-/// Read the file's text (decompressed). Comment lines are skipped; the first
-/// must name a format this reader knows.
+/// Comment lines are skipped; the first must name a format this reader knows.
 pub fn parse_works(text: &str) -> Result<Vec<WellKnownWork>> {
     let mut lines = text.lines();
     let head = lines.next().unwrap_or("");
@@ -205,7 +154,6 @@ fn parse_line(line: &str) -> Option<WellKnownWork> {
     })
 }
 
-/// Decompress the embedded gzip.
 pub fn gunzip(bytes: &[u8]) -> Result<String> {
     let mut text = String::new();
     flate2::read::GzDecoder::new(bytes)
@@ -214,47 +162,29 @@ pub fn gunzip(bytes: &[u8]) -> Result<String> {
     Ok(text)
 }
 
-// ---- where it comes from ----------------------------------------------------
-
-/// Where the index comes from.
 #[derive(Debug, Clone)]
 pub enum Loader {
-    /// The file embedded in this build, opened as `wellknown-<stamp>.db` in
-    /// `dir` (built there on first use).
     Embedded { dir: PathBuf },
-    /// These works, built into memory. What tests use.
     Works(Arc<Vec<WellKnownWork>>),
-    /// No index for this engine (an in-memory database has nowhere to keep
-    /// one, and an engine's own tests must not open the embedded file).
     None,
 }
 
-/// Why there is no index. A state, reported once as
-/// `DiagnosticKind::OfflineIndexUnavailable`; the search still runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unavailable {
-    /// Built without the `wellknown` feature.
     NotInThisBuild,
-    /// This engine has nowhere to keep one (an in-memory database).
     NotConfigured,
-    /// It could not be built or opened.
     Failed(ErrorClass),
 }
 
-/// The index, open.
 #[derive(Debug, Clone)]
 pub struct WellKnown {
     pool: SqlitePool,
 }
 
-/// One work found in the index, with every title it answers to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WellKnownHit {
     pub wikidata: u64,
-    /// The title to show for it: the one that matched when one did, else its
-    /// display title.
     pub title: String,
-    /// Every title it answers to (labels, the original title, aliases).
     pub titles: Vec<String>,
     pub author: Option<String>,
     pub year: Option<i32>,
@@ -265,7 +195,6 @@ pub struct WellKnownHit {
 }
 
 impl WellKnown {
-    /// Open the index the loader names, building it first when it has to be.
     pub async fn open(loader: &Loader) -> std::result::Result<WellKnown, Unavailable> {
         match loader {
             Loader::None => Err(Unavailable::NotConfigured),
@@ -287,8 +216,7 @@ impl WellKnown {
         }
     }
 
-    /// Build `works` into an in-memory database (one connection: memory is
-    /// per connection).
+    /// One connection: an in-memory database is per connection.
     pub async fn in_memory(works: &[WellKnownWork]) -> Result<WellKnown> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -301,11 +229,9 @@ impl WellKnown {
         Ok(WellKnown { pool })
     }
 
-    /// The file for `record` in `dir`, built from `bytes` when it is not
-    /// there whole.
     pub async fn on_disk(dir: &Path, record: &EmbeddedRecord, bytes: &[u8]) -> Result<WellKnown> {
-        // The file's hash and the layout this build writes: a new data file
-        // or a new layout is a new derived file, never a stale one reused.
+        // The file hash and layout form the stamp: a new data file or layout is a new derived file, never a
+        // stale one reused.
         let stamp = format!(
             "{}-v{INDEX_LAYOUT}",
             record.sha256.chars().take(16).collect::<String>()
@@ -347,29 +273,25 @@ impl WellKnown {
         Ok(WellKnown { pool })
     }
 
-    /// How many works the index holds.
     pub async fn count(&self) -> Result<i64> {
         Ok(sqlx::query_scalar("SELECT count(*) FROM works")
             .fetch_one(&self.pool)
             .await?)
     }
 
-    /// Suggestions for what is being typed: works whose title (with or
-    /// without its leading article) or whose author's name begins with it,
-    /// best known first. No network, ever.
+    /// Works whose title (with or without its leading article) or author begins with `prefix`, best
+    /// known first.
     pub async fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<WellKnownHit>> {
         let p = fold(prefix);
         if p.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        // Titles are kept by key (`query::title_key`: folded, one leading
-        // article dropped), so `the hob` and `hob` both reach *The Hobbit*.
+        // Titles are kept by key (`query::title_key`), so `the hob` and `hob` both reach *The Hobbit*.
         let key = title_key(&p).to_string();
         let hi = format!("{p}\u{10FFFF}");
         let key_hi = format!("{key}\u{10FFFF}");
         let lim = (limit * 4) as i64;
-        // A short prefix matches a great many titles: walk them best known
-        // first and stop at the limit, rather than gather and sort them all.
+        // A short prefix matches many titles: walk them best known first and stop at the limit.
         let sql = if key.chars().count() <= SHORT_PREFIX {
             "SELECT work, text, sitelinks FROM titles INDEXED BY titles_rank
              WHERE key >= ?1 AND key < ?2 ORDER BY sitelinks DESC, work LIMIT ?3"
@@ -391,8 +313,6 @@ impl WellKnown {
                 order.push((work, Some(r.get::<String, _>(1))));
             }
         }
-        // An author's name, whole or any word of it, when the titles left
-        // room: `herbert` suggests *Dune*.
         if order.len() < limit && !p.contains(' ') && p.chars().count() >= 3 {
             let rows = sqlx::query(
                 "SELECT a.work FROM author_words a JOIN works w ON w.id = a.work
@@ -415,9 +335,6 @@ impl WellKnown {
         self.hits(&order).await
     }
 
-    /// Works that might be what `words` (folded) misspell, for correction:
-    /// those sharing the most of the words' rarer trigrams, at most `limit`.
-    /// Recall, not judgement — `correct.rs` decides.
     pub async fn candidates(&self, words: &[String], limit: usize) -> Result<Vec<WellKnownHit>> {
         let mut grams: BTreeSet<String> = BTreeSet::new();
         for w in words {
@@ -432,8 +349,7 @@ impl WellKnown {
         if grams.is_empty() {
             return Ok(Vec::new());
         }
-        // Each gram's document count, so the rarest are asked: a common one
-        // (`the`, `her`) says little and costs most.
+        // The rarest grams are asked: a common one (`the`, `her`) says little and costs most.
         let mut rated: Vec<(i64, String)> = Vec::new();
         for g in &grams {
             let doc: Option<i64> = sqlx::query_scalar("SELECT doc FROM grams_vocab WHERE term = ?")
@@ -446,9 +362,7 @@ impl WellKnown {
         }
         rated.sort();
         rated.truncate(MAX_GRAMS);
-        // Counted in SQL, one row per title that holds any of them: the most
-        // grams first, then the lower rowid — which is the better known, as
-        // the build numbers titles by notability (`build`).
+        // Ties go to the lower rowid: the build numbers titles by notability.
         if rated.is_empty() {
             return Ok(Vec::new());
         }
@@ -490,14 +404,10 @@ impl WellKnown {
         self.hits(&order).await
     }
 
-    /// Notability for works a provider returned: `(key, title, author)`
-    /// each, keyed back by `key` (an Open Library work key, `/works/OL…W`).
-    /// A record is an index work when one of the work's titles is the
-    /// record's and either the work names the record's Open Library id or its
-    /// author shares the record's surname. The id alone is not trusted —
-    /// Wikidata's `P648` is not always one id for one work (*Dune* lists *Dune
-    /// Messiah*'s) — and many works have none (*In Search of Lost Time*), so
-    /// the author stands in. Records the index does not know are left out.
+    /// A record is an index work when one of the work's titles is the record's and either the work
+    /// names the record's Open Library id or its author shares the record's surname. The id alone is
+    /// not trusted (Wikidata lists one work's id on another) and many works have none, so the author
+    /// stands in.
     pub async fn notability(
         &self,
         records: &[(String, String, Option<String>)],
@@ -539,8 +449,6 @@ impl WellKnown {
             .collect())
     }
 
-    /// The authors whose name holds one of `words` (folded, three letters or
-    /// more), for the parser's `KnownNames`. At most a few hundred names.
     pub async fn authors_named(&self, words: &[String]) -> Result<Vec<String>> {
         let ws: Vec<&str> = words
             .iter()
@@ -561,7 +469,6 @@ impl WellKnown {
         Ok(names)
     }
 
-    /// The works `order` names, in that order, each with its titles.
     async fn hits(&self, order: &[(u64, Option<String>)]) -> Result<Vec<WellKnownHit>> {
         if order.is_empty() {
             return Ok(Vec::new());
@@ -630,32 +537,22 @@ impl WellKnown {
     }
 }
 
-/// A typed prefix this short is looked up best-known-first (`titles_rank`)
-/// rather than by its range of titles (`titles_key`).
 const SHORT_PREFIX: usize = 2;
 
-/// A trigram in more titles than this says too little to be asked.
 const MAX_GRAM_DOCS: i64 = 15_000;
-/// The most trigrams one correction lookup asks for, rarest first.
 const MAX_GRAMS: usize = 12;
-
-// ---- building ---------------------------------------------------------------
 
 const SCHEMA: &[&str] = &[
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE works (
         id INTEGER PRIMARY KEY, sitelinks INTEGER NOT NULL, year INTEGER, ol TEXT,
         author TEXT, series TEXT, series_pos REAL)",
-    // One row per distinct folded title of a work. `key` is the folded
-    // title less one leading article (`query::title_key`); `display` marks
-    // the title to show.
     "CREATE TABLE titles (
         id INTEGER PRIMARY KEY, work INTEGER NOT NULL, text TEXT NOT NULL,
         key TEXT NOT NULL, display INTEGER NOT NULL, sitelinks INTEGER NOT NULL)",
     "CREATE TABLE ol (ol TEXT NOT NULL, work INTEGER NOT NULL, PRIMARY KEY (ol, work)) WITHOUT ROWID",
     "CREATE TABLE author_words (word TEXT NOT NULL, work INTEGER NOT NULL, PRIMARY KEY (word, work)) WITHOUT ROWID",
-    // Each title with its author, as trigrams: contentless (the text is in
-    // `titles`) and without positions (only membership is asked).
+    // Contentless (the text is in `titles`) and positionless (only membership is asked).
     "CREATE VIRTUAL TABLE grams USING fts5(text, content='', columnsize=0, detail=none, tokenize='trigram')",
     "CREATE VIRTUAL TABLE grams_vocab USING fts5vocab(grams, 'row')",
 ];
@@ -666,15 +563,14 @@ const INDEXES: &[&str] = &[
     "CREATE INDEX titles_work ON titles (work)",
 ];
 
-/// Rows per `json_each` statement while building.
 const BATCH: usize = 4000;
 
 async fn build_file(dir: &Path, path: &Path, stamp: &str, bytes: &[u8]) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let started = std::time::Instant::now();
     let works = parse_works(&gunzip(bytes)?)?;
-    // Built beside, then renamed: two engines building at once each write
-    // their own file, and a half-built one is never at the name.
+    // Built beside, then renamed: concurrent builders each write their own file and a half-built one is
+    // never at the name.
     let part = dir.join(format!("wellknown-{stamp}.{}.part", std::process::id()));
     let _ = std::fs::remove_file(&part);
     {
@@ -692,7 +588,6 @@ async fn build_file(dir: &Path, path: &Path, stamp: &str, bytes: &[u8]) -> Resul
         pool.close().await;
     }
     std::fs::rename(&part, path)?;
-    // Older stamps are a previous build's: nothing reads them again.
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -709,8 +604,7 @@ async fn build_file(dir: &Path, path: &Path, stamp: &str, bytes: &[u8]) -> Resul
     Ok(())
 }
 
-/// Write `works` into an empty database: tables, rows, then the indexes and
-/// the trigram index, then the stamp — last, so a file with a stamp is whole.
+/// The stamp is written last, so a file with a stamp is whole.
 async fn build(pool: &SqlitePool, works: &[WellKnownWork], stamp: &str) -> Result<()> {
     let mut tx = pool.begin().await?;
     for s in SCHEMA {
@@ -722,8 +616,8 @@ async fn build(pool: &SqlitePool, works: &[WellKnownWork], stamp: &str) -> Resul
     let mut ol_rows: Vec<serde_json::Value> = Vec::new();
     let mut word_rows: Vec<serde_json::Value> = Vec::new();
     let mut next_title: i64 = 1;
-    // Titles are numbered best known first, so a lower rowid is a more
-    // notable work wherever two titles otherwise tie (`candidates`).
+    // Titles are numbered best known first, so a lower rowid is the more notable work where two titles
+    // tie.
     let mut order: Vec<&WellKnownWork> = works.iter().collect();
     order.sort_by(|a, b| {
         b.sitelinks
@@ -841,8 +735,6 @@ async fn insert(
 
 #[cfg(test)]
 pub(crate) mod fixture {
-    //! A tiny index written in code, for every test that is not about the
-    //! embedded file itself.
     use super::*;
 
     pub(crate) fn work(
@@ -874,7 +766,6 @@ pub(crate) mod fixture {
         }
     }
 
-    /// Famous works, public facts, and two near neighbours of each other.
     pub(crate) fn works() -> Vec<WellKnownWork> {
         let mut dune = work(190192, 77, "Dune", "Frank Herbert", "OL893414W", 1965);
         dune.titles.push(WellKnownTitle {
@@ -981,13 +872,11 @@ mod tests {
         let s = wk.suggest("dun", 5).await.unwrap();
         let titles: Vec<&str> = s.iter().map(|h| h.title.as_str()).collect();
         assert_eq!(titles, vec!["Dune", "Dune Messiah"]);
-        // Without its article, and in another language.
         assert_eq!(wk.suggest("hobb", 5).await.unwrap()[0].title, "The Hobbit");
         assert_eq!(
             wk.suggest("der wus", 5).await.unwrap()[0].title,
             "Der Wüstenplanet"
         );
-        // By author.
         let by = wk.suggest("herbert", 5).await.unwrap();
         assert_eq!(by[0].title, "Dune");
         assert!(wk.suggest("", 5).await.unwrap().is_empty());
@@ -1026,7 +915,6 @@ mod tests {
         assert_eq!(n.get("/works/OL893414W"), Some(&77), "by its id and title");
         assert_eq!(n.get("/works/OL2W"), Some(&77), "by its title and surname");
         assert_eq!(n.len(), 2);
-        // The id with another work's title is not that work.
         let n = wk
             .notability(&[("/works/OL893414W".into(), "Dune Messiah".into(), None)])
             .await

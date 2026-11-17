@@ -1,75 +1,26 @@
-//! Where each field of a book came from, and when (migration `0012`).
-//!
-//! **Why this is not a section of `provenance.rs`.** That module's defining
-//! property, stated in its own first paragraph, is that it is *inert*: nothing
-//! reads `book_tags` to decide anything, and `external_ids` is read only to find
-//! a book again. This table is the opposite — the merge SQL in
-//! [`books`](super::books) reads it on **every write to `books`**, and a `user`
-//! row changes what that write does. Filing a table that gates writes under a
-//! module documented as deciding nothing is how the next reader learns the wrong
-//! rule. They are also different grains: those two record provenance about
-//! *rows*, this records it about *fields*.
-//!
-//! ## The grain, and the thing this schema cannot say
-//!
-//! One row per `(book_id, field)`: **the winner, not the history**. A book can
-//! carry a page count from OpenLibrary and a different one from calibre, and
-//! only the last writer's claim survives here.
-//!
-//! That is the right trade for what this table is *for* — protecting a user's
-//! correction from the next provider merge, and explaining the value the user is
-//! actually looking at. Keeping every source's claim is a different feature
-//! (*disagreement history*), it needs a different table
-//! (`(book_id, field, source)` **plus the value each one claimed** — without a
-//! value column, per-source rows record who was asked rather than what they
-//! said, which is nothing), and it only starts paying once something re-asks a
-//! provider it has already asked (as `enrich.rs` now does). The growth path is
-//! a second table beside this one, not a wider primary key here.
-//!
-//! ## No `value_hash`
-//!
-//! A hash of each claimed value was considered and left out. Nothing would read
-//! it: the user-wins rule keys on `source`, and "the provider changed its mind"
-//! is a comparison re-enrichment (`enrich.rs`) makes between a *fetched* record
-//! and a stored one, where both values are in hand and a hash of one of them
-//! adds nothing. A column with no reader is a column that is
-//! wrong by the time it gets one.
+//! Per-field attribution of book metadata, one row per `(book_id, field)`: the last writer only.
+//! The merge SQL reads it on every write to `books`, and a `user` row changes what that write does.
 
 use sqlx::{Row, SqliteConnection};
 
 use super::{Storage, now_unix};
 use crate::error::Result;
 
-/// Who supplied a field.
-///
-/// The vocabulary lives here and **not** in a `CHECK` constraint, following
-/// `readings.source` in migration `0005`: a `CHECK` makes every new source a
-/// schema migration, and this enum is the constraint that actually holds,
-/// because it is the only thing that can write the column.
+/// Who supplied a field. The vocabulary lives here, not in a `CHECK`, so a new source needs no
+/// migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
     OpenLibrary,
     GoogleBooks,
     Calibre,
     Epub,
-    /// A PDF we own, through [`crate::pdf::pdf_info`].
-    ///
-    /// Beside `Epub` rather than folded into a single `File`, though both mean
-    /// "the file said so": they say **different things**. An epub supplies a
-    /// title, authors, a language and an ISBN and never a length; a pdf supplies
-    /// a length and occasionally a title and never the rest. Collapsing them
-    /// would attribute `page_count` to "a file", which is precisely the question
-    /// a reader of this table is asking — a length off a scan of a paperback and
-    /// one off a publisher's epub are different claims, and the difference is
-    /// which file it was.
+    /// A PDF we own; separate from `Epub` because they supply different fields (a pdf a length, an epub
+    /// the rest).
     Pdf,
     KOReader,
     Goodreads,
-    /// The user typed it. **Outranks everything**, which is the whole reason
-    /// this table exists: `MERGE_RULES`'s `COALESCE` no-clobber is right for a
-    /// partial provider record and cannot tell a hand correction from a
-    /// provider's guess, so without this the first automatic enrichment
-    /// silently overwrites the correction.
+    /// The user typed it. Outranks everything: the no-clobber `COALESCE` cannot tell a hand correction
+    /// from a guess.
     User,
 }
 
@@ -87,8 +38,6 @@ impl Source {
         }
     }
 
-    /// Every source, for tests that must cover the vocabulary rather than the
-    /// three of it somebody remembered.
     pub const ALL: [Source; 8] = [
         Source::OpenLibrary,
         Source::GoogleBooks,
@@ -101,17 +50,11 @@ impl Source {
     ];
 }
 
-/// The one spelling of the privileged source, so the value guard and the stamp
-/// guard cannot drift into disagreeing about which rows are protected.
+/// The one spelling of the privileged source, shared by the value guard and the stamp guard.
 pub(super) const USER: &str = "user";
 
-/// A SQL predicate: does the user own `field` on the book named by `book_expr`?
-///
-/// Rendered into the merge clause once per column by
-/// [`merge_set`](super::books). `col` is a `MERGE_RULES` column name and
-/// `book_expr` is a SQL expression naming the row — both are compile-time
-/// constants from this crate, never anything a user typed, which is what makes
-/// inlining them safe here.
+/// SQL predicate: does the user own `field` on the book named by `book_expr`? Both arguments are
+/// compile-time constants, which is what makes inlining them safe.
 pub(super) fn user_owns(book_expr: &str, col: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM field_provenance p \
@@ -119,13 +62,9 @@ pub(super) fn user_owns(book_expr: &str, col: &str) -> String {
     )
 }
 
-/// [`user_owns`] asked of a live connection rather than rendered into a clause.
-///
-/// The stamp half of the **pair** guard (`Rule::pair`): a column held back
-/// because the user owns its *other* half has no `user` row of its own, so
-/// [`stamp`]'s `WHERE` — which only ever protects the same field — would claim
-/// it for a provider whose value the merge refused to write. Same predicate,
-/// same `USER` spelling, asked the other way round.
+/// `user_owns` on a live connection: the stamp half of the pair guard, since a column held back by
+/// its
+/// other half's user claim has no `user` row of its own.
 pub(super) async fn user_owns_now(
     conn: &mut SqliteConnection,
     book_id: i64,
@@ -142,12 +81,8 @@ pub(super) async fn user_owns_now(
     Ok(n > 0)
 }
 
-/// One field's attribution, as stored.
-///
-/// `source` is the raw column and not a [`Source`], deliberately: there is no
-/// `CHECK`, so a row written by another build is *data*, and the same choice
-/// `readings.status` made (`STATUS_*` are `&str` consts, not an enum at the
-/// boundary) applies for the same reason.
+/// One field's attribution; `source` is the raw column, not a `Source`, since another build may
+/// have written it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSource {
     pub field: String,
@@ -155,16 +90,9 @@ pub struct FieldSource {
     pub fetched_at: i64,
 }
 
-/// Record that `source` supplied `fields` on this book, now.
-///
-/// **Takes a connection, not `&self`**, because it must run inside the same
-/// transaction as the write it describes. A book whose `page_count` landed and
-/// whose provenance did not is a field that silently claims whatever it claimed
-/// last — which is exactly the state this table exists to remove.
-///
-/// A field the user owns is skipped unless `source` is [`Source::User`]: the
-/// value was held back by the merge clause, so claiming it for the provider
-/// would attribute a value that provider never supplied.
+/// Records that `source` supplied `fields`, now. Takes a connection to run inside the write's
+/// transaction;
+/// skips a user-owned field unless `source` is `User`.
 pub(super) async fn stamp(
     conn: &mut SqliteConnection,
     book_id: i64,
@@ -191,15 +119,9 @@ pub(super) async fn stamp(
     Ok(())
 }
 
-/// Move `src`'s claims onto `dst` for the listed fields only.
-///
-/// `merge_books`'s fill is **`dst`-wins**, so only the fields `dst` had nothing
-/// to say about actually take `src`'s value — and only those may take `src`'s
-/// attribution. Moving the rest would stamp `dst`'s own value with the source of
-/// a value that was discarded.
-///
-/// `UPDATE OR IGNORE`, like `book_tags`: a field both books have a claim for
-/// cannot move, and the loser goes with the cascade a moment later.
+/// Moves `src`'s claims to `dst` for the listed fields only, since `merge_books`' fill is
+/// `dst`-wins.
+/// `UPDATE OR IGNORE`: a field both books claim cannot move, and the loser cascades away.
 pub(super) async fn move_claims(
     conn: &mut SqliteConnection,
     src: i64,
@@ -220,14 +142,7 @@ pub(super) async fn move_claims(
 }
 
 impl Storage {
-    /// Every attributed field on a book, in a stable order.
-    ///
-    /// **Absence is ordinary and means "nobody has claimed this".** Migration
-    /// `0012` back-fills nothing, so every book that predates it reports an
-    /// empty list however well-populated its row is; so does every field written
-    /// by a path that cannot honestly say which source supplied it. A caller
-    /// that renders "unknown" for a missing field is right; one that renders
-    /// "bookmole" is inventing the thing this table exists to stop.
+    /// Every attributed field, stable order. An empty list means nobody has claimed it: render unknown.
     pub async fn field_provenance(&self, book_id: i64) -> Result<Vec<FieldSource>> {
         let rows = sqlx::query(
             "SELECT field, source, fetched_at FROM field_provenance
@@ -246,7 +161,6 @@ impl Storage {
             .collect())
     }
 
-    /// The source that supplied one field, if anyone has claimed it.
     pub async fn field_source(&self, book_id: i64, field: &str) -> Result<Option<String>> {
         Ok(sqlx::query_scalar(
             "SELECT source FROM field_provenance WHERE book_id = ? AND field = ?",
@@ -279,10 +193,6 @@ mod tests {
         (s, id)
     }
 
-    /// Migration `0012` back-fills nothing, and `None` is a real answer rather
-    /// than a forgotten argument. Both show up the same way, which is the point:
-    /// an absent row means "nobody has claimed this", and no caller can mistake
-    /// it for a claim.
     #[tokio::test]
     async fn an_unattributed_write_claims_nothing() {
         let (s, id) = seeded().await;
@@ -310,9 +220,6 @@ mod tests {
         assert_eq!(got[0].source, "openlibrary");
         assert!(got[0].fetched_at > 0, "staleness needs a real timestamp");
 
-        // A later source replaces the claim rather than adding one: this table
-        // keeps the winner, and a second row for the same field is not
-        // representable.
         s.enrich_book(
             id,
             &Book {
@@ -328,11 +235,6 @@ mod tests {
         assert_eq!(got[0].source, "googlebooks");
     }
 
-    /// The stamp guard, stated on its own: once the user owns a field no other
-    /// source may claim it, and the user may always reclaim it. Its twin is the
-    /// *value* guard in `merge_set` — the two have to agree, and
-    /// `a_user_owned_field_survives_every_provider_merge` is where they are
-    /// checked together.
     #[tokio::test]
     async fn a_user_claim_cannot_be_taken_by_a_provider() {
         let (s, id) = seeded().await;
@@ -355,15 +257,12 @@ mod tests {
         }
         assert_eq!(s.get_book(id).await.unwrap().unwrap().page_count, Some(496));
 
-        // The user is not locked out of their own field.
         s.enrich_book(id, &page(498), Some(Source::User))
             .await
             .unwrap();
         assert_eq!(s.get_book(id).await.unwrap().unwrap().page_count, Some(498));
     }
 
-    /// Every source in the vocabulary round-trips through the column, which is
-    /// what a `TEXT` column with no `CHECK` is trading on.
     #[tokio::test]
     async fn every_source_writes_the_string_it_says_it_does() {
         for source in Source::ALL {

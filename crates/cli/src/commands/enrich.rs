@@ -1,17 +1,4 @@
-//! `bookmole enrich` and `bookmole set`.
-//!
-//! Two halves of one loop. `enrich` asks the providers about a book we already
-//! have; `set` is what the user says back when the answer was wrong or when
-//! there was not enough to ask with. All the printing lives here; the engine
-//! does no terminal I/O.
-//!
-//! The refusal is the interesting output. `ko pull` and `calibre import` both
-//! established the shape — say what it probably is, then name the moves — and
-//! the moves here are `set --isbn` (this is the edition) and `set --title` /
-//! `--author` (the book is described wrongly, which is *why* nothing matched).
-//! Both write through `Source::User`, so a corrected field is then held against
-//! every future run of this command, which is the whole point of recording
-//! where each field came from.
+//! `set` writes through `Source::User`, so corrected fields are held against later enrich runs.
 
 use anyhow::{Result, bail};
 use bookmole::{
@@ -35,9 +22,6 @@ pub async fn enrich(engine: &Engine, selector: &str) -> Result<()> {
         EnrichOutcome::Enriched(how) => {
             println!("{title} — looked up again ({})", matched_by(*how));
             if !report.wrote_anything() {
-                // Not "nothing happened": the providers answered and agreed with
-                // every field we hold. Saying so is the difference between a
-                // book that is up to date and one nobody could reach.
                 println!("    everything they know, you already had.");
             }
             for c in &report.filled {
@@ -57,17 +41,14 @@ pub async fn enrich(engine: &Engine, selector: &str) -> Result<()> {
         EnrichOutcome::NothingFound => {
             println!("{title}: no provider knows this book.");
             if book.isbn_13.is_some() || book.isbn_10.is_some() {
-                // An ISBN is an identity, so this is an answer about *this
-                // edition* and not about the work. There is no fall-through to a
-                // title search, deliberately: it would answer a different
-                // question and write another edition's page count over this one.
+                // An ISBN names an edition; no fall-through to a title search, which would write another
+                // edition's data over this one.
                 println!("    that is about this ISBN, not about the book.");
                 println!("    wrong ISBN? bookmole set {selector} --isbn <isbn>");
             }
         }
         EnrichOutcome::NoAnswer => {
-            // Deliberately not "no provider knows this book": one of them never
-            // spoke. A dead network must not read as a fact about the book.
+            // Not "no provider knows this book": a provider that never answered says nothing about it.
             println!("{title}: no answer — the providers above did not come back.");
             println!("    nothing was written. try again in a moment.");
         }
@@ -94,9 +75,6 @@ fn filled_line(c: &FieldChange) -> String {
     let source = c.source.map(source_name).unwrap_or("unattributed");
     let value = clip(&c.after);
     match &c.before {
-        // The old value is shown only when there was one. For the books this
-        // command exists for there almost never is, and "(was: none)" on every
-        // line would bury the case where something was actually replaced.
         Some(before) => format!(
             "    {:<16}{value}  [{source}, was {}]",
             c.field,
@@ -106,11 +84,6 @@ fn filled_line(c: &FieldChange) -> String {
     }
 }
 
-/// A held-back field, with both values and the way to change your mind.
-///
-/// Silence here is the failure this reports its way out of: a field not updated
-/// because the user owns it looks exactly like a field the provider had nothing
-/// for, and the second needs no explanation while the first does.
 fn print_held(selector: &str, h: &HeldField) {
     let by = h.offered_by.map(source_name).unwrap_or("a provider");
     println!(
@@ -123,9 +96,7 @@ fn print_held(selector: &str, h: &HeldField) {
         Some(flag) => {
             println!("               yours stays. bookmole set {selector} --{flag} …")
         }
-        // No flag reaches this column, so there is no move to offer. `set` is
-        // deliberately narrower than the merge table, and naming a flag that
-        // does not exist would be a dead end dressed as a next step.
+        // No `set` flag reaches this column, so no move is offered: a named flag would not exist.
         None => println!("               yours stays."),
     }
 }
@@ -151,19 +122,12 @@ fn print_candidate(c: &EnrichCandidate) {
     );
     match c.book.isbn_13.as_deref().or(c.book.isbn_10.as_deref()) {
         Some(isbn) => println!("           isbn {isbn}"),
-        // Without an ISBN there is no durable name for this record, and the next
-        // move below cannot name it. Saying so beats offering a move that does
-        // not exist.
         None => println!("           no isbn — nothing here can name this edition"),
     }
 }
 
-/// The two next moves, and why neither is `--accept 2`.
-///
-/// An index would point into a candidate list produced by a *previous* provider
-/// search, which the next run cannot reproduce — `ko link <path> <book>` and
-/// `calibre import --new` both name something durable, and this follows them
-/// rather than the number on the screen.
+/// Next moves name durable things, never an index into a candidate list a later run cannot
+/// reproduce.
 fn print_next_moves(selector: &str, candidates: &[EnrichCandidate]) {
     if let Some(isbn) = candidates
         .iter()
@@ -180,14 +144,8 @@ fn source_name(s: Source) -> &'static str {
     s.as_str()
 }
 
-/// The `set` flag that owns a column, for the "change your mind" line.
-///
-/// **Exhaustive and `None` for the rest, not a column name with its underscores
-/// swapped.** That fallback was the first cut and it was wrong for
-/// `translators`, whose flag is the singular `--translator`; the test below
-/// found it. A guessed flag is a next move that fails with a clap error, which
-/// is worse than offering none — and `set` is deliberately narrower than
-/// `MERGE_RULES`, so some columns genuinely have no flag.
+/// Exhaustive, `None` for columns without a flag: a guessed flag name (`--translators`) would be a
+/// clap error.
 fn flag_of(field: &str) -> Option<&'static str> {
     Some(match field {
         "title" => "title",
@@ -214,14 +172,7 @@ fn clip(s: &str) -> String {
     flat.chars().take(57).collect::<String>() + "…"
 }
 
-// ---- set -------------------------------------------------------------------
-
-/// What `bookmole set` can write.
-///
-/// Deliberately the fields a *provider* also writes and a reader would correct,
-/// and no others: this is the counterweight to enrichment, not a general row
-/// editor. Reading state has `progress`, notes have `note`, and a rating goes
-/// through the explicit scale.
+/// What `bookmole set` can write: fields a provider also writes, not a general row editor.
 #[derive(clap::Args, Debug, Default)]
 pub struct SetArgs {
     /// Book selector: id, ISBN, or title fragment
@@ -247,26 +198,17 @@ pub struct SetArgs {
     pub page_count: Option<i64>,
     #[arg(long)]
     pub description: Option<String>,
-    /// Repeatable; replaces the subject set. A provider's subjects, not a shelf
-    /// or a list of your own.
+    /// Repeatable; replaces the subject set.
     #[arg(long = "subject")]
     pub subjects: Vec<String>,
     #[arg(long)]
     pub series: Option<String>,
-    /// Fractional is fine — novellas are 0.5. Refused when the book is in no
-    /// series and `--series` does not name one: an index alone is a number
-    /// under no name, which is the incoherent half-pair `Rule::pair` exists to
-    /// prevent.
+    /// Fractional is fine. Refused when the book is in no series and `--series` is not given.
     #[arg(long = "series-index")]
     pub series_index: Option<f64>,
 }
 
-/// Record what the user says, and that it was the user who said it.
-///
-/// Every field written here is stamped `user` in `field_provenance` and is from
-/// then on **not overwritten by any provider merge**. That is the point of the
-/// command rather than a side effect of it, and it is why this is the next move
-/// `enrich`'s refusal offers.
+/// Fields written here are stamped `user` and are never overwritten by provider merges.
 pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
     let book = resolve_one(engine, &args.book).await?;
     let id = book.id.expect("a stored book has an id");
@@ -286,10 +228,6 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
         ..Default::default()
     };
     if let Some(raw) = &args.isbn {
-        // Every ISBN entering the system goes through `normalize_isbn`, no
-        // exceptions — and a typed one is exactly where a bad check digit shows
-        // up. Both columns are set from the one flag: which of them the string
-        // is, is not the user's problem.
         let isbn = bookmole::normalize_isbn(raw)
             .ok_or_else(|| anyhow::anyhow!("{raw:?} is not a valid ISBN"))?;
         if isbn.len() == 13 {
@@ -316,9 +254,7 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
         println!("    {field:<16}{}", clip(&value));
     }
     println!("    no provider merge will overwrite these.");
-    // `set_book_fields` sets and cannot clear, so renaming a series leaves the
-    // old number behind — silently, and reading as a fact about the new one.
-    // Saying so beats a `#2` that belongs to a different shelf.
+    // `set_book_fields` cannot clear, so a renamed series keeps its old number; say so.
     if fields.series.is_some() && fields.series_index.is_none() && after.series_index.is_some() {
         println!(
             "    note: still numbered {} — --series-index changes it.",
@@ -331,11 +267,7 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
     Ok(())
 }
 
-/// Which fields the user actually named, for the echo.
-///
-/// Read off the *request* rather than off the stored row: the row cannot say
-/// which of its values arrived a second ago, and a field set to what it already
-/// held is still a field the user has now claimed.
+/// Read off the request, not the stored row: a field set to its existing value is still claimed.
 fn changed(fields: &Book) -> Vec<(&'static str, String)> {
     let mut out: Vec<(&'static str, String)> = Vec::new();
     let mut push = |name, value: Option<String>| {
@@ -372,13 +304,7 @@ fn is_empty(fields: &Book) -> bool {
     changed(fields).is_empty()
 }
 
-/// An index with no series to belong to, if that is what was asked for.
-///
-/// Half a pair is not a correction — it is a number under no name, which is the
-/// incoherent row `Rule::pair` exists to prevent one layer down. Checked against
-/// the **stored** series as well as the flag, because numbering a book whose
-/// series is already recorded is the ordinary use of `--series-index` and
-/// demanding the name back would be a refusal with nothing wrong behind it.
+/// Checked against the stored series too: numbering a book already in a series needs no `--series`.
 fn orphan_index(fields: &Book, stored: &Book) -> Option<f64> {
     fields
         .series_index
@@ -398,9 +324,6 @@ mod tests {
         }
     }
 
-    /// A filled field names its source, because "where did this number come
-    /// from" is the question per-field provenance exists to answer, and this
-    /// is the one place the answer is fresh.
     #[test]
     fn a_filled_field_says_who_supplied_it() {
         let line = filled_line(&change("page_count", None, "490"));
@@ -416,8 +339,6 @@ mod tests {
         assert!(line.contains("was 100"), "{line}");
     }
 
-    /// Long prose is clipped to one line. A description arrives with newlines in
-    /// it and a raw one would break the alignment of everything after it.
     #[test]
     fn a_description_is_flattened_and_clipped() {
         let prose = "A sweeping saga\nof four generations\n".to_string() + &"x".repeat(200);
@@ -432,8 +353,6 @@ mod tests {
         assert_eq!(clip("Middlemarch"), "Middlemarch");
     }
 
-    /// The flag names in the "change your mind" line have to be flags `set`
-    /// actually takes, or the next move is a clap error.
     #[test]
     fn every_held_field_names_a_real_flag() {
         use clap::CommandFactory;
@@ -447,8 +366,6 @@ mod tests {
             .get_arguments()
             .filter_map(|a| a.get_long().map(str::to_string))
             .collect();
-        // Every column `field_provenance` can hold a user claim on that `set`
-        // is meant to reach.
         for field in [
             "title",
             "authors",
@@ -470,12 +387,9 @@ mod tests {
                 "held field {field} points at --{flag}, which `set` does not take: {flags:?}"
             );
         }
-        // A column `set` does not reach offers no move rather than a wrong one.
         assert_eq!(flag_of("cover_url"), None);
     }
 
-    /// A series index alone is a number under no name — unless the book is
-    /// already in a series, which is the ordinary way this flag gets used.
     #[test]
     fn an_index_is_refused_only_when_no_series_names_it() {
         let numbered = |n: f64| Book {
@@ -491,9 +405,7 @@ mod tests {
             Some(2.0),
             "nothing names this number"
         );
-        // Renumbering a book whose series is on the row already.
         assert_eq!(orphan_index(&numbered(2.5), &in_dune), None);
-        // Both halves in one command.
         assert_eq!(
             orphan_index(
                 &Book {
@@ -504,14 +416,9 @@ mod tests {
             ),
             None
         );
-        // A name with no number is not half a pair — an unnumbered series is an
-        // ordinary thing for a provider to know.
         assert_eq!(orphan_index(&in_dune, &Book::default()), None);
     }
 
-    /// The echo names every field `set` can write, including subject, series
-    /// and series index — a field written and not echoed is a silent write,
-    /// which is the state this command exists to be the opposite of.
     #[test]
     fn the_echo_names_the_pair_and_the_subjects() {
         let fields = Book {
@@ -522,12 +429,9 @@ mod tests {
         };
         let named: Vec<&str> = changed(&fields).iter().map(|(f, _)| *f).collect();
         assert_eq!(named, ["subjects", "series", "series_index"]);
-        // Whole numbers print as whole numbers, not `2.0`.
         assert_eq!(changed(&fields)[2].1, "2");
     }
 
-    /// `set` with no field named must refuse rather than write an empty record
-    /// and claim every column for the user.
     #[test]
     fn set_with_nothing_named_is_refused() {
         assert!(is_empty(&Book::default()));

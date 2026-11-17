@@ -1,38 +1,15 @@
-//! Threads and the drawn graph, as pure functions over edges.
-//!
-//! No database here: [`crate::Storage::all_link_edges`] and
-//! [`crate::Storage::note_stamps`] are each one statement, and everything a
-//! view needs is derived from those two reads in Rust — so the rules below
-//! are asserted as properties without seeding a vault.
-//!
-//! ## A thread
-//!
-//! A **connected component of the link graph over resolved edges**, with at
-//! least two notes. Dangling targets join nothing: two notes that both name
-//! `[[maps that lie]]` before it is written are not yet talking to each other,
-//! and the day it is written `write_links` back-resolves both edges and the
-//! thread appears by itself. Direction is ignored — a thread is who is in the
-//! conversation, not who spoke first.
-//!
-//! Its **hub** is the member with the most distinct neighbours, ties to the
-//! newest `latest_part_at`, then the lowest id; the thread's id *is* the hub's
-//! id. A total order, so the same vault always names the same hub.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::storage::{LinkEdge, NoteStamp};
 
-/// One thread: its hub and its members, newest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
     pub hub: i64,
-    /// Every member, the hub included, by `latest_part_at` descending and then
-    /// id descending — the list's own order.
+    /// Every member, hub included, by `latest_part_at` descending then id descending.
     pub members: Vec<i64>,
 }
 
-/// The undirected resolved adjacency: self-links and dangling edges dropped,
-/// each pair once.
+/// Undirected resolved adjacency: self-links and dangling edges dropped.
 fn adjacency(edges: &[LinkEdge]) -> BTreeMap<i64, BTreeSet<i64>> {
     let mut adj: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
     for e in edges {
@@ -46,9 +23,7 @@ fn adjacency(edges: &[LinkEdge]) -> BTreeMap<i64, BTreeSet<i64>> {
     adj
 }
 
-/// Every thread in the vault. `latest` is each note's `latest_part_at`; a note
-/// missing from it sorts as the oldest, which is what an index row nothing has
-/// stamped would mean.
+/// Every thread in the vault; a note missing from `latest` sorts as the oldest.
 pub fn threads(edges: &[LinkEdge], latest: &HashMap<i64, i64>) -> Vec<Thread> {
     let adj = adjacency(edges);
     let at = |id: &i64| latest.get(id).copied().unwrap_or(i64::MIN);
@@ -81,7 +56,6 @@ pub fn threads(edges: &[LinkEdge], latest: &HashMap<i64, i64>) -> Vec<Thread> {
     out
 }
 
-/// Which thread each linked note is in, by hub id.
 pub fn thread_index(threads: &[Thread]) -> HashMap<i64, i64> {
     threads
         .iter()
@@ -89,28 +63,19 @@ pub fn thread_index(threads: &[Thread]) -> HashMap<i64, i64> {
         .collect()
 }
 
-/// Which part of the graph to draw — `GraphScopeDto`'s engine twin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphScope {
-    /// Every note with at least one edge, and every unwritten target.
     Everything,
-    /// The notes whose latest part is at or after `since`, everything one link
-    /// away, and the unwritten targets they name.
     Recent { since: i64 },
-    /// The book's notes, everything one link away, and the unwritten targets
-    /// they name.
     Book { book_id: i64 },
-    /// One note, its neighbours out to `steps` (1 or 2), its own unwritten
-    /// targets, and — only here — the notes that mention it without a link.
+    /// One note, its neighbours out to `steps` (1 or 2), its unwritten targets and unlinked mentions.
     Around { note_id: i64, steps: u8 },
 }
 
-/// A node's identity: a note, or an unwritten link by its `NOCASE` spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum NodeKey {
     Note(i64),
-    /// ASCII-lowercased, which is SQLite's `NOCASE` fold — two spellings
-    /// `write_links` would resolve to one note are one node here.
+    /// ASCII-lowercased (SQLite `NOCASE`), so `write_links`' one-note spellings are one node.
     Title(String),
 }
 
@@ -119,7 +84,7 @@ impl NodeKey {
         NodeKey::Title(raw.trim().to_ascii_lowercase())
     }
 
-    /// `n<id>` or `t<lowercased title>` — the wire key.
+    /// `n<id>` or `t<lowercased title>`: the wire key.
     pub fn wire(&self) -> String {
         match self {
             NodeKey::Note(id) => format!("n{id}"),
@@ -131,7 +96,7 @@ impl NodeKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphEdgeKind {
     Link,
-    /// `from` mentions `to`'s title without linking it. `Around` only.
+    /// `from` mentions `to`'s title without linking it; `Around` only.
     Mention,
 }
 
@@ -145,11 +110,8 @@ pub struct GraphEdge {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphNode {
     pub key: NodeKey,
-    /// For an unwritten link, the first spelling a body used.
     pub link_text: Option<String>,
-    /// Distinct nodes this one shares an edge with **in this graph** — what a
-    /// layout sizes by. A note's degree in the whole vault is `links_in` +
-    /// `links_out` on its row.
+    /// Distinct nodes sharing an edge with this one in this graph, not in the whole vault.
     pub degree: i64,
 }
 
@@ -159,18 +121,10 @@ pub struct Graph {
     pub edges: Vec<GraphEdge>,
 }
 
-/// The cap on `Mention` edges in an `Around` graph: a node orbited by every
-/// note that ever used a common word is a graph about the word.
 pub const MENTION_EDGE_CAP: usize = 5;
 
-/// Draw `scope` from every edge and every note's stamp. `mentions` is the
-/// `Around` note's unlinked mentions (ignored by the other scopes), and is cut
-/// to [`MENTION_EDGE_CAP`] here.
-///
-/// The rule every scope shares: **edges are the induced edges among the nodes
-/// chosen, deduped per `(from, to)`**, and a note with no edge in the result is
-/// not drawn — an isolated dot says nothing a list does not. The one exception
-/// is `Around`'s own note, which is the subject of the picture.
+/// Draws `scope`: edges are the induced edges among chosen nodes, deduped per `(from, to)`.
+/// A note with no edge is not drawn, except `Around`'s own note.
 pub fn build_graph(
     scope: GraphScope,
     edges: &[LinkEdge],
@@ -179,7 +133,6 @@ pub fn build_graph(
 ) -> Graph {
     let by_id: HashMap<i64, NoteStamp> = stamps.iter().map(|s| (s.id, *s)).collect();
     let adj = adjacency(edges);
-    // Edges whose source still exists, self-links dropped, in body order.
     let live: Vec<(NodeKey, NodeKey, &str)> = edges
         .iter()
         .filter(|e| by_id.contains_key(&e.from) && e.to != Some(e.from))
@@ -262,9 +215,7 @@ pub fn build_graph(
         }
     };
 
-    // Induced edges, deduped per (from, to). In `Around`, a dangling target is
-    // drawn only from the note itself — a neighbour's forward references are
-    // that neighbour's business.
+    // In `Around`, a dangling target is drawn only from the centre note.
     let centre = match scope {
         GraphScope::Around { note_id, .. } => Some(note_id),
         _ => None,
@@ -327,8 +278,6 @@ pub fn build_graph(
             key: k,
         })
         .collect();
-    // Notes newest first, then unwritten links by name: a stable order, so two
-    // asks of one vault draw one picture.
     let at = |k: &NodeKey| match k {
         NodeKey::Note(id) => by_id.get(id).map_or(i64::MIN, |s| s.latest_part_at),
         NodeKey::Title(_) => i64::MIN,
@@ -371,7 +320,6 @@ mod tests {
 
     #[test]
     fn the_hub_has_the_most_neighbours_and_ties_go_to_the_newest() {
-        // 1–2, 1–3: 1 is the hub. 4–5 tie on degree: 5 is newer.
         let edges = [
             link(2, Some(1), "a"),
             link(3, Some(1), "a"),
@@ -483,8 +431,6 @@ mod props {
     }
 
     proptest! {
-        /// The threads partition the linked notes, every member's thread is
-        /// its hub, and the hub has the most neighbours in its thread.
         #[test]
         fn threads_partition_the_linked_notes(
             edges in edges_strategy(),
@@ -509,7 +455,6 @@ mod props {
             prop_assert_eq!(covered, linked);
         }
 
-        /// Every edge drawn joins two drawn nodes, and no pair is drawn twice.
         #[test]
         fn a_graph_is_closed_and_deduped(edges in edges_strategy(), since in 0i64..12) {
             let stamps: Vec<NoteStamp> = (1..12)

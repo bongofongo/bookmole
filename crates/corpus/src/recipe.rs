@@ -1,21 +1,4 @@
-//! The recipe runner: applies `corpus/recipes/<name>.toml` to a data directory
-//! through the real `bookmole` binary (argv, never a shell string), writes
-//! `build.json` and the semantic lock, and compares that lock with
-//! `corpus/recipes/expect/<name>.json`. The invariant suite that reads the
-//! result lives in `crates/cli/tests/recipes.rs`, which compiles **this file**
-//! in with `#[path]` — so it uses nothing but `std`, `serde` and `toml`, the
-//! three things both crates already link. That is why JSON is written and read
-//! by hand below rather than through `serde_json`.
-//!
-//! The one exception to the crate's rule that it never depends on the engine
-//! (a generator that reused the engine's parsing would bake its bugs into the
-//! goldens):
-//! the runner *runs* the built CLI binary, because the binary is the thing under
-//! test. It links nothing from `bookmole`, and it counts what was built by
-//! asking the `sqlite3` CLI, never the engine's own queries.
-//!
-//! `corpus/recipes/README.md` is the format; the semantic lock below and the
-//! invariants in `crates/cli/tests/recipes.rs` are the contract.
+//! `crates/cli/tests/recipes.rs` includes this via `#[path]`: only `std`, `serde`, `toml`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,14 +9,12 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-/// Bumped when the shape of `build.json` or of the semantic lock changes.
 pub const RUNNER_VERSION: u32 = 1;
 
 pub struct Options {
     pub update_expect: bool,
 }
 
-/// A recipe file, as written.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
@@ -42,14 +23,10 @@ pub struct Recipe {
     pub description: String,
     #[serde(rename = "step", default)]
     pub steps: Vec<Step>,
-    /// Strict expected-failures: hostile cases whose observed behaviour
-    /// contradicts their declared class, reported as engine bugs. A listed
-    /// case that *stops* diverging fails the build too, so the entry is
-    /// removed (and the case promoted) when the fix lands — never left to rot.
+    /// Expected failures: a listed case that stops diverging fails the build, so remove its entry then.
     #[serde(rename = "known", default)]
     pub known: Vec<Known>,
-    /// Where the recipe was read from; its expectations live beside it, so
-    /// the private overlay's never land in the committed tree.
+    /// Where the recipe was read from; its expectations live beside it.
     #[serde(skip)]
     pub source: PathBuf,
 }
@@ -66,8 +43,6 @@ impl Recipe {
         case.is_some_and(|c| self.known.iter().any(|k| k.case == c))
     }
 
-    /// Invocations that broke the recipe: unexpected outcomes on cases not
-    /// listed as known, and known cases that no longer diverge.
     pub fn violations<'a>(&self, runs: &'a [Invocation]) -> Vec<(&'a Invocation, &'static str)> {
         runs.iter()
             .filter_map(
@@ -84,7 +59,6 @@ impl Recipe {
     }
 }
 
-/// One `[[step]]`. Which path key a kind reads is fixed by [`Step::input`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
@@ -97,20 +71,17 @@ pub struct Step {
     pub library: Option<String>,
     /// `ko-sync`: a reader's root (a directory of `.sdr` sidecars).
     pub root: Option<String>,
-    /// `ko-stats`: a reader mount holding `statistics.sqlite3` or a
-    /// `statistics.sql` the runner materialises.
+    /// `ko-stats`: a reader mount holding `statistics.sqlite3` or a `statistics.sql`.
     pub mount: Option<String>,
     /// `goodreads-import`: the export CSV.
     pub csv: Option<String>,
     /// `verbs`: a `verbs.jsonl` file.
     pub file: Option<String>,
-    /// The step is expected to exit non-zero (a refusal that is the point).
     #[serde(default)]
     pub expect_failure: bool,
-    /// Re-applied by the idempotency invariant. Defaults to true for import
-    /// kinds; a recipe sets it false only with a `reapply_why`.
+    /// Re-applied by the idempotency invariant; defaults to true for import kinds.
     pub reapply: Option<bool>,
-    /// Why a step is excluded from re-application — required with `reapply = false`.
+    /// Required with `reapply = false`: why the step is excluded from re-application.
     pub reapply_why: Option<String>,
 }
 
@@ -126,7 +97,6 @@ pub const KINDS: &[&str] = &[
     "covers",
 ];
 
-/// The kinds whose second application must change nothing.
 const IMPORT_KINDS: &[&str] = &[
     "epubs",
     "calibre-import",
@@ -154,7 +124,6 @@ impl Step {
     }
 }
 
-/// One `verbs.jsonl` line, in the shape `gen-reader` documents (`reader.rs`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verb {
     pub argv: Vec<String>,
@@ -163,7 +132,6 @@ pub struct Verb {
     pub why: String,
 }
 
-/// One process the runner started.
 #[derive(Debug, Clone)]
 pub struct Invocation {
     pub step: usize,
@@ -178,7 +146,6 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// Did this process do what the recipe said it would?
     pub fn as_expected(&self) -> bool {
         match self.exit {
             // 101 is a Rust panic: never an acceptable refusal.
@@ -189,18 +156,13 @@ impl Invocation {
     }
 }
 
-// ---- locating things ---------------------------------------------------
-
-/// The repository root: recipe paths are relative to it.
 pub fn repo_root() -> PathBuf {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // Both crates that compile this file sit at `crates/<name>`.
     here.join("../..")
         .canonicalize()
         .unwrap_or_else(|_| here.join("../.."))
 }
 
-/// A name under `corpus/recipes/` or `personal_data/recipes/`, or a path.
 pub fn locate(recipe: &str) -> io::Result<PathBuf> {
     let root = repo_root();
     let direct = PathBuf::from(recipe);
@@ -256,7 +218,6 @@ pub fn validate(r: &Recipe) -> io::Result<()> {
     Ok(())
 }
 
-/// The missing inputs, if any — a recipe whose layer is not generated.
 pub fn missing_inputs(r: &Recipe) -> Vec<String> {
     let root = repo_root();
     r.steps
@@ -267,31 +228,17 @@ pub fn missing_inputs(r: &Recipe) -> Vec<String> {
         .collect()
 }
 
-/// The programs a step needs the binary to find, beside the binary itself.
-///
-/// Only `calibre-import` has one: the engine reads a calibre library through
-/// calibre's own `calibredb`. Where that is absent the CLI says so and exits 0
-/// — an absent optional tool is reported, never a failure — so the step
-/// imports nothing, every invocation is "as expected", and the library built
-/// is **not the one the recipe's expectations describe**: `everything` comes
-/// out 48 books short, with every title and author calibre would have
-/// supplied left as the epub spells it. CI's ubuntu runner has no calibre,
-/// which is how the semantic lock went red there (2026-11-08) while passing
-/// on a Mac that has it.
+/// Programs a step needs besides the binary. Without `calibredb` the CLI exits 0 and imports
+/// nothing, so the built library silently differs from the recipe's expectations.
 const STEP_TOOLS: &[(&str, &str)] = &[("calibre-import", "calibredb")];
 
-/// Where the engine looks for calibre after `PATH`. A copy of
-/// `bookmole::calibre::KNOWN_DIRS`, not a reference to it: this file links
-/// nothing from the engine.
+/// Where the engine looks for calibre after `PATH`; a copy, since this file links nothing from it.
 const TOOL_DIRS: &[&str] = &[
     "/Applications/calibre.app/Contents/MacOS",
     "/opt/calibre",
     "/usr/lib/calibre",
 ];
 
-/// The tools `r`'s steps need that this machine does not have — a recipe
-/// that will build, but not into the library its expectations were taken
-/// from. Each entry names the tool and the step that needs it.
 pub fn missing_tools(r: &Recipe) -> Vec<String> {
     missing_tools_with(r, |tool| find_tool(tool).is_some())
 }
@@ -304,8 +251,6 @@ fn missing_tools_with(r: &Recipe, found: impl Fn(&str) -> bool) -> Vec<String> {
         .collect()
 }
 
-/// `PATH`, then [`TOOL_DIRS`], as the engine searches: an executable file,
-/// not merely a path that exists.
 fn find_tool(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
@@ -325,7 +270,6 @@ fn is_executable(p: &Path) -> bool {
     p.is_file()
 }
 
-/// The workspace's debug `bookmole`, unless told otherwise.
 pub fn default_bin() -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -337,9 +281,6 @@ fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-// ---- running ------------------------------------------------------------
-
-/// Run every step of `recipe` (or only the re-applicable ones) on `data_dir`.
 pub fn run(
     recipe: &Recipe,
     data_dir: &Path,
@@ -382,10 +323,8 @@ pub fn run(
     Ok(out)
 }
 
-/// One planned process: argv, the hostile case it carries, whether it must fail.
 type Planned = (Vec<String>, Option<String>, bool);
 
-/// The argv lists one step expands to (without the binary and `--data-dir`).
 fn plan(
     step: &Step,
     index: usize,
@@ -455,15 +394,12 @@ fn exec(
     let home = data_dir.join(".home");
     let _ = std::fs::create_dir_all(&home);
     let started = Instant::now();
-    // argv, never a shell: `--data-dir` first, the recipe's words after it,
-    // user text already behind `--` where the verb file put it.
+    // argv, never a shell: `--data-dir` first, user text already behind `--`.
     let result = Command::new(bin)
         .arg("--data-dir")
         .arg(data_dir)
         .args(&argv)
-        // Recipe inputs and verb-file paths are repo-relative, so the child
-        // runs from the repo root whatever directory the runner (or `cargo
-        // test`, whose cwd is the crate) was started in.
+        // Recipe inputs and verb-file paths are repo-relative, so the child runs from the repo root.
         .current_dir(repo_root())
         .stdin(Stdio::null())
         // The user's config, API keys and editor never reach a corpus build.
@@ -502,11 +438,7 @@ fn exec(
     }
 }
 
-/// A reader mount for `ko stats`: copied under the data dir, every `X.sql`
-/// turned into `X.sqlite3` by the `sqlite3` CLI, and the KOReader install
-/// markers `koreader_dir` looks for created if the layer did not ship them.
-/// A mount with no `koreader/` directory is read as the settings directory
-/// itself (the shape of `tests/fixtures/koreader/statistics/`).
+/// A mount with no `koreader/` directory is read as the settings directory itself.
 fn materialise_mount(src: &Path, data_dir: &Path, index: usize) -> io::Result<PathBuf> {
     let mount = data_dir.join(".mounts").join(format!("step-{index}"));
     if mount.exists() {
@@ -596,9 +528,8 @@ pub fn read_verbs(path: &Path) -> io::Result<Vec<Verb>> {
     Ok(out)
 }
 
-/// Counts a re-applied step reported as changed: every `<n> new|updated|
-/// changed|created|added` with `n > 0`, as `(n, word)`. A second application
-/// of an import must report none. Read by the invariant suite, not by `main`.
+/// Counts reported as changed by a re-applied step (`<n> new|updated|...`, n > 0); a second
+/// application of an import must report none.
 #[allow(dead_code)]
 pub fn changes_reported(stdout: &str) -> Vec<(u64, String)> {
     let words: Vec<&str> = stdout.split_whitespace().collect();
@@ -616,14 +547,11 @@ pub fn changes_reported(stdout: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
-// ---- the semantic lock ----------------------------------------------------
-
-/// Run one query through the `sqlite3` CLI; every column comes back hex so a
-/// title with a newline, a tab or a NUL cannot break the parse.
+/// Every column comes back hex so a title with a newline, tab or NUL cannot break the parse.
 pub fn query(db: &Path, sql: &str) -> io::Result<Vec<Vec<String>>> {
     let o = Command::new("sqlite3")
         .arg("-readonly")
-        // Another reader (a `find`, a frontend's dump) may hold the file a moment.
+        // Another reader may hold the file a moment.
         .arg("-cmd")
         .arg(".timeout 10000")
         .arg("-noheader")
@@ -665,9 +593,7 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("database/app.db")
 }
 
-/// The semantic lock of a built library: what a build must
-/// reproduce, and nothing the clock decides. Deterministic text, so the
-/// comparison is a string comparison and the diff is a line diff.
+/// Deterministic text with nothing the clock decides, so comparison is a plain string compare.
 pub fn semantic_lock(data_dir: &Path, recipe: &Recipe, runs: &[Invocation]) -> io::Result<String> {
     let db = db_path(data_dir);
     let mut counts = BTreeMap::new();
@@ -738,8 +664,6 @@ pub fn semantic_lock(data_dir: &Path, recipe: &Recipe, runs: &[Invocation]) -> i
     Ok(s)
 }
 
-/// Per salted case: which step carried it, how the binary exited, and whether
-/// that is what the verb line declared.
 pub fn hostile_outcomes(runs: &[Invocation]) -> Vec<(String, usize, i64, bool)> {
     runs.iter()
         .filter_map(|r| {
@@ -749,7 +673,6 @@ pub fn hostile_outcomes(runs: &[Invocation]) -> Vec<(String, usize, i64, bool)> 
         .collect()
 }
 
-/// `build.json`: per-invocation exit codes, durations, stdout tails.
 pub fn build_report(recipe: &Recipe, runs: &[Invocation]) -> String {
     let mut s = String::from("{\n");
     let _ = writeln!(s, "  \"runner_version\": {RUNNER_VERSION},");
@@ -785,16 +708,12 @@ fn tail(s: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// `<recipe dir>/expect/<name>.json` — `corpus/recipes/expect/` for the
-/// committed recipes, `personal_data/recipes/expect/` for the private overlay.
 pub fn expect_path(recipe: &Recipe) -> PathBuf {
     recipe_dir(recipe)
         .join("expect")
         .join(format!("{}.json", recipe.name))
 }
 
-/// `<recipe dir>/dump/<name>.txt`, the golden for a frontend's text dump of
-/// the built library. Read by the invariant suite, not by `main`.
 #[allow(dead_code)]
 pub fn dump_path(recipe: &Recipe) -> PathBuf {
     recipe_dir(recipe)
@@ -809,7 +728,6 @@ fn recipe_dir(recipe: &Recipe) -> PathBuf {
         .map_or_else(|| repo_root().join("corpus/recipes"), Path::to_path_buf)
 }
 
-/// A line diff good enough to read: lines only in `want`, then only in `got`.
 pub fn diff(want: &str, got: &str) -> String {
     let w: Vec<&str> = want.lines().collect();
     let g: Vec<&str> = got.lines().collect();
@@ -826,7 +744,6 @@ pub fn diff(want: &str, got: &str) -> String {
     s
 }
 
-/// `build-recipe`: build, write `build.json` + `lock.json`, compare or update.
 pub fn build(
     recipe: &str,
     data_dir: &Path,
@@ -893,8 +810,8 @@ pub fn build(
     let expect = expect_path(&recipe);
     let tools = missing_tools(&recipe);
     if !tools.is_empty() {
-        // Neither compared nor written: an expectation recorded here would
-        // describe a library the recipe does not build anywhere else.
+        // Neither compared nor written: an expectation recorded here would describe a library the
+        // recipe does not build anywhere else.
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
@@ -938,11 +855,7 @@ pub fn build(
     Ok(report)
 }
 
-// ---- JSON, by hand --------------------------------------------------------
-
-/// Just enough JSON for `verbs.jsonl` lines and for writing locks. Hand-rolled
-/// because the invariant suite compiles this file into a crate that links no
-/// `serde_json`.
+/// Hand-rolled because the invariant suite compiles this file into a crate with no `serde_json`.
 pub mod json {
     use std::collections::BTreeMap;
 
@@ -1169,9 +1082,6 @@ pub mod json {
 mod tests {
     use super::*;
 
-    /// The corpus's salting rule, held for every committed verbs file: at most
-    /// one hostile value per row (one `case` field, by construction) and at
-    /// most 5% of rows salted.
     #[test]
     fn committed_verbs_files_salt_at_most_five_percent() {
         let dir = repo_root().join("corpus/recipes/fixtures");
@@ -1194,10 +1104,8 @@ mod tests {
         assert!(seen > 0, "no verbs fixture under {}", dir.display());
     }
 
-    /// The shape that went red on CI's ubuntu runner (2026-11-08): a recipe
-    /// with a `calibre-import` step on a machine with no `calibredb` builds,
-    /// exits 0 everywhere, and is not the library its goldens describe. It
-    /// must be reported as a missing tool, and only when that step is there.
+    /// A recipe with a `calibre-import` step and no `calibredb` builds and exits 0, yet is not the
+    /// library its goldens describe, so it must be reported as a missing tool.
     #[test]
     fn a_calibre_step_without_calibredb_is_a_missing_tool() {
         let parse = |s: &str| -> Recipe { toml::from_str(s).unwrap() };
@@ -1214,13 +1122,10 @@ mod tests {
         let plain = parse("name = \"p\"\n[[step]]\nkind = \"refill\"\n");
         assert!(missing_tools_with(&plain, none).is_empty());
 
-        // The committed recipe whose two goldens were the ones that failed.
         let (everything, _) = load("everything").unwrap();
         assert_eq!(missing_tools_with(&everything, none).len(), 1);
     }
 
-    /// A directory called `calibredb` on `PATH` is not calibre — the engine's
-    /// rule, kept here so the two cannot disagree about "absent".
     #[test]
     fn a_directory_is_not_a_tool() {
         let dir = std::env::temp_dir().join(format!("rb-tool-{}", std::process::id()));

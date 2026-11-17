@@ -1,7 +1,3 @@
-//! The search screen: a results list over a federated book search. The query
-//! itself is entered through the shared input overlay (see `super::input`); this
-//! draws whatever results the last query produced.
-
 use bookmole::RankedResult;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -23,8 +19,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let title = format!(" search · {} ", app.search_results.len());
 
-    // Shrink-wrapped and centred — see `library::draw`. With no results the box
-    // still has to hold the hint, which is wider than any of the chrome.
     let widest = rows
         .iter()
         .map(|l| l.width() as u16)
@@ -54,19 +48,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
-    // No `highlight_style`: the reverse is scoped to the title span in `row`,
-    // matching the library and the main menu, so the dim author/year/isbn keep
-    // their hues instead of the whole line inverting into a solid bar.
+    // No `highlight_style`: the reverse is scoped to the title span in `row`.
     let list = List::new(items).block(block).highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut app.search_state);
 }
 
-/// A result row: colors differentiate the fields, but the selection reverse is
-/// kept on the title alone (matching the library), so the other colors read.
 fn row(r: &RankedResult, selected: bool) -> Line<'static> {
     let b = &r.book;
-    // Keeps the row's existing weight — only the reverse is added, so this is
-    // the highlight fix and nothing else.
     let title_style = if selected {
         theme::primary().patch(theme::selected())
     } else {
@@ -106,9 +94,6 @@ mod tests {
         }
     }
 
-    /// The selection reverse must cover the title and nothing else. Reversing
-    /// the whole line turns a result into a solid bar and throws away the
-    /// colour that distinguishes author from year from ISBN.
     #[test]
     fn selection_reverses_the_title_only() {
         let r = result();
@@ -124,7 +109,6 @@ mod tests {
             "expected the reverse on the title span alone"
         );
 
-        // Unselected, nothing is reversed at all.
         let plain = row(&r, false);
         assert!(
             plain

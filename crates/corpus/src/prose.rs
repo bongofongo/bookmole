@@ -1,18 +1,5 @@
-//! The shared prose bank for reader-shaped text: KOReader notes, reactions,
-//! questions, cross-references. The physical reader's vault prose lives in
-//! `reader.rs` instead, beside the layer that uses it.
-//!
-//! Every human-readable string the KOReader layers write comes from a bank
-//! here or from `hostile.json` — never from `now()` or `rand::random`.
-//!
-//! Two placeholders are expanded by [`note_for`]:
-//!
-//! * `{quote}` — a short phrase lifted from the highlight itself (the first
-//!   few words), because a real reader's note quotes what they marked;
-//! * `{title}` / `{author}` — for `[[wikilink]]` cross-references to the
-//!   book's own hub note and its author's.
+//! `{quote}`, `{title}` and `{author}` placeholders are expanded by [`note_for`].
 
-/// English. The longest bank, and the fallback for any language without one.
 pub const KO_NOTES_EN: &[&str] = &[
     "Come back to this.",
     "This is the turn — everything before was setup.",
@@ -32,7 +19,6 @@ pub const KO_NOTES_EN: &[&str] = &[
     "Quote for the review.",
 ];
 
-/// French.
 pub const KO_NOTES_FR: &[&str] = &[
     "À relire.",
     "« {quote} » — tout le livre est là.",
@@ -44,7 +30,6 @@ pub const KO_NOTES_FR: &[&str] = &[
     "Le thème apparaît ici pour la première fois.",
 ];
 
-/// German.
 pub const KO_NOTES_DE: &[&str] = &[
     "Nochmal lesen.",
     "„{quote}“ — hier kippt die Geschichte.",
@@ -56,7 +41,6 @@ pub const KO_NOTES_DE: &[&str] = &[
     "Erinnert an [[{author}]]s Briefe.",
 ];
 
-/// Spanish.
 pub const KO_NOTES_ES: &[&str] = &[
     "Volver a esto.",
     "«{quote}» — aquí cambia todo.",
@@ -67,7 +51,6 @@ pub const KO_NOTES_ES: &[&str] = &[
     "Buscar el contexto histórico.",
 ];
 
-/// Italian.
 pub const KO_NOTES_IT: &[&str] = &[
     "Da rileggere.",
     "«{quote}» — qui la storia gira.",
@@ -77,7 +60,6 @@ pub const KO_NOTES_IT: &[&str] = &[
     "Bella frase, ma non sono d'accordo.",
 ];
 
-/// Russian. Short; the Cyrillic book is the only one that uses it.
 pub const KO_NOTES_RU: &[&str] = &[
     "Перечитать.",
     "«{quote}» — вот главное.",
@@ -85,14 +67,12 @@ pub const KO_NOTES_RU: &[&str] = &[
     "См. [[{title}]].",
 ];
 
-/// Greek.
 pub const KO_NOTES_EL: &[&str] = &[
     "Να το ξαναδιαβάσω.",
     "«{quote}» — εδώ αλλάζουν όλα.",
     "Βλ. [[{title}]].",
 ];
 
-/// The bank for a manifest `language`, falling back to English.
 pub fn ko_notes(language: &str) -> &'static [&'static str] {
     match language {
         "fr" => KO_NOTES_FR,
@@ -105,14 +85,13 @@ pub fn ko_notes(language: &str) -> &'static [&'static str] {
     }
 }
 
-/// Expand one bank entry for a highlight.
 pub fn note_for(template: &str, highlight: &str, title: &str, author: &str) -> String {
     let quote: String = highlight
         .split_whitespace()
         .take(4)
         .collect::<Vec<_>>()
         .join(" ");
-    // A space-less script yields one "word" — clip it by characters instead.
+    // A space-less script yields one "word"; clip by characters.
     let quote = if quote.chars().count() > 40 {
         quote.chars().take(12).collect()
     } else {

@@ -1,18 +1,6 @@
-//! Data-driven KOReader import harness.
-//!
-//! Auto-discovers the fixture corpus under `tests/fixtures/koreader/`, imports
-//! each sidecar into a fresh in-memory database, and asserts:
-//!   * results match committed golden JSON snapshots (`import_matches_golden`),
-//!   * re-importing the same export changes nothing — the idempotency guarantee
-//!     (`reimport_is_strictly_idempotent`),
-//!   * a superset re-import adds only the genuinely new rows
-//!     (`appends_only_new_on_partial_reimport`),
-//!   * malformed/unmatched sidecars degrade to warnings, never abort
-//!     (`malformed_and_unmatched_are_non_fatal`),
-//!   * the user's own drop-in exports under `real/` are idempotent, when present
-//!     (`real_exports_are_idempotent`).
-//!
-//! Regenerate the golden snapshots with `UPDATE_GOLDEN=1` (or `make golden`).
+//! Data-driven KOReader import harness over `tests/fixtures/koreader/`: golden snapshots,
+//! idempotent re-import, superset re-import, and non-fatal malformed input.
+//! Regenerate goldens with `UPDATE_GOLDEN=1` or `make golden`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +16,6 @@ fn synthetic_dir() -> PathBuf {
     fixtures_root().join("synthetic")
 }
 
-/// The `fixtures` table from `manifest.json`.
 fn manifest() -> Value {
     let raw =
         std::fs::read_to_string(fixtures_root().join("manifest.json")).expect("read manifest.json");
@@ -36,7 +23,6 @@ fn manifest() -> Value {
     m["fixtures"].clone()
 }
 
-/// Every `*.sdr` directory under `synthetic/`, sorted by name.
 fn synthetic_fixtures() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(synthetic_dir())
         .expect("read synthetic dir")
@@ -54,8 +40,6 @@ async fn mem_storage() -> Storage {
         .expect("open in-memory db")
 }
 
-/// Seed the library with the books a fixture expects (so title-fuzzy matching
-/// in `koreader::match_book` succeeds).
 async fn seed_books(storage: &Storage, books: &Value) {
     let Some(arr) = books.as_array() else { return };
     for b in arr {
@@ -72,9 +56,7 @@ async fn seed_books(storage: &Storage, books: &Value) {
                 &Book {
                     title: b["title"].as_str().map(str::to_owned),
                     authors,
-                    // Optional, and the reason the schema was extended: without an
-                    // ISBN on the seeded book, the sibling-epub match path can
-                    // never fire and stays untested.
+                    // Optional; without an ISBN on the seeded book the sibling-epub match path is never exercised.
                     isbn_10: b["isbn_10"].as_str().map(str::to_owned),
                     isbn_13: b["isbn_13"].as_str().map(str::to_owned),
                     language: b["language"].as_str().map(str::to_owned),
@@ -87,8 +69,6 @@ async fn seed_books(storage: &Storage, books: &Value) {
     }
 }
 
-/// Snapshot every highlight of a book in stored order: the fields that must
-/// stay stable across a re-import.
 async fn highlight_rows(storage: &Storage, book_id: i64) -> Value {
     let rows = storage
         .list_highlights(book_id)
@@ -101,13 +81,7 @@ async fn highlight_rows(storage: &Storage, book_id: i64) -> Value {
                     "text": h.text,
                     "chapter": h.chapter,
                     "page": h.page,
-                    // The device's note (`highlights.origin_note` since migration
-                    // 0004). Keyed as `note` still, because the key names what
-                    // the *sidecar* wrote and renaming it would churn every
-                    // golden for no change in behaviour. Our own `annotation`
-                    // is deliberately absent: import must never write it, and
-                    // that is asserted by name in
-                    // `device_edits_refresh_but_ours_survive`.
+                    // Keyed `note` after the sidecar's name; `annotation` is absent because import never writes it.
                     "note": h.origin_note,
                     "ko_datetime": h.ko_datetime,
                 })
@@ -128,23 +102,8 @@ async fn flashcard_words(storage: &Storage, book_id: i64) -> Vec<String> {
     words
 }
 
-/// A golden-safe rendering of one diagnostic: **which** degradation fired, plus
-/// any count it carries. Never `Display`, which prints the fixture's absolute
-/// path and would differ on every machine.
-///
-/// This replaced a bare `has_warnings: bool`, and the reason is the lesson of
-/// the PDF-anchor fix (highlights KOReader anchors to a page plus coordinates
-/// used to be dropped with no count and no diagnostic): an absence has to be
-/// reported by name. That boolean was `true` for a sidecar with an unknown
-/// device status and `true` for one whose highlights we could not anchor — so a
-/// golden could not tell the two apart, and a fixture asserting "some warning
-/// happened" is green when the wrong one happens, or when the right one is
-/// replaced by a different wrong one. A golden that merely records an absence
-/// is the bug written down.
-///
-/// The catch-all **panics** rather than bucketing. A new koreader diagnostic has
-/// to be taught to this function on purpose; silently folding it into "other"
-/// is how the next silence would get committed.
+/// Names which degradation fired plus any count, never `Display` (it prints absolute paths).
+/// The catch-all panics so a new diagnostic must be taught here on purpose.
 fn warning_name(d: &Diagnostic) -> String {
     match &d.kind {
         DiagnosticKind::NoSidecarsFound { .. } => "NoSidecarsFound".to_string(),
@@ -152,9 +111,6 @@ fn warning_name(d: &Diagnostic) -> String {
         DiagnosticKind::SidecarUnparsable { .. } => "SidecarUnparsable".to_string(),
         DiagnosticKind::SidecarNotIdentified { .. } => "SidecarNotIdentified".to_string(),
         DiagnosticKind::UnknownDeviceStatus { .. } => "UnknownDeviceStatus".to_string(),
-        // The count is in the name on purpose: it is the number the fixture is
-        // about, and a golden carrying the kind without it could not tell three
-        // lost highlights from one.
         DiagnosticKind::SidecarAnchorsUnsupported { entries, .. } => {
             format!("SidecarAnchorsUnsupported({entries})")
         }
@@ -164,9 +120,6 @@ fn warning_name(d: &Diagnostic) -> String {
     }
 }
 
-/// Import one fixture dir into a freshly seeded in-memory DB and reduce the
-/// result to the golden JSON shape. Warning text carries absolute paths, so we
-/// record which warnings fired and never their prose.
 async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
     let storage = mem_storage().await;
     seed_books(&storage, books).await;
@@ -180,25 +133,11 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
         imported.push(json!({
             "book_title": s.book_title,
             "inserted": s.inserted,
-            // Device-owned fields refreshed on a row we already had. Zero
-            // everywhere in this loop — each fixture is imported once into a
-            // fresh database, so there is nothing yet to refresh — and that is
-            // the point: it pins that a first import never claims to have
-            // updated anything.
             "updated": s.updated,
             "skipped": s.skipped,
             "flashcards": s.flashcards,
-            // Recorded because the two match paths are not interchangeable and
-            // the fallback masks the failure of the better one: break the
-            // sibling-epub ISBN lookup and fuzzy title matching silently
-            // rescues every fixture, leaving every other field in this golden
-            // unchanged. This is the only line that guards that branch.
+            // Recorded because the fuzzy title fallback silently masks a broken sibling-epub ISBN match.
             "matched_by": s.matched_by.to_string(),
-            // The device's own reading state, as parsed. It also feeds
-            // `readings`, but this is the place the `summary` /
-            // `percent_finished` parse itself is asserted end to end.
-            // Without these three lines the four device-state fixtures would be
-            // green while parsing nothing.
             "percent_finished": s.percent_finished,
             "status": s.status.as_ref().map(|s| s.to_string()),
             "rating": s.rating,
@@ -212,9 +151,6 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
         .map(|u| json!({ "title": u.title }))
         .collect();
 
-    // Sorted: `find_sidecars` fixes file order, but a fixture that ever emits
-    // two warnings from one file should not make the golden depend on which
-    // check `import_into` happens to run first.
     let mut warnings: Vec<String> = report.warnings.iter().map(warning_name).collect();
     warnings.sort();
 
@@ -227,7 +163,6 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
 }
 
 fn golden_path(fixture: &str) -> PathBuf {
-    // `Middlemarch.sdr` -> `expected/Middlemarch.json`
     let stem = fixture.strip_suffix(".sdr").unwrap_or(fixture);
     fixtures_root()
         .join("expected")
@@ -237,8 +172,6 @@ fn golden_path(fixture: &str) -> PathBuf {
 fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).expect("serialize json")
 }
-
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn import_matches_golden() {
@@ -284,9 +217,6 @@ async fn import_matches_golden() {
     }
 
     if update {
-        // Regeneration used to be a pure overwrite that never removed anything,
-        // so deleting a fixture left its golden behind to rot — still loaded,
-        // still green, guarding nothing.
         let expected_dir = fixtures_root().join("expected");
         let mut stale = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&expected_dir) {
@@ -312,10 +242,6 @@ async fn import_matches_golden() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
-/// The sibling-epub ISBN branch is the one match path that a failure hides:
-/// break it and fuzzy title matching silently rescues almost everything, with
-/// every other golden field unchanged. `expect.match_via` in the manifest is
-/// what makes that failure visible.
 #[tokio::test]
 async fn fixtures_match_by_the_method_the_manifest_expects() {
     let man = manifest();
@@ -362,16 +288,8 @@ async fn fixtures_match_by_the_method_the_manifest_expects() {
     );
 }
 
-/// No fixture can declare `expect.match_via: "md5"`, because on a first import
-/// into a fresh library there is no mapping yet — the link is a consequence of
-/// matching, not an input to it. So the md5 branch needs its own test: import
-/// twice and assert the second pass used the recorded link rather than
-/// re-guessing.
-///
-/// `Gen-Stats` is the synthetic fixture carrying a root `partial_md5_checksum`.
-/// If that ever changes this test fails loudly rather than quietly checking
-/// nothing, which is the same reason `fixtures_match_by_the_method_the_manifest_expects`
-/// refuses to pass at zero.
+/// No fixture can expect `match_via: "md5"` on a first import, so import twice and assert the
+/// second pass used the recorded link.
 #[tokio::test]
 async fn a_second_import_matches_on_the_link_it_recorded() {
     let fixture = "Gen-Stats.sdr";
@@ -395,9 +313,7 @@ async fn a_second_import_matches_on_the_link_it_recorded() {
         "nothing is recorded yet, so the first pass can only guess"
     );
 
-    // Mirrors the fixture's root `partial_md5_checksum`. If `Gen-Stats` loses
-    // that key, this fails rather than the test quietly degrading into a second
-    // title match that still says "md5" for no reason.
+    // Mirrors the fixture's root `partial_md5_checksum`; fails if `Gen-Stats` loses that key.
     let linked = storage
         .find_book_by_partial_md5("9f2c4e6a8b0d1357911d3f5b7d9f1a3c")
         .await
@@ -432,12 +348,10 @@ async fn reimport_is_strictly_idempotent() {
         let first = koreader::import(&storage, &dir, false)
             .await
             .expect("first import");
-        // Nothing produced (malformed / unmatched) has no rows to guard.
         if first.imported.iter().all(|s| s.inserted == 0) {
             continue;
         }
 
-        // Capture rows for every imported book before re-importing.
         let mut before = Vec::new();
         for s in &first.imported {
             before.push((
@@ -452,17 +366,10 @@ async fn reimport_is_strictly_idempotent() {
             .expect("second import");
         for s in &second.imported {
             assert_eq!(s.inserted, 0, "{fixture}: re-import inserted rows");
-            // Identical bytes carry no device edit, so the refresh must find
-            // nothing to do. The sum assertion below would catch this too, but
-            // only as an arithmetic mismatch several lines from the cause.
             assert_eq!(s.updated, 0, "{fixture}: re-import refreshed rows");
         }
-        // On a re-import every entry the sidecar contains must be skipped —
-        // which is `inserted + skipped` from the first run, not `inserted`
-        // alone. A sidecar can carry duplicates of its *own* entries (KOReader
-        // emits them after a sync conflict), so the first run already skips
-        // some; assuming otherwise made this assertion accidentally specific to
-        // duplicate-free fixtures.
+        // Skipped on re-import is `inserted + skipped` of the first run: a sidecar can duplicate its
+        // own entries.
         let first_seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
         let second_skipped: usize = second.imported.iter().map(|s| s.skipped).sum();
         assert_eq!(
@@ -470,7 +377,6 @@ async fn reimport_is_strictly_idempotent() {
             "{fixture}: re-import did not skip every entry it saw"
         );
 
-        // Every row must be byte-for-byte unchanged: no overwrite, reorder, dup.
         for (book_id, hl, cards) in before {
             assert_eq!(
                 hl,
@@ -488,8 +394,6 @@ async fn reimport_is_strictly_idempotent() {
 
 #[tokio::test]
 async fn appends_only_new_on_partial_reimport() {
-    // Import Middlemarch, then import a superset (Middlemarch + one extra highlight).
-    // Only the new highlight is inserted; the originals are untouched.
     let storage = mem_storage().await;
     seed_books(
         &storage,
@@ -505,12 +409,6 @@ async fn appends_only_new_on_partial_reimport() {
     let base_inserted = first.imported[0].inserted;
     let before = highlight_rows(&storage, book_id).await;
 
-    // The superset is a committed fixture, not a string splice. This used to
-    // do `original.replacen("    },\n    [\"doc_props\"]", ..)` against
-    // Middlemarch's literal indentation, so reformatting that file silently broke
-    // this test. It lives under `variants/` because fixture discovery is a
-    // NON-recursive read_dir — invisible to the golden loop, so it needs no
-    // golden of its own.
     let superset_dir = synthetic_dir().join("variants/Middlemarch-Superset.sdr");
     let second = koreader::import(&storage, &superset_dir, false)
         .await
@@ -520,7 +418,6 @@ async fn appends_only_new_on_partial_reimport() {
     assert_eq!(s.inserted, 1, "exactly one new highlight expected");
     assert_eq!(s.skipped, base_inserted, "all originals should be skipped");
 
-    // Originals still present and unchanged; new one appended.
     let after = highlight_rows(&storage, book_id).await;
     let before_arr = before.as_array().unwrap();
     let after_arr = after.as_array().unwrap();
@@ -539,15 +436,6 @@ async fn appends_only_new_on_partial_reimport() {
     );
 }
 
-/// Import Middlemarch, put an annotation of our own on the highlight that is about
-/// to change, then import the same export with that highlight's device note
-/// rewritten.
-///
-/// This is the case `reimport_is_strictly_idempotent` structurally cannot see.
-/// That test is not wrong and stays: identical bytes genuinely should change
-/// nothing. What it cannot do is distinguish "nothing should have changed" from
-/// "we discard device updates", because the fixture it re-imports contains no
-/// device update. The gap was a missing fixture, not a too-strong assertion.
 #[tokio::test]
 async fn device_edits_refresh_but_ours_survive() {
     const EDITED: &str = "We are all of us born in moral stupidity.";
@@ -595,12 +483,10 @@ async fn device_edits_refresh_but_ours_survive() {
         .iter()
         .find(|h| h.text == EDITED)
         .expect("still there");
-    // Theirs tracked the device...
     assert_eq!(
         refreshed.origin_note.as_deref(),
         Some("Rewritten on the device weeks later.")
     );
-    // ...and ours did not move an inch.
     assert_eq!(
         refreshed.annotation.as_deref(),
         Some("mine, and not the device's business")
@@ -613,11 +499,8 @@ async fn device_edits_refresh_but_ours_survive() {
     assert_eq!(refreshed.text, target.text, "highlight text is frozen");
 }
 
-/// The one that would really hurt. `notes.highlight_id` and
-/// `flashcards.highlight_id` are foreign keys (`0001_init.sql:48`, `:67`), so a
-/// refresh implemented as delete-and-reinsert would silently null note anchors
-/// and cascade flashcards away — with nothing in any other assertion looking
-/// wrong. Assert it, don't assume it.
+/// `notes.highlight_id` and `flashcards.highlight_id` are foreign keys, so a delete-and-reinsert
+/// refresh would null note anchors and cascade flashcards away.
 #[tokio::test]
 async fn highlight_ids_are_stable_across_refresh() {
     let storage = mem_storage().await;
@@ -669,17 +552,6 @@ async fn highlight_ids_are_stable_across_refresh() {
     );
 }
 
-/// The unsupported-anchor assertion, held outside the golden as well as in it.
-///
-/// The golden pins the shape; this pins the *claim*, in the two ways the shape
-/// alone cannot. First, it names the fixture — if `Gen-Pdf-Anchors` is ever
-/// deleted or renamed, `import_matches_golden` would simply stop checking it and
-/// stay green, which is how a fixture rots into a file nobody notices. Second,
-/// it separates the two numbers that a "0 highlights imported" golden conflates:
-/// **three** entries had an anchor we could not store, and the fourth was a
-/// bookmark that was never a highlight. An implementation that counted all four,
-/// or that counted none and merely imported nothing, produces the same
-/// zero-highlight golden as the correct one.
 #[tokio::test]
 async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
     let fixture = "Gen-Pdf-Anchors.sdr";
@@ -696,8 +568,6 @@ async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
         .await
         .expect("a PDF sidecar must not abort an import");
 
-    // It matched a book and imported nothing — which is the state that used to
-    // be indistinguishable from a book with no highlights.
     assert_eq!(report.imported.len(), 1, "the sidecar must still match");
     assert_eq!(report.imported[0].inserted, 0);
     assert!(report.unmatched.is_empty());
@@ -717,29 +587,18 @@ async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
         report.warnings
     );
 
-    // One per file, not one per entry — a deliberate choice (300 identical
-    // diagnostics for a 300-highlight PDF replaces silence with noise), and the
-    // one most likely to be "fixed" into a diagnostic per highlight.
+    // One diagnostic per file, not per entry: a per-highlight diagnostic would be noise.
     assert_eq!(
         report.warnings.len(),
         1,
         "a 300-highlight PDF must not emit 300 diagnostics"
     );
 
-    // And it says something a user can act on, naming the file it is about.
     let text = report.warnings[0].to_string();
     assert!(text.contains("metadata.pdf.lua"), "no path in {text:?}");
     assert!(text.contains('3'), "no count in {text:?}");
 }
 
-/// The other half of the same claim, and the one that guards every *other*
-/// fixture: nothing that is not a paging document may acquire this diagnostic.
-///
-/// Counting unsupported anchors had to be a pure addition — a reflowable
-/// sidecar whose highlight count moved would be a regression dressed as a
-/// feature — and the count is asserted by the goldens. What they cannot say is
-/// that no EPUB fixture started emitting a *spurious* one, because a golden
-/// only sees the fixture it belongs to.
 #[tokio::test]
 async fn only_the_paging_fixture_reports_an_unsupported_anchor() {
     let storage = mem_storage().await;
@@ -767,7 +626,6 @@ async fn only_the_paging_fixture_reports_an_unsupported_anchor() {
 
 #[tokio::test]
 async fn malformed_and_unmatched_are_non_fatal() {
-    // Malformed: bad Lua -> warning, no imported/unmatched.
     let storage = mem_storage().await;
     let report = koreader::import(&storage, &synthetic_dir().join("Malformed.sdr"), false)
         .await
@@ -776,7 +634,6 @@ async fn malformed_and_unmatched_are_non_fatal() {
     assert!(report.unmatched.is_empty());
     assert!(!report.warnings.is_empty(), "malformed sidecar should warn");
 
-    // Unmatched: valid highlights, no matching book -> reported, not fatal.
     let storage = mem_storage().await;
     let report = koreader::import(&storage, &synthetic_dir().join("Unmatched.sdr"), false)
         .await
@@ -788,8 +645,6 @@ async fn malformed_and_unmatched_are_non_fatal() {
         Some("Nonexistent Tome")
     );
 
-    // And a whole-directory import over synthetic/ never aborts: it imports the
-    // matchable books, reports the rest.
     let storage = mem_storage().await;
     seed_all_synthetic(&storage).await;
     let report = koreader::import(&storage, &synthetic_dir(), false)
@@ -802,7 +657,6 @@ async fn malformed_and_unmatched_are_non_fatal() {
     );
 }
 
-/// Seed every book named in the manifest — used for whole-directory imports.
 async fn seed_all_synthetic(storage: &Storage) {
     let man = manifest();
     if let Some(obj) = man.as_object() {
@@ -833,7 +687,6 @@ async fn real_exports_are_idempotent() {
     }
 
     let storage = mem_storage().await;
-    // Seed a book per sidecar title so fuzzy matching succeeds.
     for path in &sidecars {
         if let Ok(src) = std::fs::read_to_string(path)
             && let Ok(sc) = parse_sidecar(&src)
@@ -893,9 +746,6 @@ async fn real_exports_are_idempotent() {
     );
 }
 
-/// A real library is a directory tree, not a flat list of `.sdr` dirs. Nothing
-/// covered the recursive walk, the depth cap, or the rule that a non-sidecar
-/// file inside a `.sdr` is ignored.
 #[tokio::test]
 async fn a_nested_library_tree_is_walked_to_its_leaves() {
     let tmp = tempfile::tempdir().unwrap();
@@ -913,7 +763,6 @@ async fn a_nested_library_tree_is_walked_to_its_leaves() {
         .unwrap(),
     )
     .unwrap();
-    // Files that are not sidecars must be ignored, even inside a `.sdr`.
     std::fs::write(deep.join("cover.jpg"), b"not a sidecar").unwrap();
     std::fs::write(deep.join("notes.txt"), b"also not a sidecar").unwrap();
 
@@ -933,8 +782,7 @@ async fn a_nested_library_tree_is_walked_to_its_leaves() {
     assert!(report.imported[0].inserted > 0);
 }
 
-/// Not a CI case — it exists so the cost of a genuinely large export is known
-/// rather than guessed. `cargo test -p bookmole -- --ignored --nocapture`.
+/// Not a CI case: `cargo test -p bookmole -- --ignored --nocapture`.
 #[tokio::test]
 #[ignore = "scale check; run explicitly"]
 async fn a_very_large_export_imports_in_reasonable_time() {
@@ -975,8 +823,6 @@ async fn a_very_large_export_imports_in_reasonable_time() {
     );
 }
 
-// ---- every highlight records where it came from -----------------------------
-
 async fn middlemarch_md5() -> String {
     let src = std::fs::read_to_string(synthetic_dir().join("Middlemarch.sdr/metadata.epub.lua"))
         .expect("read sidecar");
@@ -986,8 +832,6 @@ async fn middlemarch_md5() -> String {
         .expect("the fixture has a partial_md5")
 }
 
-/// An import stamps `origin`, `copy_id` and `pos_kind` on every highlight it
-/// writes, creates the copy through the `reader` place, and does neither twice.
 #[tokio::test]
 async fn import_stamps_origin_and_links_the_reader_copy() {
     use bookmole::copies::{LearnedFrom, PlaceKind};
@@ -1024,7 +868,6 @@ async fn import_stamps_origin_and_links_the_reader_copy() {
         assert!(!h.text_unavailable);
     }
 
-    // Idempotent: nothing new, no second copy or place.
     let second = koreader::import(&storage, &synthetic_dir().join("Middlemarch.sdr"), false)
         .await
         .expect("re-import");
@@ -1035,9 +878,6 @@ async fn import_stamps_origin_and_links_the_reader_copy() {
     assert_eq!(again[0].places.len(), 1);
 }
 
-/// One file is one copy wherever it sits: a book that already has an own file
-/// copy takes the `reader` place on it, and a highlight stored before the copy
-/// existed gets stamped on the next import without counting as `updated`.
 #[tokio::test]
 async fn import_attaches_to_the_books_existing_file_copy() {
     use bookmole::copies::{CopyForm, LearnedFrom, NewCopy, PlaceKind, Tenure};
@@ -1071,9 +911,6 @@ async fn import_attaches_to_the_books_existing_file_copy() {
     assert_eq!(copies[0].learned_from, LearnedFrom::Calibre);
     assert!(copies[0].places.iter().any(|p| p.kind == PlaceKind::Reader));
 
-    // History with no copy: deleting the copy nulls the stamp (the FK), the next
-    // import makes the file's copy again and stamps the rows, reporting nothing
-    // as changed.
     storage.delete_copy(calibres.id).await.expect("delete");
     let orphaned = storage.list_highlights(book_id).await.expect("list");
     assert!(orphaned.iter().all(|h| h.copy_id.is_none()));
@@ -1093,8 +930,6 @@ async fn import_attaches_to_the_books_existing_file_copy() {
     );
 }
 
-/// The same passage from two apps stays two rows; the derived grouping names
-/// them together and merges nothing.
 #[tokio::test]
 async fn the_same_passage_from_two_origins_is_two_rows_in_one_group() {
     use bookmole::{HighlightOrigin, NewHighlight, same_passages};
@@ -1155,8 +990,6 @@ async fn the_same_passage_from_two_origins_is_two_rows_in_one_group() {
     assert_eq!(origin(lone), HighlightOrigin::User);
 }
 
-/// An import that knows its paired reader records the device id on the `reader`
-/// place; one that does not leaves it alone, and never overwrites it.
 #[tokio::test]
 async fn import_records_the_paired_device_on_the_reader_place() {
     use bookmole::copies::PlaceKind;
@@ -1170,7 +1003,6 @@ async fn import_records_the_paired_device_on_the_reader_place() {
     let md5 = middlemarch_md5().await;
     let sdr = synthetic_dir().join("Middlemarch.sdr");
 
-    // First seen by an import that does not know the device: no detail.
     let first = koreader::import(&storage, &sdr, false)
         .await
         .expect("import");
@@ -1179,7 +1011,6 @@ async fn import_records_the_paired_device_on_the_reader_place() {
     let copies = storage.copies_for_book(book_id).await.unwrap();
     assert_eq!(place(copies).detail, None);
 
-    // The same file, now from a named reader: the NULL detail is filled.
     koreader::import_for_device(&storage, &sdr, false, Some("kobo-1"))
         .await
         .expect("import for device");
@@ -1192,8 +1023,6 @@ async fn import_records_the_paired_device_on_the_reader_place() {
     );
     assert_eq!(p.detail.as_deref(), Some("kobo-1"));
 
-    // A later import that does not know the device does not clear it, and a
-    // different device does not take the place over.
     koreader::import(&storage, &sdr, false)
         .await
         .expect("plain");

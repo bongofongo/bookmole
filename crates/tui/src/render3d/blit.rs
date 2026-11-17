@@ -1,23 +1,7 @@
-//! Block-glyph presentation: several subpixels per terminal cell, drawn with
-//! one of the block mosaic glyphs. Two families are supported:
-//!
-//! - **Quadrant** — 2x2 subpixels per cell, the sixteen glyphs in
-//!   U+2580..U+259F. Works everywhere truecolor does.
-//! - **Octant** — 2x4 subpixels per cell, the Unicode 16 "octant" mosaics
-//!   (U+1CD00..) plus the block/quadrant/quarter glyphs the standard reuses.
-//!   Twice the vertical resolution, and each subpixel is ~square; needs a font
-//!   carrying the Unicode 16 legacy-computing block, so it degrades to tofu on
-//!   older fonts — hence the [`GlyphSet`] toggle.
-//!
-//! A cell can only hold two colors, so each cell is a two-color quantization of
-//! its subpixels: try every way of splitting them into two groups, keep the
-//! split with the lowest squared error, and paint the winning glyph with the
-//! two group means. Where a cell straddles the book's silhouette the split is
-//! forced by coverage instead, which is what gives the edges subcell resolution
-//! rather than the whole-column stair-steps half-blocks produce.
-//!
-//! Works everywhere truecolor does — including inside tmux, where the
-//! kitty/sixel image protocols do not.
+//! Block-glyph presentation: quadrant (2x2) or octant (2x4, needs a Unicode 16 font) subpixels per
+//! cell.
+//! Each cell is a two-color quantization of its subpixels, with coverage forcing the split at
+//! edges.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -25,24 +9,13 @@ use ratatui::style::Color;
 
 use super::math::Vec3;
 
-/// Quadrant glyphs indexed by their coverage mask: bit 0 top-left, 1 top-right,
-/// 2 bottom-left, 3 bottom-right. Set bits are painted in the foreground.
+/// Indexed by coverage mask: bit 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
 const QUADRANTS: [&str; 16] = [
     " ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█",
 ];
 
-/// Octant glyphs indexed by their 2x4 coverage mask: bits run in reading order,
-/// bit 0 top-left, bit 1 top-right, then down the four rows to bit 7
-/// bottom-right (matching the Unicode `BLOCK OCTANT-<positions>` naming, where
-/// positions 1..8 number the cells top-to-bottom).
-///
-/// Generated from the Unicode 16.0 character database: the 230 masks that have
-/// a dedicated octant code point (U+1CD00..=U+1CDE5) map straight to it; the
-/// other 26 reuse the block/quadrant/quarter glyphs the standard already had
-/// (space, halves, quadrants, one/three-quarter blocks, and the middle/edge
-/// quarter blocks at U+1CEA0.., U+1FB82.., U+1FBE6..). Do not hand-edit — the
-/// scattered legacy code points are the error-prone part; regenerate and let
-/// `octant_masks_round_trip` guard it.
+/// Indexed by 2x4 coverage mask in reading order (bit 0 top-left, bit 7 bottom-right).
+/// Generated from the Unicode 16 database; do not hand-edit, `octant_masks_round_trip` guards it.
 #[rustfmt::skip]
 const OCTANTS: [&str; 256] = [
     "\u{20}", "\u{1CEA7}", "\u{1CEAB}", "\u{1FB82}", "\u{1CD00}", "\u{2598}", "\u{1CD01}", "\u{1CD02}",
@@ -79,20 +52,15 @@ const OCTANTS: [&str; 256] = [
     "\u{1CDE1}", "\u{1CDE2}", "\u{259F}", "\u{1CDE3}", "\u{2586}", "\u{1CDE4}", "\u{1CDE5}", "\u{2588}",
 ];
 
-/// Which block-glyph family the framebuffer is quantized into. This fixes the
-/// subpixel geometry of a cell (always 2 wide; 2 or 4 tall) and the mask→glyph
-/// lookup, so the whole pipeline — framebuffer height, blit, dumps — reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlyphSet {
     Quadrant,
     Octant,
 }
 
-/// The most subpixels any supported cell holds (octant: 2x4).
 const MAX_SUBPIXELS: usize = 8;
 
 impl GlyphSet {
-    /// Subpixel rows per cell (columns are always 2).
     pub fn cell_h(self) -> u16 {
         match self {
             GlyphSet::Quadrant => 2,
@@ -100,12 +68,10 @@ impl GlyphSet {
         }
     }
 
-    /// Subpixels per cell.
     pub fn subpixels(self) -> usize {
         2 * self.cell_h() as usize
     }
 
-    /// The glyph for a coverage `mask` (in this set's subpixel-bit order).
     fn glyph(self, mask: usize) -> &'static str {
         match self {
             GlyphSet::Quadrant => QUADRANTS[mask],
@@ -114,10 +80,7 @@ impl GlyphSet {
     }
 }
 
-/// A framebuffer of optional RGB subpixels. `None` means "the book isn't
-/// here" and leaves the terminal's own background showing through.
-///
-/// Width is twice the cell columns; height is `cell_h` times the cell rows.
+/// `None` is "no book here" and lets the terminal background show through.
 #[derive(Debug, Clone)]
 pub struct RgbBuf {
     pub width: u16,
@@ -147,9 +110,6 @@ impl RgbBuf {
         self.px[y as usize * self.width as usize + x as usize]
     }
 
-    /// The subpixels of cell `(col, row)` in `set`'s bit order (reading order,
-    /// left-to-right then top-to-bottom). Returns a fixed buffer plus the count
-    /// actually used, so quadrant and octant share one path.
     fn cell(&self, col: u16, row: u16, set: GlyphSet) -> ([Option<Vec3>; MAX_SUBPIXELS], usize) {
         let rows = set.cell_h();
         let (x0, y0) = (col * 2, row * rows);
@@ -165,7 +125,6 @@ impl RgbBuf {
     }
 }
 
-/// What one cell should look like. `None` means the terminal default.
 struct CellPlan {
     symbol: &'static str,
     fg: Option<Vec3>,
@@ -186,7 +145,6 @@ fn mean(samples: &[Option<Vec3>], mask: usize) -> Option<Vec3> {
     (n > 0.0).then(|| sum / n)
 }
 
-/// Squared error of representing the masked samples by `center`.
 fn error(samples: &[Option<Vec3>], mask: usize, center: Option<Vec3>) -> f32 {
     let Some(center) = center else { return 0.0 };
     let mut err = 0.0;
@@ -218,8 +176,6 @@ fn plan(samples: &[Option<Vec3>], set: GlyphSet) -> CellPlan {
         };
     }
     if covered != full {
-        // Straddling the silhouette: the split is dictated by coverage, and
-        // the uncovered subpixels show the terminal background.
         return CellPlan {
             symbol: set.glyph(covered),
             fg: mean(samples, covered),
@@ -227,9 +183,7 @@ fn plan(samples: &[Option<Vec3>], set: GlyphSet) -> CellPlan {
         };
     }
 
-    // Fully covered: pick the two-color split that loses the least detail.
-    // Seeded with the solid block so a flat cell — and any tie — stays solid
-    // rather than picking an arbitrary partition of identical colors.
+    // Seeded with the solid block so a flat cell, and any tie, stays solid.
     let mut best = (error(samples, full, mean(samples, full)), full);
     for mask in 1..full {
         let inverse = !mask & full;
@@ -258,8 +212,7 @@ fn to_color(c: Option<Vec3>) -> Color {
     }
 }
 
-/// Draw `fb` into `area`. The framebuffer is expected to be `area.width * 2`
-/// wide and `area.height * set.cell_h()` tall; anything outside is ignored.
+/// `fb` must be `area.width * 2` wide and `area.height * set.cell_h()` tall; the rest is ignored.
 pub fn blit(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
     for row in 0..area.height {
         for col in 0..area.width {
@@ -273,25 +226,8 @@ pub fn blit(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
     }
 }
 
-/// Draw a framebuffer that is known to be **sparse** into `area`, compositing
-/// over whatever is already in the buffer.
-///
-/// Two differences from [`blit`], and both are the point:
-///
-/// - **Cells with no coverage are left untouched.** `blit` owns its rect and
-///   stamps every cell; this one is a layer, so an empty cell must keep the
-///   symbol and colors already there.
-/// - **The two-color split is dictated by coverage alone**, never by the
-///   `O(2^n)` error search `plan` runs on a fully covered cell. That search is
-///   right for the book — it is what keeps cover detail — but it costs 256
-///   iterations per cell at octant density, and a background spread over a
-///   whole terminal cannot afford it. A sparse single-hue layer has nothing to
-///   find anyway: every lit subpixel in a cell is the same ink, so the coverage
-///   mask *is* the best split.
-///
-/// This is a second path beside [`blit`], never a replacement — the same reason
-/// `raster.rs` sits beside `render`. The book's output stays byte-identical by
-/// construction.
+/// A layer over a sparse framebuffer: empty cells are left untouched and the split is dictated by
+/// coverage alone, skipping the costly error search `blit` runs. The book keeps using `blit`.
 pub fn blit_sparse(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
     for row in 0..area.height {
         for col in 0..area.width {
@@ -306,8 +242,7 @@ pub fn blit_sparse(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
             if covered == 0 {
                 continue;
             }
-            // Background is deliberately not set: the layer tints the glyph and
-            // leaves the terminal's own background showing through around it.
+            // Background is deliberately not set, so the terminal's own shows through.
             buf[(area.x + col, area.y + row)]
                 .set_symbol(set.glyph(covered))
                 .set_fg(to_color(mean(samples, covered)));
@@ -315,8 +250,6 @@ pub fn blit_sparse(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
     }
 }
 
-/// Render the framebuffer to plain text with ANSI truecolor escapes — the
-/// `--dump-frame` path, which needs no terminal setup at all.
 pub fn to_ansi(fb: &RgbBuf, set: GlyphSet) -> String {
     let rows = fb.height / set.cell_h();
     let cols = fb.width / 2;
@@ -354,17 +287,10 @@ fn byte(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Write a PNG of what the terminal will actually show: every cell is planned
-/// exactly as [`blit`] would, then painted as its subpixels. A cell is always
-/// drawn 2x4 image pixels, so each subpixel is 1x2 for quadrants and 1x1 for
-/// the finer octant grid — the proportions the terminal shows, not flattered.
-///
-/// This is the development view. Rendering the raw framebuffer instead would
-/// flatter the result, hiding exactly the glyph quantization worth judging.
+/// Cells are planned as `blit` would and drawn at true terminal proportions, so quantization stays
+/// visible.
 pub fn to_png(fb: &RgbBuf, set: GlyphSet, path: &std::path::Path) -> std::io::Result<()> {
     let (cols, rows) = (fb.width / 2, fb.height / set.cell_h());
-    // Each cell is 2 image px wide and 4 tall regardless of family, so denser
-    // grids simply draw shorter subpixels.
     let sub_h = 4 / set.cell_h() as u32;
     let img = image::RgbImage::from_fn(cols as u32 * 2, rows as u32 * 4, |x, y| {
         let (col, row) = ((x / 2) as u16, (y / 4) as u16);
@@ -375,7 +301,6 @@ pub fn to_png(fb: &RgbBuf, set: GlyphSet, path: &std::path::Path) -> std::io::Re
         let lit = (1usize << index) & mask_of(p.symbol, set) != 0;
         match if lit { p.fg } else { p.bg } {
             Some(c) => image::Rgb([byte(c.x), byte(c.y), byte(c.z)]),
-            // Checkerboard for "no book here", so the silhouette is obvious.
             None => {
                 let v = if (x / 8 + y / 16) % 2 == 0 { 60 } else { 75 };
                 image::Rgb([v, v, v])
@@ -419,23 +344,19 @@ mod tests {
 
     #[test]
     fn quadrant_coverage_dictates_the_glyph_at_the_silhouette_edge() {
-        // Only the top-left quarter is on the book.
         let (sym, fg, bg) = planned(&[Some(RED), None, None, None], GlyphSet::Quadrant);
         assert_eq!(sym, "▘");
         assert_eq!(fg, Color::Rgb(255, 0, 0));
         assert_eq!(bg, Color::Reset);
 
-        // The left half.
         let (sym, ..) = planned(&[Some(RED), None, Some(RED), None], GlyphSet::Quadrant);
         assert_eq!(sym, "▌");
-        // Three quarters, the bottom-right missing.
         let (sym, ..) = planned(&[Some(RED), Some(RED), Some(RED), None], GlyphSet::Quadrant);
         assert_eq!(sym, "▛");
     }
 
     #[test]
     fn a_full_quadrant_cell_splits_where_the_colors_actually_differ() {
-        // Red on top, blue underneath: the upper half block is exact.
         let (sym, fg, bg) = planned(
             &[Some(RED), Some(RED), Some(BLUE), Some(BLUE)],
             GlyphSet::Quadrant,
@@ -444,7 +365,6 @@ mod tests {
         assert_eq!(fg, Color::Rgb(255, 0, 0));
         assert_eq!(bg, Color::Rgb(0, 0, 255));
 
-        // Red left, blue right — a split half-blocks alone cannot express.
         let (sym, fg, bg) = planned(
             &[Some(RED), Some(BLUE), Some(RED), Some(BLUE)],
             GlyphSet::Quadrant,
@@ -466,7 +386,6 @@ mod tests {
 
     #[test]
     fn octant_coverage_uses_the_finer_grid() {
-        // Top row only (bits 0,1) → upper one-quarter block.
         let mut cell = [None; 8];
         cell[0] = Some(RED);
         cell[1] = Some(RED);
@@ -475,7 +394,6 @@ mod tests {
         assert_eq!(fg, Color::Rgb(255, 0, 0));
         assert_eq!(bg, Color::Reset);
 
-        // Top half (bits 0..4) → the reused upper-half block.
         let mut cell = [None; 8];
         for c in cell.iter_mut().take(4) {
             *c = Some(RED);
@@ -483,8 +401,7 @@ mod tests {
         assert_eq!(planned(&cell, GlyphSet::Octant).0, "▀");
     }
 
-    /// The load-bearing invariant: every octant mask maps to a glyph that maps
-    /// back to the same mask. Guards the scattered legacy code points.
+    /// Every octant mask maps to a glyph that maps back to the same mask.
     #[test]
     fn octant_masks_round_trip() {
         for mask in 0..256usize {
@@ -524,32 +441,26 @@ mod tests {
 
     #[test]
     fn blit_sparse_composites_instead_of_clobbering() {
-        // Two cells; only the left one has any coverage.
         let mut fb = RgbBuf::new(4, 2);
         fb.set(0, 0, Some(RED));
 
         let area = Rect::new(0, 0, 2, 1);
         let mut buf = Buffer::empty(area);
-        // Pre-existing content the layer must not disturb.
         for x in 0..2 {
             buf[(x, 0)].set_symbol("X").set_bg(Color::Rgb(9, 9, 9));
         }
         blit_sparse(&fb, area, &mut buf, GlyphSet::Quadrant);
 
-        // Covered: the coverage mask picks the glyph, the ink lands in fg, and
-        // the background underneath survives.
         assert_eq!(buf[(0, 0)].symbol(), "▘");
         assert_eq!(buf[(0, 0)].fg, Color::Rgb(255, 0, 0));
         assert_eq!(buf[(0, 0)].bg, Color::Rgb(9, 9, 9));
-        // Uncovered: untouched entirely, where `blit` would have written " ".
         assert_eq!(buf[(1, 0)].symbol(), "X");
         assert_eq!(buf[(1, 0)].bg, Color::Rgb(9, 9, 9));
     }
 
     #[test]
     fn blit_sparse_takes_the_coverage_split_on_a_full_cell() {
-        // A fully covered cell must NOT trigger the error search: the glyph is
-        // the solid block and the ink is the mean, whatever the colors were.
+        // A fully covered cell must not trigger the error search: solid block, ink is the mean.
         let mut fb = RgbBuf::new(2, 2);
         for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
             fb.set(x, y, Some(if y == 0 { RED } else { BLUE }));
@@ -569,7 +480,6 @@ mod tests {
         let text = to_ansi(&fb, GlyphSet::Quadrant);
         assert_eq!(text.lines().count(), 2);
         assert!(text.contains("128"));
-        // Octant reads the same buffer as one cell row of height 4.
         assert_eq!(to_ansi(&fb, GlyphSet::Octant).lines().count(), 1);
     }
 }

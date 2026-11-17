@@ -1,20 +1,10 @@
-//! What you are reading, through the facade — the surface the home screen uses.
-//!
-//! The SQL itself is exercised beside the query in `storage/readings.rs`, where
-//! the pool is reachable and a `last_modified` can be set by hand. What is
-//! tested here is the pair of promises a frontend actually leans on: the facade
-//! answers without reaching into `engine.storage`, and opening a reflection
-//! hands back the record every editor path takes.
-//!
-//! Offline, `sqlite::memory:` plus a `TempDir` vault, and nothing left behind.
+//! The home-screen surface through the facade: it answers without reaching into
+//! `engine.storage`, and opening a reflection returns the record every editor path takes.
 
 mod common;
 use bookmole::NoteScope;
 use common::{engine, seed_book};
 
-/// The home screen's list: books with a reading open, and only those. A book
-/// merely added to the library is not something you are reading, and a finished
-/// one has stopped being one.
 #[tokio::test]
 async fn the_facade_lists_what_is_open_and_nothing_else() {
     let (_tmp, engine) = engine().await;
@@ -46,18 +36,12 @@ async fn the_facade_lists_what_is_open_and_nothing_else() {
         .unwrap();
     assert!(engine.currently_reading(20).await.unwrap().is_empty());
 
-    // A reread is how a finished book comes back, and it comes back as its own
-    // reading rather than the closed one the book still projects.
     let second = engine.storage().reread(middlemarch).await.unwrap();
     let open = engine.currently_reading(20).await.unwrap();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].1.id, second);
 }
 
-/// The row the screen draws has to be internally consistent: the progress bar
-/// comes off `Book`'s projections and the state off the `Reading` beside it, and
-/// if those two ever resolved "current" differently nothing on screen would look
-/// wrong.
 #[tokio::test]
 async fn the_book_and_its_reading_are_the_same_reading() {
     let (_tmp, engine) = engine().await;
@@ -82,10 +66,6 @@ async fn the_book_and_its_reading_are_the_same_reading() {
     assert!(!book.finished);
 }
 
-/// The home screen's whole action. `open_reflection` returns a `CreatedNote`,
-/// which is the wrong shape for an editor — every editing path in the frontends
-/// takes a `NoteRecord` — so the record-returning twin has to be the *same note*,
-/// not a second one.
 #[tokio::test]
 async fn the_record_wrapper_opens_the_same_reflection() {
     let (_tmp, engine) = engine().await;
@@ -105,16 +85,12 @@ async fn the_record_wrapper_opens_the_same_reflection() {
         1
     );
 
-    // And it is a record an editor can actually use: read the body, write it
-    // back, read it again.
     assert_eq!(engine.note_body(&record).unwrap(), "");
     engine
         .update_note_body(&record, "Dorothea's dignity, chapter by chapter.")
         .await
         .unwrap();
 
-    // Accretion holds through the wrapper too — the second call must not blank
-    // what the first one wrote.
     let again = engine.open_reflection_record(book, None).await.unwrap();
     assert_eq!(again.id, record.id);
     assert_eq!(
@@ -123,8 +99,6 @@ async fn the_record_wrapper_opens_the_same_reflection() {
     );
 }
 
-/// The review twin, and the fact that it is a *different* note: a review is a
-/// rewrite for a different audience, never a slice of the private reflection.
 #[tokio::test]
 async fn the_review_twin_is_its_own_note() {
     let (_tmp, engine) = engine().await;
@@ -140,7 +114,6 @@ async fn the_review_twin_is_its_own_note() {
         review.id,
         "one review per reading, and reopening finds it"
     );
-    // Two notes on one reading, and the two openings did not start two readings.
     assert_eq!(
         engine
             .list_notes(NoteScope::Book(book), None)
@@ -152,9 +125,6 @@ async fn the_review_twin_is_its_own_note() {
     assert_eq!(engine.storage().list_readings(book).await.unwrap().len(), 1);
 }
 
-/// A reflection opened from the home screen must not start a reread of a book
-/// the user finished — `open_anchored` resolves through `ensure_reading`, and
-/// the wrapper inherits that rather than deciding for itself.
 #[tokio::test]
 async fn opening_from_a_finished_book_does_not_reopen_it() {
     let (_tmp, engine) = engine().await;

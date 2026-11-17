@@ -1,16 +1,5 @@
-//! A Goodreads CSV, previewed before it is applied — and where the library is
-//! exported from.
-//!
-//! Deliberately **not** a shelf, unlike the device and calibre screens. Goodreads'
-//! API died in December 2020, so the file is the interface; and a file is matched
-//! against the library as a whole, row by row, with no per-row import to stand on.
-//! So the screen is what a dry run found: one line per row, the undecided ones
-//! last where a cursor looking for something to do will find them, and `s` to
-//! apply the lot.
-//!
-//! It reads a file and writes one, and both halves live here because both are the
-//! same idea from opposite ends — `x` keeps its global meaning (export) rather
-//! than being spent on a marking scheme this screen has no use for.
+//! A Goodreads CSV previewed before it is applied, and where the library is exported from.
+//! Not a shelf: the file is matched as a whole; undecided rows sort last and `s` applies all.
 
 use bookmole::{GoodreadsMatch, TextOutcome};
 use ratatui::Frame;
@@ -44,9 +33,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
     let list = List::new(items).block(block).highlight_symbol("› ");
-    // The list needs the preview's own `ListState`, which is inside the `Option`
-    // the rows were just built from — so it is re-borrowed here rather than held
-    // across the build.
     if let Some(p) = &mut app.goodreads {
         f.render_stateful_widget(list, area, &mut p.state);
     }
@@ -56,8 +42,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// The box title. Says whether what is on screen has been applied yet, because
-/// that is the one thing about this screen a user can otherwise only infer.
 fn title_for(p: &GoodreadsPreview) -> String {
     let name = p
         .path
@@ -71,7 +55,6 @@ fn title_for(p: &GoodreadsPreview) -> String {
     }
 }
 
-/// One preview line.
 fn row(r: &GoodreadsPreviewRow, selected: bool) -> Line<'static> {
     let title_style = if selected {
         theme::title().patch(theme::selected())
@@ -114,21 +97,11 @@ fn row(r: &GoodreadsPreviewRow, selected: bool) -> Line<'static> {
                     theme::dim(),
                 ));
             }
-            // The row's line in the CSV. Shown only for the undecided rows,
-            // because they are the only ones with a decision to make and the line
-            // number is how the file itself gets looked at — a 2000-row export
-            // has no other handle on one row.
             spans.push(Span::styled(format!("  row {row}"), theme::dim()));
-            // A decision, not a dead end — and which moves are available depends
-            // on whether the row has an id to link by at all. Our own export has
-            // no `Book Id` column, so the second case is ordinary, not an edge.
             let detail = match (candidates.first(), external_id) {
                 (Some(c), Some(_)) => {
                     super::candidate_hint(&c.title, c.score, "l to link, n if not")
                 }
-                // No `l` offered, because there is nothing durable to link by —
-                // and said, not just omitted, or the row looks like it is missing
-                // a key rather than lacking the id one would need.
                 (Some(c), None) => {
                     super::candidate_hint(&c.title, c.score, "no Goodreads id, so n if not")
                 }
@@ -143,9 +116,6 @@ fn row(r: &GoodreadsPreviewRow, selected: bool) -> Line<'static> {
     }
 }
 
-/// What a matched row would gain. Mirrors the CLI's `book_line`, including its
-/// silences: `Absent` and `Unchanged` say nothing, because "no review here and
-/// none there" is not news.
 fn book_detail(r: &GoodreadsPreviewRow) -> String {
     let GoodreadsPreviewRow::Book {
         readings,
@@ -176,8 +146,6 @@ fn book_detail(r: &GoodreadsPreviewRow) -> String {
     }
     match review {
         TextOutcome::Written => parts.push("review".to_string()),
-        // Ours was kept. Said out loud, because the alternative reads as the
-        // import having done nothing.
         TextOutcome::KeptOurs => parts.push("review kept as yours".to_string()),
         _ => {}
     }
@@ -192,7 +160,6 @@ fn book_detail(r: &GoodreadsPreviewRow) -> String {
     parts.join(", ")
 }
 
-/// The state column for a matched row: which rung found it.
 fn match_label(m: GoodreadsMatch) -> &'static str {
     match m {
         GoodreadsMatch::ExternalId => "linked",
@@ -267,13 +234,9 @@ mod tests {
             .iter()
             .map(|s| s.style.add_modifier.contains(Modifier::REVERSED))
             .collect();
-        // gutter, rung, title, detail
         assert_eq!(reversed, vec![false, false, true, false]);
     }
 
-    /// The outcomes a row can carry all reach the line, and the two silent ones
-    /// stay silent — `nothing new` is the honest answer for a re-import, and the
-    /// engine went out of its way to be able to give it.
     #[test]
     fn a_matched_row_says_what_it_would_gain() {
         assert_eq!(
@@ -292,8 +255,6 @@ mod tests {
         assert_eq!(book_detail(&nothing), "nothing new");
     }
 
-    /// Prose already rewritten here is kept, and the row has to say so — silence
-    /// would read as the import having skipped the row.
     #[test]
     fn prose_kept_as_ours_is_said_out_loud() {
         let kept = GoodreadsPreviewRow::Book {
@@ -310,9 +271,6 @@ mod tests {
         assert!(detail.contains("notes kept as yours"), "{detail}");
     }
 
-    /// An undecided row is never a dead end, and what it offers depends on
-    /// whether it has an id to link by. A row with no `Book Id` — every row of our
-    /// own export — must not be told to press `l`.
     #[test]
     fn an_undecided_row_offers_only_the_moves_it_has() {
         let candidate = MatchCandidate {
@@ -341,10 +299,6 @@ mod tests {
         assert!(text.contains("n if not"), "{text}");
     }
 
-    /// **The next move survives the clip.** This is the regression that made
-    /// `DETAIL_MAX` a shared, larger constant: a candidate with a long title used
-    /// to push `n if not` past the budget, so the row said what it might be and
-    /// nothing about what to do — the dead end the whole shape exists to avoid.
     #[test]
     fn a_long_candidate_title_never_clips_the_next_move_away() {
         let long = MatchCandidate {
@@ -364,7 +318,6 @@ mod tests {
                 text.contains("n if not"),
                 "the move was clipped away: {text}"
             );
-            // And the row is still bounded — the title is what gave way.
             assert!(
                 text.contains('…'),
                 "the long title should have been clipped: {text}"
@@ -372,7 +325,6 @@ mod tests {
         }
     }
 
-    /// With nothing looking like it, `n` is still the move.
     #[test]
     fn a_row_with_no_candidates_still_has_a_way_forward() {
         let text: String = row(&unmatched(Some("1"), Vec::new()), false)
@@ -383,16 +335,12 @@ mod tests {
         assert!(text.contains("n brings it in"), "{text}");
     }
 
-    /// Both halves of the screen are reachable from the empty state — a screen
-    /// that has read no file yet must still be able to write one.
     #[test]
     fn the_empty_state_names_both_directions() {
         assert!(HINT.contains('/'), "{HINT}");
         assert!(HINT.contains('x'), "{HINT}");
     }
 
-    /// No task-completion framing: nothing here tallies what the user has not
-    /// done. The app rules that out on every screen.
     #[test]
     fn the_key_bar_counts_nothing() {
         let bar = key_bar()

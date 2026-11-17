@@ -1,19 +1,5 @@
-//! The calibre library's own shelf.
-//!
-//! One row per book calibre holds, in the state a dry-run import computed. It is
-//! the device screen's shape on purpose: calibre is another system that owns
-//! books, and it is the origin of the files and curated metadata it holds — so
-//! the way to meet one is to be shown its shelf and choose, not to answer a
-//! dialog that imports all of it or none.
-//!
-//! Two things this screen must never become. It is **not a dead end**: a row that
-//! looks like a book already here offers those books (`l`) and the override
-//! (`n`), which is the same refusal-with-a-next-move `ko pull` and
-//! `goodreads import` have. And an **absent calibre is reported, never
-//! prescribed** — the empty state says the tools are not here and names nothing
-//! to install. calibre is feature-detected, never a dependency the user is asked
-//! to install or configure, and that is the sort of rule that erodes by
-//! helpfulness.
+//! The calibre library's shelf: one row per calibre book in its dry-run import state.
+//! Never a dead end: a lookalike row offers those books (`l`) and the override (`n`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,15 +11,10 @@ use bookmole::CalibreRowState;
 use crate::app::{App, CalibreRow};
 use crate::theme;
 
-/// What the screen says with no rows on it.
-///
-/// Three cases, because "nothing here" has three different meanings and only one
-/// of them is a thing the user can act on.
 fn empty_hint(app: &App) -> &'static str {
     if !app.engine.calibre().can_read_library() {
-        // Reported, not prescribed: no install instruction, no link, no tool
-        // name to go and fetch. `an_absent_calibre_names_nothing_to_install`
-        // pins this.
+        // Reported, not prescribed: no install instruction or tool name, pinned by
+        // `an_absent_calibre_names_nothing_to_install`.
         "calibre's library tools aren't on this machine, so there's no shelf to show"
     } else if app.calibre_scanned {
         "that library holds no books — / to point at another one"
@@ -54,8 +35,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let marked = app.calibre_marks.len();
     let where_from = match &app.calibre_library {
         Some(p) => short_root(p),
-        // Not "none" or "default": the user chose it once, in calibre, and that
-        // is what this row is showing.
         None => "yours".to_string(),
     };
     let title = if app.calibre.is_empty() {
@@ -75,8 +54,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
-    // No `highlight_style`: the reverse is scoped to the title span in `row`, so
-    // the state word and the match rung keep their hues.
     let list = List::new(items).block(block).highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut app.calibre_state);
 
@@ -85,15 +62,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// The library directory's own name rather than its whole path — same argument as
-/// the device screen's: the shelf *is* the library, and the path is chrome.
 fn short_root(root: &std::path::Path) -> String {
     root.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.display().to_string())
 }
 
-/// One shelf row: `✓ new          Piranesi  Susanna Clarke  2 tags, cover`.
 fn row(r: &CalibreRow, marked: bool, selected: bool) -> Line<'static> {
     let title_style = if selected {
         theme::title().patch(theme::selected())
@@ -115,8 +89,6 @@ fn row(r: &CalibreRow, marked: bool, selected: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The right-hand half of a row: what importing it would do, or — once it has
-/// been imported — what that import reported.
 fn detail(r: &CalibreRow) -> String {
     if let Some(note) = &r.note {
         return note.clone();
@@ -133,27 +105,18 @@ fn detail(r: &CalibreRow) -> String {
             format!("{gains} (by {matched_by})")
         }
         CalibreRowState::New => "not in the library — enter brings it in".to_string(),
-        // A decision, not a dead end: name what it probably already is, and both
-        // moves out of it.
         CalibreRowState::Candidates(c) => match c.first() {
             Some(c) => super::candidate_hint(&c.title, c.score, "l to link, n if not"),
-            // The band was empty, which the engine only reports as unmatched when
-            // `create_ambiguous` was off — so `n` is still the move.
             None => "nothing here looks like it — n brings it in as new".to_string(),
         },
         CalibreRowState::Unreadable(d) => d.detail.clone(),
     }
 }
 
-/// The state word's colour. Actionable states take the accent; the rest stay in
-/// the terminal's own palette, so the shelf reads as a list with a few things
-/// asking for attention rather than a wall of colour.
 fn state_style(state: &CalibreRowState) -> ratatui::style::Style {
     match state {
         CalibreRowState::New | CalibreRowState::Candidates(_) => theme::accent(),
         CalibreRowState::Linked { .. } => theme::dim(),
-        // Not a colour: a row calibre gave no title is a fact about one row, not
-        // an alarm, and `theme` keeps hard-coded hues for accents only.
         CalibreRowState::Unreadable(_) => theme::primary(),
     }
 }
@@ -197,9 +160,6 @@ mod tests {
         }
     }
 
-    /// Same rule as every other list here: reversing the whole line turns the row
-    /// into a solid bar and throws away the colour separating the state word from
-    /// the title.
     #[test]
     fn selection_reverses_the_title_only() {
         let r = calibre_row(CalibreRowState::New);
@@ -209,12 +169,9 @@ mod tests {
             .iter()
             .map(|s| s.style.add_modifier.contains(Modifier::REVERSED))
             .collect();
-        // mark gutter, state word, title, authors, detail
         assert_eq!(reversed, vec![false, false, true, false, false]);
     }
 
-    /// Every state has to say something, or a row is a word with nothing beside
-    /// it and no way to tell what it is waiting for.
     #[test]
     fn every_state_has_a_readable_detail() {
         let states = [
@@ -246,8 +203,6 @@ mod tests {
         }
     }
 
-    /// A row that is a question has to name both ways out of it, or the guard is
-    /// a refusal with nowhere to go.
     #[test]
     fn a_candidate_row_names_both_moves() {
         let r = calibre_row(CalibreRowState::Candidates(vec![MatchCandidate {
@@ -262,8 +217,6 @@ mod tests {
         assert!(detail.contains("n if not"), "{detail}");
     }
 
-    /// What an import reported wins over what the scan predicted — the row is
-    /// about what happened, once something has.
     #[test]
     fn an_imported_row_shows_what_its_import_reported() {
         let mut r = calibre_row(CalibreRowState::New);
@@ -271,10 +224,6 @@ mod tests {
         assert_eq!(detail(&r), "Middlemarch: 2 tags, cover (matched by new)");
     }
 
-    /// A calibre that is not installed is reported and nothing is prescribed.
-    /// calibre is feature-detected, never something the user is asked to
-    /// install, and that is the sort of rule that erodes by helpfulness, so it
-    /// is asserted on the words themselves.
     #[test]
     fn an_absent_calibre_names_nothing_to_install() {
         let hint = "calibre's library tools aren't on this machine, so there's no shelf to show";
@@ -294,9 +243,6 @@ mod tests {
         }
     }
 
-    /// Nothing on this shelf tallies what the user has not done. The app rules
-    /// out task-completion framing everywhere, and a shelf is exactly where a
-    /// "32 books not imported" badge would want to live.
     #[test]
     fn the_key_bar_counts_nothing() {
         let bar = key_bar()

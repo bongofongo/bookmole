@@ -1,9 +1,5 @@
-//! `resurface_note`: one older note for the reader's day.
-//!
-//! Every note a test creates is stamped *now*, so the tests move `today`
-//! instead of the notes: a date a month out makes every note old enough, and
-//! the real date makes every note too fresh. That keeps the tests off any
-//! clock-mocking seam the engine does not otherwise need.
+//! `resurface_note`: one older note for the reader's day. Every note is stamped now, so the
+//! tests move `today` instead of the notes.
 
 mod common;
 
@@ -39,7 +35,6 @@ async fn a_note_kept_this_week_does_not_come_back() {
     note(&engine, None, "Fresh thought.").await;
     let today = OffsetDateTime::now_utc().date();
     assert!(engine.resurface_note(today).await.unwrap().is_none());
-    // Six days on it is still resting; eight days on it is not.
     assert!(
         engine
             .resurface_note(today + Duration::days(6))
@@ -109,7 +104,6 @@ async fn a_note_touching_an_open_book_wins_over_the_rest() {
         assert_eq!(r.reason, ResurfaceReason::OpenBook);
     }
 
-    // Finishing the book closes the reading, and the preference with it.
     engine
         .storage()
         .update_progress(open, None, Some(true))
@@ -164,12 +158,6 @@ async fn a_free_note_linked_to_the_open_books_note_counts_as_connected() {
         "the linked free note is in the near tier"
     );
 }
-
-// ---------------------------------------------------------------------------
-// `resurface_passage`: the note's twin, one older passage for the day.
-// Same rule, so the same four questions — and one of its own: a blank passage
-// is never what comes back.
-// ---------------------------------------------------------------------------
 
 async fn passage(engine: &bookmole::Engine, book_id: i64, text: &str) -> i64 {
     engine

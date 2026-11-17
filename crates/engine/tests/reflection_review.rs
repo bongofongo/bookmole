@@ -1,6 +1,4 @@
-//! Reflection and Review through the facade — the surface a frontend uses.
-//!
-//! Offline, `sqlite::memory:` plus a `TempDir` vault, and nothing left behind.
+//! Reflection and Review through the facade.
 
 use bookmole::{Book, Engine, EngineError, NewNoteInput, NoteKind, NoteScope};
 
@@ -11,10 +9,6 @@ async fn seeded(engine: &Engine) -> i64 {
     seed_book(engine, "Middlemarch").await
 }
 
-// ---- accretion ------------------------------------------------------------
-
-/// "Accretes" means exactly this: the second call is the first note, not a
-/// second one. It is the whole reason a reflection can be opened mid-book.
 #[tokio::test]
 async fn opening_a_reflection_twice_returns_the_same_note_and_file() {
     let (_tmp, engine) = engine().await;
@@ -46,8 +40,6 @@ async fn opening_a_reflection_twice_returns_the_same_note_and_file() {
     );
 }
 
-/// A reflection is opened *while reading*, so a book that was never marked as
-/// started gets a reading rather than an error.
 #[tokio::test]
 async fn a_reflection_opens_a_reading_when_the_book_has_none() {
     let (_tmp, engine) = engine().await;
@@ -69,8 +61,6 @@ async fn a_reflection_opens_a_reading_when_the_book_has_none() {
     assert_eq!(record.kind, "reflection");
 }
 
-/// It attaches to the reading the user is *in*, not a fresh one — including
-/// after the book is finished, when the current reading is the one just closed.
 #[tokio::test]
 async fn a_finished_book_reflects_on_the_reading_it_just_finished() {
     let (_tmp, engine) = engine().await;
@@ -92,9 +82,6 @@ async fn a_finished_book_reflects_on_the_reading_it_just_finished() {
     );
 }
 
-/// A reread is a different reading, so it gets its own pair — and the first
-/// one survives untouched, dates and all. That is what anchoring to a reading
-/// rather than a book buys.
 #[tokio::test]
 async fn a_reread_gets_its_own_pair_and_the_first_survives() {
     let (_tmp, engine) = engine().await;
@@ -125,8 +112,7 @@ async fn a_reread_gets_its_own_pair_and_the_first_survives() {
     assert_ne!(second_reflection.id, first_reflection.id);
     assert_ne!(second_review.id, first_review.id);
     assert_ne!(second_reflection.file, first_reflection.file);
-    // The titles are wikilink targets; a reread's must not collide with the
-    // first reading's or a link would resolve to whichever came first.
+    // Titles are wikilink targets; a reread's must not collide with the first reading's.
     assert_ne!(second_reflection.title, first_reflection.title);
 
     let readings = engine.storage().list_readings(book).await.unwrap();
@@ -173,8 +159,6 @@ async fn an_explicit_reading_must_belong_to_the_book() {
     ));
 }
 
-/// The two are separate objects with separate bodies. A review is a rewrite for
-/// a different audience, never a slice of the private one.
 #[tokio::test]
 async fn a_reflection_and_a_review_never_share_a_body() {
     let (_tmp, engine) = engine().await;
@@ -212,8 +196,6 @@ async fn a_reflection_and_a_review_never_share_a_body() {
     assert_eq!(r_rec.reading_id, v_rec.reading_id);
 }
 
-/// The frontmatter is the vault's own record of the anchor, and the vault is
-/// the source of the body — so an Obsidian user sees what this note belongs to.
 #[tokio::test]
 async fn the_vault_file_records_the_kind_and_the_reading() {
     let (_tmp, engine) = engine().await;
@@ -230,11 +212,6 @@ async fn the_vault_file_records_the_kind_and_the_reading() {
     assert!(content.contains("book-title: \"Middlemarch\""), "{content}");
 }
 
-// ---- the graph ------------------------------------------------------------
-
-/// The claim that decides the whole design: reflections are notes so that
-/// `note_links` — the graph — carries them, and book-to-book connection runs
-/// reflection-to-reflection. Asserted rather than assumed.
 #[tokio::test]
 async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
     let (_tmp, engine) = engine().await;
@@ -247,8 +224,6 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
         .await
         .unwrap()
         .unwrap();
-    // Written after the note was opened — which is the ordinary case, and the
-    // reason indexing edges only at creation would leave the hub edgeless.
     engine
         .update_note_body(
             &record,
@@ -261,7 +236,6 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
     assert_eq!(links.len(), 2);
     assert!(links.iter().all(|(_, to)| to.is_none()), "both dangle yet");
 
-    // A note by that title appears later: the dangling edge resolves to it.
     let han = engine
         .create_note(NewNoteInput {
             kind: NoteKind::Note,
@@ -277,8 +251,6 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
         Some(han.id)
     );
 
-    // Reflection to reflection is the book-to-book edge, and it resolves the
-    // same way — the other book's reflection is just another note.
     let other = engine
         .save_book(&Book {
             title: Some("1Q84".into()),
@@ -301,8 +273,6 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
     );
 }
 
-/// A link the user deleted has to leave the graph too, or the hub accumulates
-/// edges it no longer claims.
 #[tokio::test]
 async fn rewriting_a_body_replaces_its_edges_rather_than_adding_to_them() {
     let (_tmp, engine) = engine().await;
@@ -325,8 +295,6 @@ async fn rewriting_a_body_replaces_its_edges_rather_than_adding_to_them() {
     assert_eq!(links[0].0, "Vocation");
 }
 
-/// The FTS body cache follows the vault file, so a reflection is searchable
-/// like every other note.
 #[tokio::test]
 async fn a_reflection_is_searchable() {
     let (_tmp, engine) = engine().await;
@@ -346,10 +314,6 @@ async fn a_reflection_is_searchable() {
     assert_eq!(hits[0].as_note().unwrap().id, note.id);
 }
 
-// ---- citations ------------------------------------------------------------
-
-/// By reference, so a device refresh — which rewrites `ko_note`, colour,
-/// chapter and page toward the sidecar — leaves every citation standing.
 #[tokio::test]
 async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
     let (_tmp, engine) = engine().await;
@@ -369,11 +333,9 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
 
     let review = engine.open_review(book, None).await.unwrap();
     engine.cite(review.id, hid).await.unwrap();
-    // Idempotent: citing the same highlight twice is one citation.
     engine.cite(review.id, hid).await.unwrap();
     assert_eq!(engine.citations_for(review.id).await.unwrap().len(), 1);
 
-    // The device says something different about its own fields.
     let mut refreshed = highlight(
         "We are all of us born in moral stupidity",
         "2026-01-05 21:14:08",
@@ -393,9 +355,6 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
     assert_eq!(cited[0].id, hid);
     assert_eq!(cited[0].origin_note.as_deref(), Some("added on the device"));
 
-    // A deleted highlight takes its citations with it — a citation of nothing
-    // is worse than a missing one. Reached through the book, which is the only
-    // way a highlight is ever deleted today.
     engine.delete_book(book).await.unwrap();
     assert!(
         engine.citations_for(review.id).await.unwrap().is_empty(),
@@ -412,10 +371,6 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
     );
 }
 
-// ---- ratings --------------------------------------------------------------
-
-/// The rating is the review's, and a reflection must not borrow the column: a
-/// private score is a different number, and this is the seam that keeps it so.
 #[tokio::test]
 async fn only_a_review_can_be_rated() {
     let (_tmp, engine) = engine().await;
@@ -431,16 +386,12 @@ async fn only_a_review_can_be_rated() {
     assert_eq!(engine.goodreads_rating(review.id).await.unwrap(), Some(4.0));
 }
 
-/// Goodreads takes 0–5 in quarters, and the seeded scale maps onto it
-/// one-to-one (migration `0026`). A point of a scale the user made, with no
-/// mapping, reports itself; it is never rounded to the nearest quarter.
 #[tokio::test]
 async fn an_unmapped_value_reports_rather_than_rounds() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     let review = engine.open_review(book, None).await.unwrap();
 
-    // On the seeded scale a half star is simply a half star now.
     engine.set_rating(review.id, 4.5).await.unwrap();
     assert_eq!(engine.goodreads_rating(review.id).await.unwrap(), Some(4.5));
 
@@ -457,8 +408,6 @@ async fn an_unmapped_value_reports_rather_than_rounds() {
         other => panic!("expected an unmapped-rating report, got {other:?}"),
     }
 
-    // The raw value is what was stored, so the user's own decision changes what
-    // it exports as — without touching the review.
     engine.map_rating(&tens, 9.0, 4.5).await.unwrap();
     assert_eq!(engine.goodreads_rating(review.id).await.unwrap(), Some(4.5));
     engine.map_rating(&tens, 9.0, 4.75).await.unwrap();
@@ -484,8 +433,6 @@ async fn an_unrated_review_is_not_an_error() {
     assert_eq!(engine.goodreads_rating(review.id).await.unwrap(), None);
 }
 
-/// The scale is the user's, and a value off its grid is refused rather than
-/// snapped — snapping is the same sin as rounding, one layer down.
 #[tokio::test]
 async fn a_rating_must_sit_on_the_scale() {
     let (_tmp, engine) = engine().await;

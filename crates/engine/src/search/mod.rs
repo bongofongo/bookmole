@@ -1,12 +1,3 @@
-//! Federated metadata search: fan out to the providers, merge, rank.
-//!
-//! Two requests share this module. A **free-text** search (only
-//! `SearchRequest::query` set — what *Add a book* sends) is read by
-//! [`query::parse`] into weighted readings and ranked by [`ranking::rank`]
-//! (`parsed.rs`). A **fielded** search keeps the meaning it
-//! always had: the fields go to the providers as given and [`rank`] scores
-//! them.
-
 pub mod held;
 pub mod query;
 pub mod ranking;
@@ -32,15 +23,9 @@ use crate::providers::{
     Manners, MetadataProvider, ProviderBook, ProviderId, ProviderWork, SearchRequest, WorkFacts,
 };
 
-/// Each provider's whole budget for one search or one ISBN lookup, waits for
-/// its rate limit included. A `const`, not a knob: the timeout is tested under
-/// tokio's paused time (`start_paused = true`), so there is no need to make it
-/// configurable just to make it testable.
+/// Each provider's whole budget per search or lookup, rate-limit waits included; not configurable.
 pub(crate) const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The text of a request that is free text and nothing else — the request
-/// *Add a book* sends, and the one [`query::parse`] reads. `None` for a
-/// fielded request, which keeps its old meaning.
 pub(crate) fn free_text(req: &SearchRequest) -> Option<&str> {
     let only_text = req.title.is_none()
         && req.author.is_none()
@@ -55,45 +40,29 @@ pub(crate) fn free_text(req: &SearchRequest) -> Option<&str> {
         .filter(|t| only_text && !t.is_empty())
 }
 
-/// What an ISBN lookup found, and which providers did not answer.
-///
-/// `Engine::lookup_isbn` returns only the book; this is its sibling's answer,
-/// for a caller that wants to say *Open Library did not answer* rather than
-/// *no such book*.
 #[derive(Debug, Default)]
 pub struct IsbnLookup {
     pub book: Option<Book>,
     pub warnings: Vec<Diagnostic>,
 }
 
-/// One deduped, merged, scored search result.
 #[derive(Debug, Clone)]
 pub struct RankedResult {
     pub book: Book,
     pub sources: Vec<ProviderId>,
     pub score: f64,
-    /// The shelf's copy of this book, when the library already holds one —
-    /// matched on ISBN by [`crate::Engine::shelf_of`] after the providers have
-    /// answered. `None` from the federated search itself: a provider knows
-    /// nothing about the shelf, and this file does not open the database.
+    /// `None` from the federated search itself; `Engine::shelf_of` fills it by ISBN afterwards.
     pub shelf_id: Option<i64>,
 }
 
 #[derive(Debug, Default)]
 pub struct SearchOutcome {
     pub results: Vec<RankedResult>,
-    /// Per-provider failures — a dead API degrades, never kills the search.
     pub warnings: Vec<Diagnostic>,
 }
 
 impl SearchOutcome {
-    /// Providers that contributed nothing because they failed or timed out.
-    /// Lets a frontend say *which* source is missing rather than just showing
-    /// fewer results.
-    ///
-    /// A provider that failed and was stood in for by what was kept appears
-    /// once, for its failure: the *answered from what was kept* line beside it
-    /// is not a second failure.
+    /// A provider stood in for by kept records appears once, for its failure.
     pub fn failed_providers(&self) -> Vec<ProviderId> {
         use crate::diagnostic::DiagnosticKind as K;
         self.warnings
@@ -113,26 +82,11 @@ impl SearchOutcome {
     }
 }
 
-/// Which provider supplied each field of a merged record.
-///
-/// The merge below is **field-wise** — OpenLibrary wins the ISBNs and the page
-/// count, Google Books wins the description and the language, everything else
-/// is first-non-empty — so "which provider did this book come from" has no
-/// single answer and `sources` (the set that contributed *anything*) cannot be
-/// narrowed into one. This is the map [`merge_into`] already computes and used
-/// to throw away, and throwing it away is precisely why `Engine::save_book`
-/// stamps no provenance at all.
-///
-/// Kept crate-internal. Re-enriching a book from the providers (`enrich.rs`)
-/// is its only reader, and a public map keyed on
-/// `&'static str` column names would be API surface with no DTO behind it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FieldClaims(Vec<(&'static str, ProviderId)>);
 
 impl FieldClaims {
-    /// Record that `provider` supplied `field`, replacing any earlier claim —
-    /// the merge overwrote the value, so the previous claimant is no longer the
-    /// origin of anything.
+    /// Replaces any earlier claim: the merge overwrote the value.
     fn claim(&mut self, field: &'static str, provider: ProviderId) {
         match self.0.iter_mut().find(|(f, _)| *f == field) {
             Some(slot) => slot.1 = provider,
@@ -140,10 +94,7 @@ impl FieldClaims {
         }
     }
 
-    /// Every claim, for the test that asserts these field names are columns the
-    /// merge table governs. Nothing in the engine iterates the whole map —
-    /// `enrich` asks per column, from `merge_columns` — so this exists for the
-    /// drift guard and is scoped to it rather than left as public surface.
+    /// Test-only: drift guard that these field names are columns the merge table governs.
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, ProviderId)> + '_ {
         self.0.iter().copied()
@@ -165,12 +116,7 @@ pub async fn federated_search(
     })
 }
 
-/// [`federated_search`], keeping the per-field attribution the merge computed.
-///
-/// Each claim map is **paired with the result it describes** rather than
-/// returned as a second vector in the same order: a parallel array that has to
-/// be indexed in step with another is a correctness argument the type can make
-/// instead, and the caller here goes on to *sort* what it gets back.
+/// Each claim map is paired with its result, not a parallel vector, because the caller sorts them.
 pub(crate) async fn federated_search_claimed(
     providers: &[Box<dyn MetadataProvider>],
     req: &SearchRequest,
@@ -198,10 +144,8 @@ pub(crate) async fn federated_search_claimed(
                 raw.extend(books);
             }
             (Some(d), None) => {
-                // Emitted here, beside the push, so the log line and the
-                // in-band diagnostic can never drift apart. The detail only at
-                // `trace!`: a provider's error text can carry the request URL,
-                // and the URL carries the query.
+                // Logged beside the push so log and diagnostic cannot drift; detail only at `trace!` because a
+                // provider's error text can carry the request URL, which carries the query.
                 parsed::log_degraded(id, &d);
                 warnings.push(d);
             }
@@ -231,27 +175,14 @@ pub(crate) async fn federated_search_claimed(
     Ok((results, warnings))
 }
 
-/// Merge per-provider lookups of the SAME edition (e.g. by_isbn results)
-/// into one Book. Returns None when the input is empty.
 pub fn merge_provider_books(raw: Vec<ProviderBook>) -> Option<Book> {
     merge_provider_books_claimed(raw).map(|(book, _)| book)
 }
 
-/// [`merge_provider_books`], keeping the per-field attribution.
-///
-/// The ISBN half of enrichment (`enrich.rs`): every provider was asked about
-/// the *same* edition,
-/// so there is one record out of this — but its `page_count` may be
-/// OpenLibrary's while its `description` is Google Books', and that is the
-/// difference between a book whose fields are explicable and one stamped
-/// `None`.
 pub(crate) fn merge_provider_books_claimed(raw: Vec<ProviderBook>) -> Option<(Book, FieldClaims)> {
     dedup(raw).into_iter().next().map(|m| (m.book, m.claims))
 }
 
-/// Ask every provider about one ISBN, **concurrently**, each inside
-/// [`PROVIDER_TIMEOUT`], keeping what each said and a diagnostic for each that
-/// did not answer. A provider that has asked us to wait is not asked.
 pub(crate) async fn lookup_isbn_all(
     providers: &[Box<dyn MetadataProvider>],
     isbn: &str,
@@ -277,7 +208,6 @@ pub(crate) async fn lookup_isbn_all(
             Ok(Some(pb)) => found.push(pb),
             Ok(None) => {}
             Err(d) => {
-                // No ISBN in the line: a typed ISBN is a query.
                 parsed::log_degraded(p.id(), &d);
                 warnings.push(d);
             }
@@ -286,25 +216,17 @@ pub(crate) async fn lookup_isbn_all(
     (found, warnings)
 }
 
-// ---- dedup -----------------------------------------------------------------
-
 #[derive(Debug)]
 struct Merged {
     book: Book,
     sources: Vec<ProviderId>,
     best_position: usize,
     score: f64,
-    /// Which provider is the origin of each field, after every merge into this
-    /// record. Computed whether or not anyone asks for it: the alternative is a
-    /// second traversal of the same decisions, which is the shape that drifts.
+    /// Computed eagerly: a second traversal of the same merge decisions would drift.
     claims: FieldClaims,
-    /// What the providers said about the work, for ranking only.
     facts: WorkFacts,
 }
 
-/// Fold one provider's facts about a work into what is already known: the
-/// larger edition count, every matched edition's title, the first series named
-/// (its position with it, never another provider's), every language.
 fn merge_facts(into: &mut WorkFacts, from: WorkFacts) {
     into.edition_count = match (into.edition_count, from.edition_count) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -329,7 +251,6 @@ fn merge_facts(into: &mut WorkFacts, from: WorkFacts) {
     }
 }
 
-/// Strip punctuation, lowercase, drop leading articles, collapse whitespace.
 pub fn normalize(s: &str) -> String {
     let lowered = s.to_lowercase();
     let cleaned: String = lowered
@@ -343,21 +264,12 @@ pub fn normalize(s: &str) -> String {
     words.join(" ")
 }
 
-/// The leading articles [`normalize`] drops, as one definition.
-///
-/// **Exactly one is dropped, and that is deliberate**: stripping repeatedly
-/// would take "The A Team" to `"team"` rather than `"a team"`, which would
-/// change what the shared fuzzy matcher considers the same book on every import
-/// path. The consequence is that `normalize` is *not* idempotent on a title
-/// beginning with two articles — pinned rather than papered over by
-/// `normalize_strips_one_article_and_is_otherwise_well_shaped`.
+/// Exactly one article is dropped: stripping repeatedly turns "The A Team" into "team" and changes
+/// what the shared matcher treats as one book, so `normalize` is not idempotent on such titles.
 fn is_article(word: &str) -> bool {
     matches!(word, "the" | "a" | "an")
 }
 
-/// Whether an already-normalized string still begins with an article. Shares
-/// [`is_article`] with `normalize`, so the property cannot disagree with the
-/// function about what one is.
 #[cfg(test)]
 fn starts_with_article(normalized: &str) -> bool {
     normalized
@@ -372,7 +284,6 @@ fn fingerprint(book: &Book) -> String {
     format!("{title}|{author}")
 }
 
-/// True when two ISBN-less records look like the same work.
 fn same_work(a: &Book, b: &Book) -> bool {
     let ta = normalize(a.title.as_deref().unwrap_or(""));
     let tb = normalize(b.title.as_deref().unwrap_or(""));
@@ -382,32 +293,16 @@ fn same_work(a: &Book, b: &Book) -> bool {
     let title_sim = jaro_winkler(&ta, &tb);
     let author_sim = match (a.authors.first(), b.authors.first()) {
         (Some(x), Some(y)) => jaro_winkler(&normalize(x), &normalize(y)),
-        // One side missing authors: lean on the title alone.
         _ => 1.0,
     };
-    // Two volumes of a set are two works, however alike the rest of the title
-    // reads — `matching.rs`' veto, by the same rule. Asked last: only a pair
-    // that would otherwise merge is worth reading for numbers.
+    // Two volumes of a set are two works however alike the title; asked last, only for would-be merges.
     title_sim > 0.93
         && author_sim > 0.9
         && !crate::volumes::Volumes::of(&ta).differ(&crate::volumes::Volumes::of(&tb))
 }
 
-/// Merge `b` into `a`, and record who supplied each field it moved.
-///
-/// **The merge itself is `MERGE_RULES`', not this module's.** It used to be
-/// written out here — a `fill`/`prefer` call per column — which made this the
-/// fourth consumer of that table and the only one not generated from it: a new
-/// book column compiled, passed clippy, and was silently dropped from every
-/// federated search result. `every_claimed_field_is_a_merge_column` is what
-/// caught a change that added three book columns doing exactly that, and it
-/// caught it by accident, on the claim rather than on the value. So the preference table moved to
-/// `Rule::federated` and what is left here is the bookkeeping.
-///
-/// **`claims` records the answer to "who supplied this field", once, here.** It
-/// is the only place that knows: reconstructing it afterwards by comparing the
-/// merged record against each provider's would be that preference table spelled
-/// a second time, which is the failure mode all of this is arranged against.
+/// The merge itself is `MERGE_RULES`', so a new book column cannot be silently dropped here.
+/// `claims` records who supplied each field, once, because only this place knows.
 fn merge_into(a: &mut Book, b: &Book, b_provider: ProviderId, claims: &mut FieldClaims) {
     for field in crate::storage::merge_provider_record(a, b, b_provider.into()) {
         claims.claim(field, b_provider);
@@ -418,8 +313,6 @@ fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
     dedup_works(raw.into_iter().map(ProviderWork::bare).collect())
 }
 
-/// [`dedup`], carrying each result's [`WorkFacts`] into the record it merges
-/// into.
 fn dedup_works(raw: Vec<ProviderWork>) -> Vec<Merged> {
     let mut merged: Vec<Merged> = Vec::new();
     let mut by_isbn: HashMap<String, usize> = HashMap::new();
@@ -464,11 +357,7 @@ fn dedup_works(raw: Vec<ProviderWork>) -> Vec<Merged> {
                     by_isbn.insert(k, i);
                 }
                 by_fingerprint.entry(fingerprint(&pb.book)).or_insert(i);
-                // The first record claims every field it speaks to, and *what
-                // it speaks to* is asked of the merge table rather than
-                // re-listed here — `merge_into` above never touches
-                // `cover_path`, so a list written out at this end would be the
-                // one place it could go unattributed.
+                // The merge table says what the first record speaks to; a list here could miss `cover_path`.
                 let mut claims = FieldClaims::default();
                 for field in crate::storage::fields_said(&pb.book) {
                     claims.claim(field, pb.provider);
@@ -487,12 +376,8 @@ fn dedup_works(raw: Vec<ProviderWork>) -> Vec<Merged> {
     merged
 }
 
-// ---- ranking ---------------------------------------------------------------
-
-/// Field-weighted relevance score. Pure function, unit-testable.
-/// Weights: exact ISBN 1000 | title 40 | free query vs title 30 | author 25 |
-/// publisher 10 | translator-in-contributors 10 | year 5 | language 5 |
-/// provider position decay 8 | found-in-both bonus 6.
+/// Weights: exact ISBN 1000, title 40, free query 30, author 25, publisher 10, translator 10,
+/// year 5, language 5, provider position decay 8, found-in-both 6.
 pub fn rank(book: &Book, sources: &[ProviderId], best_position: usize, req: &SearchRequest) -> f64 {
     let mut score = 0.0;
 
@@ -564,13 +449,12 @@ mod tests {
     #[test]
     fn normalize_strips_articles_and_punct() {
         assert_eq!(normalize("The Trial"), "trial");
-        assert_eq!(normalize("trial, the"), "trial the"); // article only dropped at front
+        assert_eq!(normalize("trial, the"), "trial the");
         assert_eq!(normalize("A  Wizard of Earthsea!"), "wizard of earthsea");
     }
 
     #[test]
     fn dedups_across_isbn_forms() {
-        // Same book: one provider has ISBN-10, the other ISBN-13.
         let mut a = book("Middlemarch", "George Eliot");
         a.isbn_10 = Some("1900000172".into());
         let mut b = book("Middlemarch", "George Eliot");
@@ -590,8 +474,8 @@ mod tests {
     #[test]
     fn dedups_by_fuzzy_fingerprint_without_isbn() {
         let a = book("The Trial", "Franz Kafka");
-        let b = book("Trial", "Franz Kafka"); // article-stripped variant
-        let c = book("The Castle", "Franz Kafka"); // different work stays separate
+        let b = book("Trial", "Franz Kafka");
+        let c = book("The Castle", "Franz Kafka");
         let merged = dedup(vec![
             pb(ProviderId::OpenLibrary, 0, a),
             pb(ProviderId::GoogleBooks, 0, b),
@@ -602,7 +486,6 @@ mod tests {
 
     #[test]
     fn merge_provider_preferences() {
-        // OL wins page_count even when GB arrived first with one.
         let mut gb = book("Middlemarch", "George Eliot");
         gb.page_count = Some(512);
         gb.language = Some("en".into());
@@ -618,14 +501,8 @@ mod tests {
         assert_eq!(merged[0].book.language.as_deref(), Some("en"));
     }
 
-    /// **`merge_into`'s field names must be columns the merge table governs.**
-    ///
-    /// The claims cross into `Storage::enrich_book_attributed`, which stamps
-    /// `field_provenance` for exactly the names it is given. A typo — or a field
-    /// this merge learns about that `MERGE_RULES` does not have — would be a
-    /// claim silently dropped on the other side, which is the one failure this
-    /// arrangement has no other way to notice. A new book column has to be
-    /// added to both, and this test is what makes sure it is.
+    /// `merge_into`'s field names must be columns the merge table governs: `enrich_book_attributed`
+    /// silently drops a claim it does not know.
     #[test]
     fn every_claimed_field_is_a_merge_column() {
         let columns: Vec<&str> = crate::storage::merge_columns().collect();
@@ -639,13 +516,6 @@ mod tests {
         a.first_sentence = Some("Miss Brooke had that kind of beauty which seems to be thrown into relief by poor dress.".into());
         a.cover_url = Some("https://example.invalid/c.jpg".into());
         a.openlibrary_key = Some("/works/OL1W".into());
-        // `cover_path` is the column `merge_into` never touches, which is
-        // exactly why the first record's claims are asked of the merge table
-        // rather than listed at that end. There used to be two, until
-        // `sort_title` stopped being a merge column at all — a derived filing
-        // key is not a value a record carries, so it is not claimable and a
-        // record setting one here would now make the sweep below fail
-        // honestly rather than pass.
         a.cover_path = Some("database/images/c.jpg".into());
         a.translators = vec!["A Translator".into()];
         a.subjects = vec!["Fiction / Literary".into()];
@@ -668,8 +538,6 @@ mod tests {
                 "{field} is claimed but is not a MERGE_RULES column: {columns:?}"
             );
         }
-        // …and the two lists really do meet: a record supplying every column
-        // claims every column, so this is not vacuously true.
         for col in &columns {
             assert!(
                 claimed.contains(col),
@@ -678,18 +546,11 @@ mod tests {
         }
     }
 
-    /// **A series index never arrives without the name it indexes.**
-    ///
-    /// The federated merge fills field by field, so nothing stops an index from
-    /// one provider landing beside a name from another — and *Dune #2* is a
-    /// different book from *Dune Chronicles #2*. The pair therefore moves as a
-    /// unit: whoever supplies the name supplies the index, even when it has
-    /// none.
+    /// The pair moves as a unit: whoever supplies the series name supplies the index, even when none.
     #[test]
     fn a_series_index_never_arrives_without_its_series() {
         let mut named = book("Dune Messiah", "Frank Herbert");
         named.series = Some("Dune".into());
-        // No index: this provider knows the series and not the position.
         let mut numbered = book("Dune Messiah", "Frank Herbert");
         numbered.series = Some("Dune Chronicles".into());
         numbered.series_index = Some(2.0);
@@ -710,9 +571,6 @@ mod tests {
         );
     }
 
-    /// Two providers, two vocabularies: the set that survives is one provider's,
-    /// whole. A union would be a list neither of them published, and
-    /// `field_provenance` has one `source` per field to name it with.
     #[test]
     fn subject_sets_are_taken_whole_and_never_unioned() {
         let mut gb = book("Middlemarch", "George Eliot");
@@ -732,11 +590,6 @@ mod tests {
         );
     }
 
-    /// The claims follow the **preference table**, not the arrival order. This
-    /// is the fact enrichment (`enrich.rs`) relies on: enriching
-    /// provider-by-provider would get
-    /// the description from whoever ran first, and would be right about who
-    /// supplied it and wrong about which value survived.
     #[test]
     fn a_claim_names_whoever_won_the_field_not_whoever_arrived_first() {
         let mut ol = book("Middlemarch", "George Eliot");
@@ -746,7 +599,6 @@ mod tests {
         gb.page_count = Some(512);
         gb.description = Some("the google books blurb".into());
 
-        // OpenLibrary arrives first and still loses the description.
         let merged = dedup(vec![
             pb(ProviderId::OpenLibrary, 0, ol.clone()),
             pb(ProviderId::GoogleBooks, 0, gb.clone()),
@@ -764,8 +616,6 @@ mod tests {
             Some(ProviderId::OpenLibrary)
         );
 
-        // Reversed, the answers are the same — the preference is the rule, and
-        // the claim is a reading of it.
         let merged = dedup(vec![
             pb(ProviderId::GoogleBooks, 0, gb),
             pb(ProviderId::OpenLibrary, 0, ol),
@@ -836,15 +686,12 @@ mod props {
     use super::*;
     use proptest::prelude::*;
 
-    /// Every non-ISBN term's ceiling, summed: title 40 + query 30 + author 25 +
-    /// publisher 10 + translator 10 + year 5 + language 5 + position 8 +
-    /// multi-source 6. Kept here so the dominance property below states *why*
-    /// it holds rather than just asserting a number.
+    /// Sum of every non-ISBN ceiling: title 40, query 30, author 25, publisher 10, translator 10,
+    /// year 5, language 5, position 8, multi-source 6.
     const MAX_NON_ISBN_SCORE: f64 = 40.0 + 30.0 + 25.0 + 10.0 + 10.0 + 5.0 + 5.0 + 8.0 + 6.0;
 
     fn text() -> impl Strategy<Value = String> {
-        // Deliberately includes punctuation, accents and CJK: `normalize` and
-        // jaro_winkler both have to cope with whatever a provider returns.
+        // Includes punctuation, accents and CJK: `normalize` and jaro_winkler must cope with any text.
         prop_oneof![
             "[a-zA-Z ]{0,20}",
             "[\\p{Latin}\\p{Han}\\p{Hiragana}'’,.:!-]{0,20}",
@@ -887,10 +734,7 @@ mod props {
     }
 
     proptest! {
-        /// `federated_search` sorts with `total_cmp`, which does not panic on
-        /// NaN — it silently orders by bit pattern instead, so a NaN score
-        /// would scramble results with nothing looking wrong. jaro_winkler("",
-        /// "") returning 1.0 rather than NaN is the load-bearing assumption.
+        /// `total_cmp` orders NaN by bit pattern without panicking, so a NaN silently scrambles results.
         #[test]
         fn rank_is_always_finite(
             book in arb_book(),
@@ -908,10 +752,6 @@ mod props {
             prop_assert!(s >= 0.0, "negative score {}", s);
         }
 
-        /// An exact ISBN match must outrank anything a non-ISBN match can
-        /// possibly accumulate. Pinning this means a later "let's weight titles
-        /// more heavily" that breaks it fails here rather than silently
-        /// reordering someone's search.
         #[test]
         fn an_exact_isbn_match_always_wins(
             other in arb_book(),
@@ -927,7 +767,6 @@ mod props {
                 isbn_13: Some(isbn.to_string()),
                 ..Default::default()
             };
-            // The rival gets every advantage: both providers, top position.
             let mut rival = other;
             rival.isbn_13 = None;
             rival.isbn_10 = None;
@@ -947,8 +786,6 @@ mod props {
             );
         }
 
-        /// Monotone in position: a result the provider ranked higher never
-        /// scores lower for that reason alone.
         #[test]
         fn earlier_positions_never_score_lower(
             book in arb_book(),
@@ -973,30 +810,13 @@ mod props {
             prop_assert!(two >= one);
         }
 
-        /// The shape invariants are unconditional; **idempotence is not, and
-        /// claiming it was wrong about the function rather than about the
-        /// input.**
-        ///
-        /// `normalize` strips exactly **one** leading article, deliberately:
-        /// looping the strip would take "The A Team" to `"team"` instead of
-        /// `"a team"`, mangling real titles across all three import paths that
-        /// match on them. So it is idempotent precisely when its own output does
-        /// not itself begin with an article — which is every title that does not
-        /// start with two of them.
-        ///
-        /// Proptest found `"a A "` and said so: `normalize` gives `"a"`, and a
-        /// second pass gives `""`. The property was over-claiming from the
-        /// start; it survived only because the generator rarely produces two
-        /// articles in a row. Weakened to what the function actually promises:
-        /// asserting less beats asserting something false.
+        /// Idempotence holds only when the output does not itself begin with an article.
         #[test]
         fn normalize_strips_one_article_and_is_otherwise_well_shaped(s in text()) {
             let once = normalize(&s);
             if !starts_with_article(&once) {
                 prop_assert_eq!(normalize(&once), once.clone());
             } else {
-                // The one case idempotence fails, and it must fail *by exactly
-                // one more article* — never by more, and never by anything else.
                 prop_assert_eq!(
                     normalize(&once),
                     once.split_once(' ').map(|(_, rest)| rest).unwrap_or("")
@@ -1010,17 +830,12 @@ mod props {
             );
         }
 
-        /// `same_work` decides whether two provider results are the same book.
-        /// It must be symmetric — an asymmetry would make dedup's output depend
-        /// on provider ordering. Transitivity is deliberately NOT asserted:
-        /// near-match chains are legitimately non-transitive under a similarity
-        /// threshold, and demanding it would be demanding a different algorithm.
+        /// Symmetry keeps dedup independent of provider order; transitivity is deliberately not asserted.
         #[test]
         fn same_work_is_symmetric(a in arb_book(), b in arb_book()) {
             prop_assert_eq!(same_work(&a, &b), same_work(&b, &a));
         }
 
-        /// Dedup can only ever merge, never invent or lose a work.
         #[test]
         fn dedup_never_grows_and_never_empties(
             books in proptest::collection::vec(arb_book(), 0..8),
@@ -1044,14 +859,7 @@ mod props {
             prop_assert_eq!(out.is_empty(), n == 0);
         }
 
-        /// Reordering the providers' replies must not change *which* works come
-        /// out, nor the ISBN-bearing fields.
-        ///
-        /// Scoped to the `prefer`-managed fields on purpose. The `fill` fields
-        /// (publisher, year, cover_url) are first-wins and therefore genuinely
-        /// order-dependent by design — asserting full commutativity would fail
-        /// for a reason that would then have to be relitigated rather than
-        /// fixed.
+        /// Scoped to the `prefer` fields: `fill` fields are first-wins and order-dependent by design.
         #[test]
         fn dedup_identity_is_permutation_invariant(
             books in proptest::collection::vec(arb_book(), 1..6),
@@ -1089,9 +897,6 @@ mod props {
     }
 }
 
-/// Tests for the fan-out itself, which had no coverage at all: only the pure
-/// `dedup`/`rank` helpers were exercised, so the 5s timeout and the
-/// per-provider failure degradation had never once run.
 #[cfg(test)]
 mod fanout_tests {
     use super::*;
@@ -1100,12 +905,7 @@ mod fanout_tests {
 
     enum Behaviour {
         Answers(Vec<Book>),
-        /// Fails with this message. Carried rather than fixed so a test can
-        /// steer the resulting `ErrorClass`.
         Fails(String),
-        /// Sleeps past PROVIDER_TIMEOUT. Costs no real time under
-        /// `start_paused` — tokio auto-advances its clock when every task is
-        /// idle with a timer pending.
         Hangs,
     }
 
@@ -1189,9 +989,6 @@ mod fanout_tests {
         assert!(!out.timed_out(), "a failure is not a timeout");
     }
 
-    /// The whole point of `start_paused`: a provider that sleeps twice the
-    /// timeout resolves instantly here. This is why PROVIDER_TIMEOUT should not
-    /// be widened into a config knob merely to make it testable.
     #[tokio::test(start_paused = true)]
     async fn a_hanging_provider_times_out_and_says_so() {
         let started = std::time::Instant::now();
@@ -1212,13 +1009,9 @@ mod fanout_tests {
         assert_eq!(out.results.len(), 1);
         assert!(out.timed_out());
         assert_eq!(out.failed_providers(), vec![ProviderId::OpenLibrary]);
-        // The exact user-visible string, unchanged by the typed-diagnostic
-        // refactor.
         assert_eq!(out.warnings[0].to_string(), "openlibrary: timed out");
     }
 
-    /// Every provider down is still a successful, empty search — never an Err.
-    /// A dead network must not look like a bug in the app.
     #[tokio::test(start_paused = true)]
     async fn every_provider_down_is_still_ok_with_two_diagnostics() {
         let providers = vec![
@@ -1265,10 +1058,6 @@ mod fanout_tests {
         );
     }
 
-    /// A keyless Google Books key hits quota routinely, and it is the one
-    /// failure a frontend can act on ("add an API key"). It must survive the
-    /// trip into a Diagnostic as something distinguishable, not as generic
-    /// text.
     #[tokio::test]
     async fn a_quota_refusal_stays_recognisable_as_a_rate_limit() {
         let providers = vec![provider(
@@ -1292,8 +1081,6 @@ mod fanout_tests {
         assert!(out.results.is_empty() && out.warnings.is_empty());
     }
 
-    /// Results come back ordered best-first, since the frontends render the
-    /// list as given.
     #[tokio::test]
     async fn results_are_sorted_by_descending_score() {
         let providers = vec![provider(

@@ -1,82 +1,29 @@
-//! Human names, parsed.
-//!
-//! `authors` is `Vec<String>` exactly as an origin spelled it — calibre and
-//! Goodreads write `Borges, Jorge Luis`, a bare epub writes `Jorge Luis
-//! Borges`, and a mononym writes `Colette`. Two questions follow from that and
-//! neither is phrasing:
-//!
-//! - **What do you file this under?** [`last_name`]. "Alphabetically by last
-//!   name" is a parse of a human name, and SQLite has nothing to parse one
-//!   with.
-//! - **Which half is the surname?** [`display_order`]. Flipping `Surname,
-//!   Given` is the same parse read the other way.
-//!
-//! Both once lived in the TUI (`crates/tui/src/ui/library.rs`), where they were
-//! one frontend's private knowledge — and a second frontend without them files
-//! *The Overstory* under nothing and prints `Borges, Jorge Luis` on a book
-//! jacket.
-//! **Joining a list of names with `", "` is still the frontend's**: that is
-//! wording, and this module returns names one at a time on purpose.
-//!
-//! Nothing here is a lookup against a table of real people. Every rule is
-//! structural, every one of them is wrong for somebody, and the failure mode
-//! that matters is the one that files a book under nothing.
+//! Parses human names: the name to file under, display order, and the author sort key.
 
-/// Name particles that belong to the surname rather than to the given names —
-/// "Ursula K. **Le Guin**", "Vincent **van Gogh**", "Simone **de Beauvoir**".
-///
-/// Matched case-insensitively, because the same particle is capitalised in one
-/// language and not in the next, and a person writing their own name does not
-/// consult a table.
 const PARTICLES: [&str; 18] = [
     "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "van", "von", "ten", "ter",
     "af", "av", "bin", "ibn",
 ];
 
-/// Honorific and generational suffixes, which are never the name to file under.
 const SUFFIXES: [&str; 8] = ["jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd"];
 
 fn is_suffix(word: &str) -> bool {
     SUFFIXES.contains(&word.trim_matches(',').to_lowercase().as_str())
 }
 
-/// True when `after` — everything past the first comma — is nothing but
-/// suffixes, which makes the comma a *suffix* comma rather than an inversion.
-///
-/// "Martin Luther King, Jr." is the same name as "Martin Luther King" and files
-/// under King, not under Martin. Both readers of a comma need this answer and
-/// they must not disagree about it, which is why it is one function.
 fn comma_is_only_a_suffix(after: &str) -> bool {
     after.split_whitespace().all(is_suffix)
 }
 
-/// The name to file an author under.
-///
-/// Three shapes, in the order they are decided:
-///
-/// 1. **`Surname, Given`** — the author already said which half is the surname,
-///    so nothing is guessed. This is the form a Goodreads export and half the
-///    providers use, so it is worth handling first rather than as a curiosity.
-/// 2. **Suffixes are dropped** — "Kurt Vonnegut Jr." files under Vonnegut.
-/// 3. **The last word, plus any particle in front of it.** "Emily St. John
-///    Mandel" → Mandel, because "John" is not a particle; "Ursula K. Le Guin"
-///    → Le Guin, because "Le" is.
-///
-/// A single word is itself: a mononym is a surname as far as this is concerned,
-/// and the alternative is filing Homer under nothing.
+/// The name to file an author under: `Surname, Given` is trusted, suffixes dropped, particles kept.
 pub fn last_name(author: &str) -> String {
     let author = author.trim();
     if let Some((head, tail)) = author.split_once(',') {
         let head = head.trim();
-        // **Unless the comma is only holding a suffix.** See
-        // [`comma_is_only_a_suffix`] — a tail that is nothing but suffixes is
-        // not the inverted form, however much it looks like one from the comma.
         if !head.is_empty() && !comma_is_only_a_suffix(tail) {
             return head.to_string();
         }
     }
-    // Commas are separators here, not part of a word: the only ones left are
-    // the suffix-holding kind the branch above declined.
     let mut words: Vec<&str> = author
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|w| !w.is_empty())
@@ -98,29 +45,10 @@ pub fn last_name(author: &str) -> String {
     }
 }
 
-/// The name written the way a person says it: `Jorge Luis Borges`, never
-/// `Borges, Jorge Luis`.
-///
-/// The **inverse** of the question [`last_name`] answers, off the same reading
-/// of the comma — which is the reason they are neighbours. A frontend that flips
-/// the pair itself is a frontend that will eventually disagree with the sort
-/// about which half was the surname, and the disagreement looks like a bug in
-/// the sort.
-///
-/// Four inputs it must not mangle, all of them real in `make dev-db`:
-///
-/// - **A mononym** — `Colette` — has no comma and is returned untouched.
-/// - **An uninverted name** — `Jorge Luis Borges` — likewise. There is no
-///   attempt to detect and "fix" one; a name with no comma has told us nothing
-///   about which half is the surname, and rearranging it on a guess is how
-///   `Emily St. John Mandel` becomes `Mandel Emily St. John`.
-/// - **A suffix comma** — `Martin Luther King, Jr.` — is not an inversion, and
-///   is returned untouched rather than read as a surname of "King".
-/// - **A suffix past an inversion** — `King, Martin Luther, Jr.` — puts the
-///   suffix back where it was: `Martin Luther King, Jr.`.
-///
-/// An empty string stays empty. Absence is the caller's to word, not this
-/// module's to invent a placeholder for.
+/// The name as a person says it (`Borges, Jorge Luis` -> `Jorge Luis Borges`); inverse of
+/// `last_name`.
+/// A name with no comma is returned untouched, never rearranged on a guess, and a suffix comma
+/// (`Martin Luther King, Jr.`) is not an inversion.
 pub fn display_order(author: &str) -> String {
     let author = author.trim();
     let Some((head, rest)) = author.split_once(',') else {
@@ -131,9 +59,6 @@ pub fn display_order(author: &str) -> String {
         return author.to_string();
     }
 
-    // Everything past the first comma, as comma-separated segments: the given
-    // names, then any suffixes. `King, Martin Luther, Jr.` is two segments and
-    // is the reason this is not a second `split_once`.
     let mut segments: Vec<&str> = rest
         .split(',')
         .map(str::trim)
@@ -147,8 +72,6 @@ pub fn display_order(author: &str) -> String {
 
     let given = segments.join(", ");
     if given.is_empty() {
-        // Nothing but suffixes past the comma — a suffix comma, not an
-        // inversion. Untouched, exactly as `last_name` treats it.
         return author.to_string();
     }
 
@@ -160,18 +83,7 @@ pub fn display_order(author: &str) -> String {
     out
 }
 
-/// The sort key for "alphabetically by author": `(no-author flag, last name,
-/// full name)`.
-///
-/// The flag is what keeps an authorless book at the bottom rather than at the
-/// top under an empty string — a book with no author is not a book by an author
-/// called "". The full name breaks ties between two people who share a surname,
-/// and it is the *stored* spelling rather than the display order so that a tie
-/// is broken by something stable rather than by this module's own parse.
-///
-/// Takes the whole list and reads the first: a book's authors arrive in the
-/// order its origin listed them, which is the order that means "the one whose
-/// name is on the spine".
+/// Sort key `(no-author flag, last name, full name)`; authorless books sort last.
 pub fn sort_key(authors: &[String]) -> (u8, String, String) {
     match authors.iter().find(|a| !a.trim().is_empty()) {
         Some(a) => (0, last_name(a).to_lowercase(), a.trim().to_lowercase()),
@@ -202,19 +114,12 @@ mod tests {
         assert_eq!(last_name("Vincent van Gogh"), "van Gogh");
     }
 
-    /// At three words, `n - 2` (the particle lookup's real index) and `n / 2`
-    /// land on the same word, so neither count tells them apart — a mutant
-    /// that swapped the two survived the suite for exactly that reason. At
-    /// two words they diverge (`0` vs `1`): only `n - 2` looks at the word in
-    /// front of the surname, which is where a leading particle lives.
+    /// Two words, not three: only there do `n - 2` and `n / 2` pick different words.
     #[test]
     fn a_two_word_name_keeps_a_leading_particle() {
         assert_eq!(last_name("van Beethoven"), "van Beethoven");
     }
 
-    /// Four words, no particle anywhere in them — the shape `n / 2` would
-    /// have to get right too, filing under the last word and not a word from
-    /// the middle.
     #[test]
     fn a_four_word_name_without_a_particle_files_under_the_last_word() {
         assert_eq!(last_name("Mary Ann Evans Lewes"), "Lewes");
@@ -223,7 +128,6 @@ mod tests {
     #[test]
     fn suffixes_are_never_the_filing_name() {
         assert_eq!(last_name("Kurt Vonnegut Jr."), "Vonnegut");
-        // The comma holds a suffix, not an inversion.
         assert_eq!(last_name("Martin Luther King, Jr."), "King");
     }
 
@@ -235,20 +139,14 @@ mod tests {
         assert_eq!(last_name("   "), "");
     }
 
-    /// The shapes real libraries contain, kept verbatim from the TUI test this
-    /// module replaced: names as they appear on published books rather than
-    /// invented edge cases, which is the only reason to handle any of them.
     #[test]
     fn a_last_name_survives_particles_initials_and_suffixes() {
         assert_eq!(last_name("George Eliot"), "Eliot");
         assert_eq!(last_name("Mandel, Emily St. John"), "Mandel");
         assert_eq!(last_name("King, Martin Luther Jr."), "King");
-        // A trailing comma with nothing after it is a typo, not an inversion.
         assert_eq!(last_name("George Eliot,"), "Eliot");
     }
 
-    /// A name that is *only* a suffix keeps it. The loop stops at one word left,
-    /// so there is no input that strips a name down to nothing.
     #[test]
     fn stripping_suffixes_never_empties_a_name() {
         assert_eq!(last_name("Jr."), "Jr.");
@@ -259,8 +157,6 @@ mod tests {
     fn display_order_flips_only_a_real_inversion() {
         assert_eq!(display_order("Borges, Jorge Luis"), "Jorge Luis Borges");
         assert_eq!(display_order("Le Guin, Ursula K."), "Ursula K. Le Guin");
-        // No comma: nothing has been said about which half is the surname, and
-        // guessing is how a three-part name gets mangled.
         assert_eq!(
             display_order("Emily St. John Mandel"),
             "Emily St. John Mandel"
@@ -271,12 +167,10 @@ mod tests {
 
     #[test]
     fn display_order_keeps_a_suffix_where_it_belongs() {
-        // A suffix comma is not an inversion.
         assert_eq!(
             display_order("Martin Luther King, Jr."),
             "Martin Luther King, Jr."
         );
-        // An inversion *with* a suffix past it puts the suffix back at the end.
         assert_eq!(
             display_order("King, Martin Luther, Jr."),
             "Martin Luther King, Jr."
@@ -287,7 +181,6 @@ mod tests {
     fn an_authorless_book_sorts_last_rather_than_under_nothing() {
         let none: Vec<String> = Vec::new();
         assert_eq!(sort_key(&none).0, 1);
-        // A blank string is absence wearing a value, and is treated as one.
         assert_eq!(sort_key(&["   ".to_string()]).0, 1);
         assert_eq!(sort_key(&["Colette".to_string()]).0, 0);
     }
@@ -305,8 +198,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Arbitrary input must be parsed, not panic. Author strings arrive from
-        /// four importers and a text field, and none of them promise a shape.
         #[test]
         fn arbitrary_input_never_panics(s in ".{0,80}") {
             let _ = last_name(&s);
@@ -314,31 +205,17 @@ mod props {
             let _ = sort_key(&[s]);
         }
 
-        /// A name with no comma has told us nothing about which half is the
-        /// surname, so [`display_order`] must be the identity on it (modulo the
-        /// trim). This is the property that stops a future "smarter" version
-        /// rearranging `Emily St. John Mandel`.
         #[test]
         fn display_order_never_rearranges_an_uninverted_name(s in "[A-Za-z. ]{0,40}") {
             prop_assert_eq!(display_order(&s), s.trim().to_string());
         }
 
-        /// The two readings of a comma agree. Whatever [`display_order`]
-        /// produces, filing *it* gives the same answer as filing the original —
-        /// which is the whole reason they share `comma_is_only_a_suffix`. A
-        /// version where they disagree is a library whose sort and whose labels
-        /// name different surnames.
         #[test]
         fn filing_survives_the_flip(
             given in "[A-Za-z][a-z]{1,8}",
             surname in "[A-Za-z][a-z]{1,8}",
         ) {
-            // Scoped honestly. A *given* name that is also a particle ("de") and
-            // a *surname* that is also a suffix ("Ii") are both genuinely
-            // ambiguous once the comma is gone — `de Surname` files under "de
-            // Surname" and it is right to, because that is what the string now
-            // says. The round trip is a property of the comma, not a claim that
-            // the flip is lossless for every input.
+            // A given name that is a particle, or a surname that is a suffix, is ambiguous without the comma.
             prop_assume!(!PARTICLES.contains(&given.to_lowercase().as_str()));
             prop_assume!(!is_suffix(&given) && !is_suffix(&surname));
             let inverted = format!("{surname}, {given}");

@@ -1,27 +1,7 @@
-//! The recipe invariant suite: one test per invariant a built recipe must
-//! satisfy, against a library built through the real binary (recipes and their
-//! format are described in `corpus/recipes/README.md`).
-//!
-//! The recipe runner itself is compiled in from `crates/corpus/src/recipe.rs`
-//! (`#[path]` below), so the suite and `cargo run -p corpus -- build-recipe`
-//! are one implementation and cannot drift. That file links only `std`,
-//! `serde` and `toml`, all of which this crate already has.
-//!
-//! The library is built **once** per test binary (a `OnceLock`), and the
-//! re-application for the idempotency invariant happens inside that same
-//! initialiser, so no test ever reads a library another test is mutating.
-//! Under nextest every test is its own process and a `OnceLock` is per
-//! process, so the built library and what building it produced are also
-//! **kept on disk between processes** (`cache_dir`), keyed on the binary,
-//! the recipe file and every input layer: the first test builds, the rest
-//! read. Before that, CI's ubuntu runner built the recipe eleven times in a
-//! row at 60–100 s each (the `calibredb` group runs one at a time), which
-//! overran the job's 30 minutes on 2026-11-09.
-//!
-//! Which recipe: `BOOKMOLE_RECIPE`, default `everything`. Every test skips
-//! loudly with `SKIPPED:` when the recipe's layers are not generated, and fails
-//! instead under `BOOKMOLE_REQUIRE_FIXTURES=1` (the engine standards'
-//! rule).
+//! Recipe invariant suite, against a library built through the real binary (`BOOKMOLE_RECIPE`,
+//! default `everything`). The build is cached on disk (`cache_dir`) since nextest runs each test
+//! in its own process. Tests print `SKIPPED:` when layers are absent and fail under
+//! `BOOKMOLE_REQUIRE_FIXTURES=1`.
 
 #[path = "../../corpus/src/recipe.rs"]
 #[allow(dead_code)]
@@ -56,7 +36,6 @@ fn recipe_name() -> String {
     std::env::var("BOOKMOLE_RECIPE").unwrap_or_else(|_| "everything".to_owned())
 }
 
-/// The shared build, or why there is none.
 fn built() -> Option<&'static Built> {
     static BUILT: OnceLock<Result<Built, String>> = OnceLock::new();
     match BUILT.get_or_init(build) {
@@ -88,8 +67,6 @@ fn build() -> Result<Built, String> {
     if let Some(b) = Manifest::read(&cache, &recipe, &dir) {
         return Ok(b);
     }
-    // Another key's library is a build this machine's state no longer
-    // describes; one tree per recipe is enough to keep.
     if let Some(parent) = cache.parent()
         && let Ok(rd) = std::fs::read_dir(parent)
     {
@@ -108,9 +85,8 @@ fn build() -> Result<Built, String> {
     let lock_first =
         recipe::semantic_lock(&dir_building, &recipe, &runs).map_err(|e| e.to_string())?;
     let reapplied = recipe::run(&recipe, &dir_building, bin, true).map_err(|e| e.to_string())?;
-    // The second lock is computed against the *first* run's invocations, so
-    // its hostile list is the same by construction and only the counts and
-    // titles — what the re-application could have changed — are compared.
+    // The second lock is computed against the first run's invocations, so only counts and titles are
+    // compared.
     let lock_second =
         recipe::semantic_lock(&dir_building, &recipe, &runs).map_err(|e| e.to_string())?;
     let inputs_after = digest_inputs(&recipe);
@@ -124,8 +100,7 @@ fn build() -> Result<Built, String> {
     };
     let text = toml::to_string(&manifest).map_err(|e| format!("manifest: {e}"))?;
     std::fs::write(building.join("built.toml"), text).map_err(|e| e.to_string())?;
-    // Whole or absent: the manifest is written before the rename, and a
-    // process that lost the race to the rename reads the winner's tree.
+    // The manifest is written before the rename; a process that loses the race reads the winner's tree.
     if std::fs::rename(&building, &cache).is_err() {
         let _ = std::fs::remove_dir_all(&building);
     }
@@ -137,10 +112,8 @@ fn build() -> Result<Built, String> {
     })
 }
 
-/// Where the built library lives between test processes:
-/// `<temp>/rb-recipe-cache/<recipe>-<key>/`, the key a hash of everything the
-/// build reads — the binary (size and mtime, so a rebuild is a new key), the
-/// recipe file's bytes and every input layer's files (size and mtime).
+/// `<temp>/rb-recipe-cache/<recipe>-<key>/`; the key hashes the binary, the recipe file and the
+/// inputs' size and mtime.
 fn cache_dir(name: &str, recipe_path: &Path, inputs: &BTreeMap<String, (u64, u128)>) -> PathBuf {
     let mut h = DefaultHasher::new();
     BIN.hash(&mut h);
@@ -166,9 +139,8 @@ fn cache_dir(name: &str, recipe_path: &Path, inputs: &BTreeMap<String, (u64, u12
         .join(format!("{name}-{:016x}", h.finish()))
 }
 
-/// What building produced, as kept on disk. `Invocation` itself carries no
-/// serde (it is the runner's type, and `millis` is a `u128` TOML has no
-/// integer for), so a mirror with the same fields is written instead.
+/// Mirror of the runner's `Invocation` for disk: the original has no serde and `millis` is a
+/// `u128`.
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     runs: Vec<Inv>,
@@ -180,7 +152,6 @@ struct Manifest {
 }
 
 impl Manifest {
-    /// The cached build under `cache`, or `None` if there is none that reads.
     fn read(cache: &Path, recipe: &Recipe, dir: &Path) -> Option<Built> {
         let text = std::fs::read_to_string(cache.join("built.toml")).ok()?;
         let m: Manifest = toml::from_str(&text).ok()?;
@@ -245,8 +216,6 @@ impl From<Inv> for Invocation {
     }
 }
 
-/// One input file's size and mtime, as `digest_inputs` records them. The
-/// mtime is nanoseconds since the epoch, which fits a `u64` until 2554.
 #[derive(Serialize, Deserialize)]
 struct Input {
     path: String,
@@ -271,8 +240,8 @@ impl Input {
     }
 }
 
-/// Size and mtime of every file under every step's input — the repo-side
-/// half of invariant 6: a build reads its layers and never writes them.
+/// Size and mtime of every file under every step's input: a build must read its layers, never write
+/// them.
 fn digest_inputs(r: &Recipe) -> BTreeMap<String, (u64, u128)> {
     fn walk(p: &Path, out: &mut BTreeMap<String, (u64, u128)>) {
         let Ok(meta) = std::fs::metadata(p) else {
@@ -310,13 +279,9 @@ fn db(b: &Built) -> PathBuf {
     recipe::db_path(&b.dir)
 }
 
-/// Whether `what` — a comparison against an expectation recorded with every
-/// tool the recipe's steps need — can be made on this machine. Without one
-/// (calibre, on CI's ubuntu runner) the library still builds and every other
-/// invariant still holds of it, but it is a different library from the one
-/// the expectation describes, so comparing reports a difference nobody made
-/// and re-recording would record the wrong one. Skips loudly, and fails
-/// under `BOOKMOLE_REQUIRE_FIXTURES=1`.
+/// Whether the expectation for `what` can be compared here; without a tool the recipe needs, the
+/// library differs from the recorded one. Skips loudly, and fails under
+/// `BOOKMOLE_REQUIRE_FIXTURES=1`.
 fn comparable(b: &Built, what: &str) -> bool {
     let missing = recipe::missing_tools(&b.recipe);
     if missing.is_empty() {
@@ -345,8 +310,6 @@ fn scalar(b: &Built, sql: &str) -> i64 {
         .unwrap_or_else(|_| panic!("not a number: {sql}"))
 }
 
-// ---- 1 -------------------------------------------------------------------
-
 #[test]
 fn every_step_exits_as_the_recipe_declares() {
     let Some(b) = built() else { return };
@@ -363,8 +326,6 @@ fn every_step_exits_as_the_recipe_declares() {
         .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
-
-// ---- 2 -------------------------------------------------------------------
 
 #[test]
 fn reapplying_the_imports_changes_nothing() {
@@ -405,11 +366,6 @@ fn reapplying_the_imports_changes_nothing() {
     }
 }
 
-/// The strict half of `reapply = false`: an excluded step must still be
-/// non-idempotent. Each one is re-applied (its first three inputs) to a copy
-/// of the built library; when that changes nothing, the engine bug its
-/// `reapply_why` cites is fixed and this fails until the exclusion is removed,
-/// so invariant 2 regains the step instead of the comment rotting.
 #[test]
 fn excluded_steps_are_still_not_idempotent() {
     let Some(b) = built() else { return };
@@ -465,8 +421,6 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-// ---- 3 -------------------------------------------------------------------
-
 #[test]
 fn the_semantic_lock_matches_its_expectation() {
     let Some(b) = built() else { return };
@@ -489,10 +443,7 @@ fn the_semantic_lock_matches_its_expectation() {
     );
 }
 
-// ---- 4 -------------------------------------------------------------------
-
-/// The longest plain ASCII word of four letters or more — something FTS5's
-/// porter/unicode61 tokenizer will index as itself on any body.
+/// The longest plain ASCII word of four or more letters, which FTS5 indexes as itself.
 fn search_word(body: &str) -> Option<String> {
     body.split(|c: char| !c.is_ascii_alphabetic())
         .filter(|w| w.len() >= 4)
@@ -538,16 +489,11 @@ fn every_note_is_found_by_a_word_of_its_own_body() {
     assert!(lost.is_empty(), "{}", lost.join("\n"));
 }
 
-// ---- 5 -------------------------------------------------------------------
-
 #[test]
 fn every_attributed_highlight_is_dated_inside_its_reading() {
     let Some(b) = built() else { return };
-    // A day of slack either side: ko_datetime is the device's local wall
-    // clock, the window is unix seconds. A reading with no start date (an
-    // imported `currently-reading` row) is not bounded by when it was
-    // imported: its window opens just after the book's previous finished
-    // read, or is open-ended when there is none.
+    // A day of slack either side (device local clock against unix seconds). A reading with no start
+    // date opens just after the previous finished read, or is open-ended.
     let bad = rows(
         b,
         "SELECT hex(h.id), hex(h.ko_datetime), hex(r.started_at), hex(r.finished_at) \
@@ -565,8 +511,6 @@ fn every_attributed_highlight_is_dated_inside_its_reading() {
         "highlights dated outside the reading they are attributed to: {bad:?}"
     );
 }
-
-// ---- 6 -------------------------------------------------------------------
 
 #[test]
 fn nothing_escapes_and_no_text_holds_a_nul() {
@@ -612,11 +556,7 @@ fn nothing_escapes_and_no_text_holds_a_nul() {
             b,
             &format!("SELECT count(*) FROM {table} WHERE instr(CAST({col} AS BLOB), x'00') > 0"),
         );
-        // Exactly the rows a KOReader layer's manifest salts with `nul-byte`
-        // carry one, and no others: the engine keeps the byte today (an open
-        // question whether import should strip U+0000 before it reaches a
-        // C-string consumer such as a terminal or clipboard), so the invariant
-        // pins that nothing *else* lets one in.
+        // Only rows a KOReader layer salts with `nul-byte` may carry a NUL; nothing else may let one in.
         let want = nul_salts_for(b).get(&(table, col)).copied().unwrap_or(0);
         assert_eq!(
             n, want,
@@ -629,10 +569,6 @@ fn nothing_escapes_and_no_text_holds_a_nul() {
     );
 }
 
-/// How many NUL-bearing rows per column the recipe's KOReader layers declare,
-/// read from each `ko-sync` root's `manifest.json` (`salted[]` with
-/// `case = "nul-byte"`): a `highlight` salt lands in `highlights.text`, a
-/// `ko-note` or `lua-string` one in `highlights.origin_note`.
 fn nul_salts_for(b: &Built) -> std::collections::BTreeMap<(&'static str, &'static str), i64> {
     let mut allowed = std::collections::BTreeMap::new();
     for step in b.recipe.steps.iter().filter(|s| s.kind == "ko-sync") {
@@ -662,9 +598,6 @@ fn nul_salts_for(b: &Built) -> std::collections::BTreeMap<(&'static str, &'stati
     allowed
 }
 
-// ---- 7 -------------------------------------------------------------------
-
-/// `hostile.json`'s declared class per case id.
 fn declared_classes() -> BTreeMap<String, (String, String)> {
     let text = std::fs::read_to_string(recipe::repo_root().join("crates/corpus/hostile.json"))
         .expect("hostile.json");
@@ -710,8 +643,7 @@ fn every_salted_case_reaches_its_declared_class() {
         let as_declared = match class.as_str() {
             "rejected" => r.exit != Some(0),
             "verbatim" if r.argv.first().is_some_and(|a| a == "note") => {
-                // The vault stores a body with one trailing newline; that is
-                // the only difference tolerated, and it is stated here.
+                // The vault stores a body with one trailing newline; that is the only difference tolerated.
                 r.exit == Some(0)
                     && bodies
                         .iter()

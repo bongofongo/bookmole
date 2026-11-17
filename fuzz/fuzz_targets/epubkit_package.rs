@@ -1,14 +1,4 @@
-//! Fuzz `epubkit::Package` over arbitrary bytes, in memory.
-//!
-//! Unlike `epub_info`, this needs no temp file: `Package::from_bytes` opens
-//! the archive straight from the fuzzer's buffer, so every execution is
-//! parsing rather than disk I/O. Whatever opens is then asked everything a
-//! caller can ask — metadata, the cover, both tables of contents flattened,
-//! every spine document and its text — because each of those reads its own
-//! document on demand and each is hostile input in its own right.
-//!
-//! `crates/epubkit/tests/fuzz_seeds.rs` replays `fuzz/seeds/epubkit_package/`
-//! through the same calls on stable, on every PR.
+//! Fuzz `epubkit::Package` in memory: metadata, cover, both TOCs and every spine document.
 
 #![no_main]
 

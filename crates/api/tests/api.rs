@@ -1,15 +1,3 @@
-//! The API crate against a real engine, in-process.
-//!
-//! What these assert is not "the engine works" — the engine's own suite does
-//! that — but the two claims the API seam rests on:
-//!
-//! 1. **The typed method and the dispatch arm are the same call.** If they ever
-//!    diverge, an in-process host (typed) and a daemon client (dispatched) get
-//!    different behaviour from the same request, and the boundary has stopped
-//!    being the API.
-//! 2. **No domain handle crosses the seam.** Everything is addressed by id, and
-//!    the row is re-read on this side.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,8 +10,7 @@ use bookmole_api::{
     StatusFilterDto, TenureDto,
 };
 
-/// A library in a tempdir with an in-memory database, like every other suite
-/// here. The `TempDir` comes back so the vault outlives the test body.
+/// The `TempDir` is returned so the vault outlives the test body.
 async fn api() -> (Api, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -40,8 +27,7 @@ async fn api() -> (Api, tempfile::TempDir) {
     (Api::new(Arc::new(engine)), tmp)
 }
 
-/// Own a copy of this book, so it is in the library (the Library's listings
-/// show only books you have).
+/// Own a copy of the book; Library listings show only books you have.
 async fn have(api: &Api, book_id: i64) {
     api.add_copy(NewCopyDto {
         book_id,
@@ -80,17 +66,13 @@ fn ok(response: Result<Response, ApiError>) -> Response {
     response.expect("dispatch succeeded")
 }
 
-/// The daemon holds one `Api` and hands `&self` to every connection at once, so
-/// this is a compile-time requirement rather than a nicety. It is why
-/// `Engine::set_google_api_key` had to stop taking `&mut self`.
+/// The daemon hands one `Api` to every connection at once, so it must be `Send + Sync`.
 #[test]
 fn the_api_can_be_shared_across_connections() {
     fn assert_send_sync<T: Send + Sync + Clone + 'static>() {}
     assert_send_sync::<Api>();
 }
 
-/// Claim 1, for a read: the typed method and the dispatch arm must produce the
-/// same answer, because `dispatch` is meant to be pure fan-out.
 #[tokio::test]
 async fn dispatch_and_the_typed_method_agree() {
     let (api, _tmp) = api().await;
@@ -125,8 +107,6 @@ async fn dispatch_and_the_typed_method_agree() {
     }
 }
 
-/// And for a write. A rule that lived in the dispatch arm would show up here as
-/// the two paths disagreeing about what a call did.
 #[tokio::test]
 async fn dispatch_and_the_typed_method_agree_on_a_write() {
     let (api, _tmp) = api().await;
@@ -146,13 +126,9 @@ async fn dispatch_and_the_typed_method_agree_on_a_write() {
         Response::Book(Some(b)) => assert_eq!(b.current_page, Some(41)),
         other => panic!("{other:?}"),
     }
-    // One reading, not two: the second call must have gone through the same
-    // `update_progress` the first did.
     assert_eq!(api.list_readings(id).await.unwrap().len(), 1);
 }
 
-/// Claim 2. `Engine::update_note_body` takes a `&NoteRecord`; nothing here
-/// does, and a client never holds one.
 #[tokio::test]
 async fn a_note_is_written_and_read_back_by_id_alone() {
     let (api, _tmp) = api().await;
@@ -181,22 +157,16 @@ async fn a_note_is_written_and_read_back_by_id_alone() {
             .starts_with("Rewritten")
     );
 
-    // The edge survived the rewrite, which is what re-indexing on update buys.
     let links = api.outgoing_links(created.id).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].target_title, "Symphony");
-    // Nobody has written that note, so the target dangles — a forward
-    // reference, carried as text rather than dropped.
     assert!(links[0].note.is_none());
 
     api.delete_note(created.id).await.unwrap();
     assert!(api.get_note(created.id).await.unwrap().is_none());
 }
 
-/// `last_modified` crosses the seam, so a frontend can say when a page was
-/// kept after a reload rather than only in the session that kept it. The
-/// stamp is second-resolution, so "moves" is asserted as "never goes back";
-/// the strict move is the storage suite's, where the row can be backdated.
+/// The stamp is second-resolution, so the test asserts it never goes back, not that it moves.
 #[tokio::test]
 async fn a_notes_last_kept_moment_crosses_the_seam() {
     let (api, _tmp) = api().await;
@@ -218,15 +188,12 @@ async fn a_notes_last_kept_moment_crosses_the_seam() {
     let saved = api.get_note(created.id).await.unwrap().expect("the note");
     assert!(saved.last_modified.expect("still stamped") >= kept);
 
-    // And through dispatch, as a socket client reads it.
     match ok(api.dispatch(Request::GetNote { id: created.id }).await) {
         Response::Note(Some(n)) => assert_eq!(n.last_modified, saved.last_modified),
         other => panic!("expected a note, got {other:?}"),
     }
 }
 
-/// A note id that names nothing must be `not_found` rather than a panic or a
-/// database error leaking through as `internal`.
 #[tokio::test]
 async fn an_absent_note_is_not_found_and_not_something_vaguer() {
     let (api, _tmp) = api().await;
@@ -235,9 +202,6 @@ async fn an_absent_note_is_not_found_and_not_something_vaguer() {
     assert!(err.message.contains("4242"), "{}", err.message);
 }
 
-/// Calibre is feature-detected, never required. Absent is an answer, and
-/// a client that got an error here would show a failure the user is meant to
-/// fix — which is exactly what the CLI's `calibre status` refuses to do.
 #[tokio::test]
 async fn an_absent_calibre_is_a_status_and_never_an_error() {
     let tmp = tempfile::tempdir().unwrap();
@@ -255,34 +219,25 @@ async fn an_absent_calibre_is_a_status_and_never_an_error() {
     };
     let api = Api::new(Arc::new(Engine::open(config).await.unwrap()));
 
-    // Not `Err`, whatever this machine happens to have installed.
     match ok(api.dispatch(Request::CalibreStatus).await) {
         Response::CalibreStatus(_) => {}
         other => panic!("{other:?}"),
     }
 }
 
-/// The rating rule, across the seam: an unmapped value is a code, never a
-/// rounded star. The lookup table exists precisely to refuse that, and a
-/// transport is not a reason to start guessing.
 #[tokio::test]
 async fn an_unmapped_rating_is_a_code_not_a_rounded_star() {
     let (api, _tmp) = api().await;
     let book_id = seed(&api).await;
 
-    // Since migration `0026` the seeded scale is 0–5 in quarters and maps onto
-    // Goodreads one-to-one, so a quarter star crosses as itself.
     let review = api.open_review(book_id, None).await.unwrap();
     api.set_rating(review.id, 4.25).await.unwrap();
 
     let stored = api.review_rating(review.id).await.unwrap().expect("rated");
     assert_eq!(stored.value, 4.25);
-    // The scale travels with the value, or the number means nothing.
     assert_eq!(stored.scale.step, 0.25);
     assert_eq!(api.goodreads_rating(review.id).await.unwrap(), Some(4.25));
 
-    // A scale the user made, with no map, is the case an unmapped rating now
-    // comes from — and it is a code, not the nearest quarter.
     api.put_rating_scale("tens", 0.0, 10.0, 1.0).await.unwrap();
     api.set_rating(review.id, 7.0).await.unwrap();
     let err = api
@@ -292,9 +247,6 @@ async fn an_unmapped_rating_is_a_code_not_a_rounded_star() {
     assert_eq!(err.code, ErrorCode::UnmappedRating);
 }
 
-/// A reflection accretes: the second call finds the first call's note. Worth
-/// pinning here because a transport makes "call it twice" the ordinary case
-/// rather than the unusual one.
 #[tokio::test]
 async fn opening_a_reflection_twice_opens_the_same_note() {
     let (api, _tmp) = api().await;
@@ -305,7 +257,6 @@ async fn opening_a_reflection_twice_opens_the_same_note() {
     assert_eq!(first.id, again.id);
     assert_eq!(first.file, again.file);
 
-    // And it is findable from the reading, which is what anchors it.
     let reading = api.active_reading(book_id).await.unwrap().expect("open");
     let found = api
         .note_for_reading(reading.id, NoteKindDto::Reflection)
@@ -313,12 +264,10 @@ async fn opening_a_reflection_twice_opens_the_same_note() {
         .unwrap()
         .expect("the reflection");
     assert_eq!(found.id, first.id);
-    // A review is a different note entirely — never a slice of the private one.
     let review = api.open_review(book_id, None).await.unwrap();
     assert_ne!(review.id, first.id);
 }
 
-/// The key is settable and its presence is readable; the key itself is not.
 #[tokio::test]
 async fn a_key_can_be_set_but_never_read_back() {
     let (api, _tmp) = api().await;
@@ -327,8 +276,6 @@ async fn a_key_can_be_set_but_never_read_back() {
     api.set_google_api_key(Some("AIzaSUPERSECRET".into()));
     assert!(api.has_google_api_key());
 
-    // The whole reply, serialized, must not contain it — a `bool` is the only
-    // thing this method can answer with.
     let response = ok(api.dispatch(Request::GoogleApiKey).await);
     let json = serde_json::to_string(&response).unwrap();
     assert!(!json.contains("SUPERSECRET"), "{json}");
@@ -338,8 +285,6 @@ async fn a_key_can_be_set_but_never_read_back() {
     assert!(!api.has_google_api_key());
 }
 
-/// The paths a settings screen shows come off the engine's accessors, so they
-/// follow `--data-dir` rather than a second copy of the layout.
 #[tokio::test]
 async fn the_paths_are_the_engines_own() {
     let (api, tmp) = api().await;
@@ -349,8 +294,6 @@ async fn the_paths_are_the_engines_own() {
     assert_eq!(paths.db_url, "sqlite::memory:");
 }
 
-/// The library-location fact: the typed method and the dispatch arm
-/// are one call, and an in-memory library is in no folder at all.
 #[tokio::test]
 async fn an_in_memory_library_is_in_no_folder() {
     let (api, _tmp) = api().await;
@@ -363,11 +306,6 @@ async fn an_in_memory_library_is_in_no_folder() {
     );
 }
 
-/// A library on disk names the folder its database is in — absolute, and the
-/// database's folder rather than the root or the vault. A temp dir is in no
-/// synced location, so the fact is absent; which roots count is
-/// `bookmole::cloud_folder`'s own table, tested there on every platform
-/// without the real home.
 #[tokio::test]
 async fn a_library_on_disk_names_its_database_folder() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -383,9 +321,8 @@ async fn a_library_on_disk_names_its_database_folder() {
     assert_eq!(got.cloud_folder, None);
 }
 
-/// The wire shape a frontend reads by name: the method is its bare name, the
-/// fact's absence is `null` rather than a missing key, and iCloud Drive is
-/// spelled `icloud_drive` rather than serde's `i_cloud_drive`.
+/// The method is its bare name, an absent fact is `null`, and iCloud Drive is spelled
+/// `icloud_drive`.
 #[test]
 fn the_library_location_reads_plainly_on_the_wire() {
     use bookmole_api::{CloudFolderDto, CloudServiceDto, LibraryLocationDto};
@@ -424,9 +361,6 @@ fn the_library_location_reads_plainly_on_the_wire() {
     }
 }
 
-/// Expanding a picked folder into book files: the typed method and the dispatch
-/// arm are one call, a folder comes back as the book files in it, a calibre
-/// library is named and not walked, and the counts cross by name.
 #[tokio::test]
 async fn a_folder_expands_to_its_book_files_through_both_doors() {
     let (api, _tmp) = api().await;
@@ -475,10 +409,6 @@ async fn a_folder_expands_to_its_book_files_through_both_doors() {
     );
 }
 
-/// The whole vocabulary must survive a round trip through JSON, because that is
-/// what the transport does to it. A sample rather than all seventy: what this
-/// is really pinning is that the tagging scheme works for unit variants, for
-/// nested DTOs and for the optional-field defaults all at once.
 #[test]
 fn the_vocabulary_survives_json() {
     let calls = vec![
@@ -519,8 +449,6 @@ fn the_vocabulary_survives_json() {
     }
 }
 
-/// An error crosses the seam as a reply, not as a dropped connection: `call`
-/// never fails, whatever the engine did.
 #[tokio::test]
 async fn a_failing_call_still_produces_a_reply() {
     let (api, _tmp) = api().await;
@@ -531,8 +459,6 @@ async fn a_failing_call_still_produces_a_reply() {
         })
         .await;
     assert_eq!(reply.id, 99);
-    // A missing reading is `None`, not an error — the failure below is the one
-    // that has to survive.
     assert!(matches!(reply.outcome, Outcome::Ok { .. }));
 
     let reply = api
@@ -544,9 +470,6 @@ async fn a_failing_call_still_produces_a_reply() {
     assert_eq!(reply.id, 100);
 }
 
-/// Claim 1 again, for the two link methods this crate grew — both writes, both
-/// returning `Unit`, so the only way to see that dispatch did the same thing is
-/// to read the link back through the import that consumes it.
 #[tokio::test]
 async fn dispatch_and_the_typed_method_agree_on_linking_a_foreign_record() {
     let (api, _tmp) = api().await;
@@ -566,8 +489,7 @@ async fn dispatch_and_the_typed_method_agree_on_linking_a_foreign_record() {
         other => panic!("{other:?}"),
     }
 
-    // Both landed, and against the same book — the table is keyed
-    // `(source, external_id)`, so one call must not have overwritten the other.
+    // The table is keyed `(source, external_id)`; one call must not overwrite the other.
     for (source, external) in [("goodreads", "9000001"), ("calibre", "c47437a8")] {
         let linked = api
             .dispatch(Request::LinkCalibreBook {
@@ -579,9 +501,6 @@ async fn dispatch_and_the_typed_method_agree_on_linking_a_foreign_record() {
     }
 }
 
-/// A link to a book that is not there is a typed `NotFound`, not a foreign-key
-/// error naming a constraint — a candidate list can always name a book another
-/// pane has since deleted.
 #[tokio::test]
 async fn linking_to_a_missing_book_is_a_typed_error() {
     let (api, _tmp) = api().await;
@@ -592,9 +511,6 @@ async fn linking_to_a_missing_book_is_a_typed_error() {
     assert_eq!(err.code, ErrorCode::NotFound);
 }
 
-/// `only` is `#[serde(default)]`, so a client written before the field existed
-/// sends the same JSON and still means "the whole library". Parsed rather than
-/// constructed, because the default is a property of the wire form.
 #[test]
 fn an_import_request_without_only_still_means_the_whole_library() {
     let parsed: Request =
@@ -616,13 +532,6 @@ fn an_import_request_without_only_still_means_the_whole_library() {
     }
 }
 
-/// The activity log crosses whole, and **absence survives the trip**.
-///
-/// The activity log is built on one distinction — `minutes: null` is "we have no
-/// data" and `0` is a measured near-nothing — and a wire that flattened one into
-/// the other would put the lie on every reading screen at once. A fresh library
-/// has no minutes at all, which is the case that catches a `unwrap_or(0)`
-/// anywhere between the SQL and the JSON.
 #[tokio::test]
 async fn a_period_with_no_device_data_has_no_minutes_rather_than_zero() {
     let (api, _tmp) = api().await;
@@ -634,7 +543,6 @@ async fn a_period_with_no_device_data_has_no_minutes_rather_than_zero() {
         .unwrap();
     assert_eq!(typed.minutes, None, "no device has ever spoken here");
     assert_eq!(typed.pages, None);
-    // A count the engine fully originates: zero is knowable and is not absence.
     assert_eq!(typed.books_finished, 0);
     assert_eq!(typed.range.from, "2026-01-01");
 
@@ -653,12 +561,6 @@ async fn a_period_with_no_device_data_has_no_minutes_rather_than_zero() {
     }
 }
 
-/// A backwards range is an error, **not an empty answer**.
-///
-/// `DayRange::new` refuses one because every aggregate over an inverted span
-/// reports a confident, wrong zero. That refusal has to survive this layer: if
-/// the API validated more loosely than the engine — or not at all, by reaching
-/// past `DayRange` — a client would get the zero the engine exists to refuse.
 #[tokio::test]
 async fn a_backwards_range_is_refused_rather_than_answered() {
     let (api, _tmp) = api().await;
@@ -681,19 +583,10 @@ async fn a_backwards_range_is_refused_rather_than_answered() {
     }
 }
 
-/// **`ActivityByMonth` crosses with its absences intact, which is the whole
-/// reason it is a method here rather than a `reduce` in a client.**
-///
-/// A month with activity and no measured minutes must arrive as `null`. Given
-/// `ActivityByDay` a client would fold those days together, and the first
-/// `reduce` in any language turns `null` into `0` — so the page built to say
-/// "nothing measured this month" would say "you read for zero minutes" instead.
 #[tokio::test]
 async fn a_month_with_no_device_data_crosses_the_wire_as_null_minutes() {
     let (api, _tmp) = api().await;
     let book_id = seed(&api).await;
-    // A note is the one event no importer can fail to supply — and it carries
-    // no minutes, which is exactly the case being protected.
     api.create_note(NewNoteDto {
         book_id: Some(book_id),
         body: "A month that happened, and was never timed.".into(),
@@ -734,8 +627,6 @@ async fn a_month_with_no_device_data_crosses_the_wire_as_null_minutes() {
     }
 }
 
-/// The month aggregate validates through the same `DayRange` its two siblings
-/// do, so this layer cannot route around the refusal an inverted span gets.
 #[tokio::test]
 async fn a_backwards_range_is_refused_by_the_month_aggregate_too() {
     let (api, _tmp) = api().await;
@@ -758,19 +649,10 @@ async fn a_backwards_range_is_refused_by_the_month_aggregate_too() {
     }
 }
 
-/// **A card with no passage crosses as `null` rather than as an error**, and
-/// the typed method
-/// and `dispatch` agree about it.
-///
-/// A reading with nothing marked is the ordinary case for most of a library —
-/// a Goodreads import mints readings and no highlights at all — so the card
-/// asking for its passage must get an answer, not a failure.
 #[tokio::test]
 async fn a_reading_with_no_marks_has_no_card_passage_across_the_seam() {
     let (api, _tmp) = api().await;
     let book_id = seed(&api).await;
-    // Typing a page opens a reading, which is the only door to one on this
-    // surface that does not need an importer.
     api.update_progress(book_id, Some(12), None).await.unwrap();
     let reading = api
         .active_reading(book_id)
@@ -791,8 +673,6 @@ async fn a_reading_with_no_marks_has_no_card_passage_across_the_seam() {
         other => panic!("{other:?}"),
     }
 
-    // And the same reading's full list agrees — the card and the list are
-    // never allowed to disagree about what was marked.
     assert!(
         api.highlights_for_reading(reading.id)
             .await
@@ -801,8 +681,6 @@ async fn a_reading_with_no_marks_has_no_card_passage_across_the_seam() {
     );
 }
 
-/// Refilling twice changes nothing the second time, and the report says so per
-/// filler rather than as one total.
 #[tokio::test]
 async fn refilling_the_log_is_idempotent_across_the_seam() {
     let (api, _tmp) = api().await;
@@ -819,13 +697,6 @@ async fn refilling_the_log_is_idempotent_across_the_seam() {
     }
 }
 
-/// **`null` is not the same as an empty chapter list.**
-///
-/// A book owning no epub cannot be asked; an epub with no `toc.ncx` was asked
-/// and had nothing to say. A client that collapsed the two would tell its reader
-/// the same thing about a missing file and an ordinary EPUB3 book, so the
-/// distinction has to reach the wire — and the seeded book, which owns no file
-/// at all, is the first half of it.
 #[tokio::test]
 async fn a_book_with_no_file_has_no_chapter_list_to_read() {
     let (api, _tmp) = api().await;
@@ -838,13 +709,6 @@ async fn a_book_with_no_file_has_no_chapter_list_to_read() {
     }
 }
 
-/// A correction crosses as the user's, and the provenance says so afterwards.
-///
-/// The provenance table, read through the API: `set_book_fields` stamps
-/// `user`, which is the rank no provider merge outranks, and a frontend showing
-/// "who said this" reads it back here. It also pins three later book columns
-/// (subjects, series, series index), which once had no wire field at all — a `save_book` round trip
-/// used to drop them silently.
 #[tokio::test]
 async fn a_correction_crosses_as_the_users_and_is_recorded_that_way() {
     let (api, _tmp) = api().await;
@@ -879,15 +743,9 @@ async fn a_correction_crosses_as_the_users_and_is_recorded_that_way() {
     assert!(claimed.contains(&"subjects"), "{provenance:?}");
     assert!(claimed.contains(&"series"), "{provenance:?}");
     assert!(claimed.contains(&"series_index"), "{provenance:?}");
-    // A field nobody has claimed is simply absent — never "unknown provider".
     assert!(!provenance.iter().any(|f| f.field == "publisher"));
 }
 
-// ---- the list surface ---------------------------------------------------
-
-/// An old client's payload still means what it did. `offset` and `filter` are
-/// additive and their absence is the previous behaviour exactly, which is why
-/// adding them did not move `API_VERSION`.
 #[test]
 fn a_list_books_payload_without_the_new_fields_still_parses() {
     let r: Request =
@@ -915,7 +773,6 @@ fn a_list_books_payload_without_the_new_fields_still_parses() {
     );
 }
 
-/// The count and the page answer the same filter, across the seam.
 #[tokio::test]
 async fn a_filtered_page_and_its_count_agree_over_the_wire() {
     let (api, _tmp) = api().await;
@@ -960,7 +817,6 @@ async fn a_filtered_page_and_its_count_agree_over_the_wire() {
         other => panic!("{other:?}"),
     }
 
-    // Absence is a filter case and not a reading state — the wire says so too.
     match ok(api
         .dispatch(Request::CountBooks {
             filter: Some(BookFilterDto {
@@ -979,7 +835,6 @@ async fn a_filtered_page_and_its_count_agree_over_the_wire() {
     }
 }
 
-/// One call for a page, one row per id in the order asked.
 #[tokio::test]
 async fn the_summary_crosses_the_seam_in_the_order_asked() {
     let (api, _tmp) = api().await;
@@ -999,33 +854,21 @@ async fn the_summary_crosses_the_seam_in_the_order_asked() {
     }
 }
 
-/// The edition-shape arithmetic reaches a client that links this crate and
-/// not the engine — which is the whole reason the field exists.
 #[tokio::test]
 async fn a_book_carries_the_shape_of_its_edition() {
     let (api, _tmp) = api().await;
     let id = seed(&api).await;
     let book = api.get_book(id).await.unwrap().unwrap();
-    // 333 pages is recorded; nothing measured the cover, so the width stands in.
     assert_eq!(book.shape.thickness_source, ShapeSourceDto::Recorded);
     assert_eq!(book.shape.width_source, ShapeSourceDto::Assumed);
     assert!(book.shape.width_over_height > 0.0);
     assert!(book.shape.thickness_over_height > 0.0);
 
-    // A provider candidate has no page count, so both numbers are stand-ins —
-    // and the field is still there, because a book always has *a* shape.
     let bare = BookDto::default();
     assert_eq!(bare.shape.width_source, ShapeSourceDto::Assumed);
     assert_eq!(bare.shape.thickness_source, ShapeSourceDto::Assumed);
 }
 
-// ---- one search surface ----------------------------------------------------
-
-/// `source` is a filter and its absence is *both*, in `BookFilterDto`'s idiom.
-///
-/// A payload that names no source has to be the widest question rather than a
-/// parse error, or every client would have to spell out the default it wanted
-/// anyway.
 #[test]
 fn a_search_payload_without_a_source_asks_both_indexes() {
     let r: Request =
@@ -1055,13 +898,6 @@ fn a_search_payload_without_a_source_asks_both_indexes() {
     );
 }
 
-/// The search and note-list scopes are **additive**, and this is what that
-/// claim means on the wire.
-///
-/// Both new parameters are `#[serde(default)]`, so every payload a client wrote
-/// before the scopes existed still parses to the same request it always did — which is
-/// why `API_VERSION` stays at 2. `the_replaced_method_is_gone_from_the_wire`
-/// below pins the number itself; this pins the reason it did not have to move.
 #[test]
 fn a_payload_written_before_the_scope_existed_still_parses() {
     let old_search: Request =
@@ -1088,7 +924,6 @@ fn a_payload_written_before_the_scope_existed_still_parses() {
         }
     );
 
-    // And the new shapes are reachable by name, with no positional guessing.
     let scoped: Request = serde_json::from_str(
         r#"{"method":"search_marks","params":{"query":"grief","book_id":7,"limit":25}}"#,
     )
@@ -1115,12 +950,6 @@ fn a_payload_written_before_the_scope_existed_still_parses() {
     );
 }
 
-/// **The bug, at the seam.** A client that searched the library and filtered its
-/// own answer would have got nothing; the request that carries the scope gets
-/// the passage.
-///
-/// The precondition is asserted, so this cannot pass vacuously if the ranking
-/// ever changes underneath it.
 #[tokio::test]
 async fn a_scoped_search_crosses_the_seam_without_being_truncated() {
     const LIMIT: i64 = 5;
@@ -1192,12 +1021,6 @@ async fn a_scoped_search_crosses_the_seam_without_being_truncated() {
     }
 }
 
-/// The two ids are alternatives, and the seam says so rather than picking one.
-///
-/// A reading names its book, so the pair is redundant at best and a
-/// contradiction at worst — and a contradiction's honest answer is an empty
-/// list no client can tell from an empty vault. `NoteScope` cannot represent
-/// the pair at all; this is the one place it has to be refused.
 #[tokio::test]
 async fn asking_a_book_and_a_reading_at_once_is_refused_rather_than_guessed() {
     let (api, _tmp) = api().await;
@@ -1215,11 +1038,6 @@ async fn asking_a_book_and_a_reading_at_once_is_refused_rather_than_guessed() {
     assert!(err.message.contains("reading_id"), "{}", err.message);
 }
 
-/// The removal, pinned — this is what `API_VERSION = 2` is *for*.
-///
-/// A client still speaking version 1 must meet a clear refusal rather than
-/// having its search silently answer half the question, and this asserts the
-/// refusal exists rather than trusting that deleting the variant produced one.
 #[test]
 fn the_replaced_method_is_gone_from_the_wire() {
     let old = r#"{"method":"search_notes","params":{"query":"grief","limit":25}}"#;
@@ -1230,8 +1048,6 @@ fn the_replaced_method_is_gone_from_the_wire() {
     assert_eq!(bookmole_api::API_VERSION, 2);
 }
 
-/// One list, and every hit says which kind it is — so a client switches on a
-/// string rather than probing for the field that happens to be present.
 #[test]
 fn a_hit_names_its_kind_on_the_wire() {
     let raw = r#"{"kind":"highlight",
@@ -1254,8 +1070,6 @@ fn a_hit_names_its_kind_on_the_wire() {
     assert_eq!(serde_json::from_value::<SearchHitDto>(json).unwrap(), hit);
 }
 
-/// The typed method and the dispatch arm are the same call, for the search
-/// method — claim 1 of this suite, applied where it is newest.
 #[tokio::test]
 async fn dispatch_and_the_typed_method_agree_on_a_search() {
     let (api, _tmp) = api().await;
@@ -1291,8 +1105,6 @@ async fn dispatch_and_the_typed_method_agree_on_a_search() {
     }
 }
 
-/// Absence crosses the seam as an answer. A query nothing matches, and a query
-/// nobody typed, are both an empty list and never an error.
 #[tokio::test]
 async fn an_empty_answer_is_not_an_error_across_the_seam() {
     let (api, _tmp) = api().await;
@@ -1308,9 +1120,6 @@ async fn an_empty_answer_is_not_an_error_across_the_seam() {
     }
 }
 
-/// `title` joins the five filters that were already there, rather than becoming
-/// a seventh endpoint — so it composes with the count and the paging that
-/// `BookFilterDto` already had.
 #[tokio::test]
 async fn a_title_filter_crosses_the_seam_as_a_predicate() {
     let (api, _tmp) = api().await;
@@ -1332,7 +1141,6 @@ async fn a_title_filter_crosses_the_seam_as_a_predicate() {
         .unwrap();
     assert_eq!(rows.len(), 1);
 
-    // And it composes with a neighbour rather than replacing it.
     let both = BookFilterDto {
         title: Some("station".into()),
         author: Some("mandel".into()),
@@ -1347,22 +1155,11 @@ async fn a_title_filter_crosses_the_seam_as_a_predicate() {
     assert_eq!(api.count_books(Some(none)).await.unwrap(), 0);
 }
 
-// ---- moments --------------------------------------------------------------
-
-/// A moment crosses whole, is **polled** rather than pushed, and carries the
-/// read it belongs to.
-///
-/// `reading_id` is the field this test exists for. A card is minted per
-/// *reading* and a reread mints a second one beside the first, so a moment
-/// naming only its book cannot select the right card — and that is the shape
-/// that is expensive to change later, because it is what the moment *is*
-/// rather than what it carries.
 #[tokio::test]
 async fn a_closed_reading_crosses_as_a_moment_naming_its_read() {
     let (api, _tmp) = api().await;
     let book = seed(&api).await;
 
-    // Nothing has happened yet, and that is an empty list rather than an error.
     assert_eq!(api.pending_moments(None).await.unwrap(), vec![]);
 
     api.update_progress(book, Some(333), Some(true))
@@ -1387,9 +1184,6 @@ async fn a_closed_reading_crosses_as_a_moment_naming_its_read() {
     }
 }
 
-/// Acknowledging is what makes it fire once, and it is **idempotent** — a
-/// client that acknowledges twice, or two clients that acknowledge the same
-/// moment, must not be able to break the ceremony or resurrect it.
 #[tokio::test]
 async fn acknowledging_a_moment_retires_it_and_repeating_it_changes_nothing() {
     let (api, _tmp) = api().await;
@@ -1410,7 +1204,6 @@ async fn acknowledging_a_moment_retires_it_and_repeating_it_changes_nothing() {
             .all(|m| m.id != id)
     );
 
-    // Twice, through both doors, and neither brings it back.
     api.acknowledge_moment(&id).await.unwrap();
     ok(api
         .dispatch(Request::AcknowledgeMoment { id: id.clone() })
@@ -1424,7 +1217,6 @@ async fn acknowledging_a_moment_retires_it_and_repeating_it_changes_nothing() {
     );
 }
 
-/// An id this build knows no kind for is a typed error rather than a row.
 #[tokio::test]
 async fn an_invented_moment_id_is_refused() {
     let (api, _tmp) = api().await;
@@ -1435,11 +1227,6 @@ async fn an_invented_moment_id_is_refused() {
     assert_eq!(err.code, ErrorCode::InvalidInput);
 }
 
-/// **Nothing on this surface counts.** bookmole never shows a badge
-/// counting what you have not done, and the cheap version of that is a
-/// `pending: 3` beside the rows — so the reply is a bare array and there is no
-/// count method to reach for. Asserted rather than trusted, because the next
-/// person to want it will want it for a good reason.
 #[test]
 fn the_wire_states_no_number_of_moments() {
     let json = serde_json::to_string(&Response::Moments(vec![])).unwrap();
@@ -1457,7 +1244,6 @@ fn the_wire_states_no_number_of_moments() {
     }
 }
 
-/// `limit` takes from the newest end, and the two doors agree about it.
 #[tokio::test]
 async fn a_limit_takes_the_newest_moments() {
     let (api, _tmp) = api().await;
@@ -1492,14 +1278,6 @@ async fn a_limit_takes_the_newest_moments() {
     }
 }
 
-// ---- flashcards and citations ---------------------------------------------
-
-/// Without `CreateFlashcard`, `Storage::insert_flashcard` would have no facade
-/// wrapper and no request, so a card could be minted by the KOReader import and
-/// by nothing else. This is the door, and the two paths through it agree.
-///
-/// The reply is `Response::Bool` because *you already had this card* and *a card
-/// now exists* are different facts — an existing shape rather than a new one.
 #[tokio::test]
 async fn a_card_can_be_made_across_the_seam_and_the_second_is_not_new() {
     let (api, _tmp) = api().await;
@@ -1511,8 +1289,6 @@ async fn a_card_can_be_made_across_the_seam_and_the_second_is_not_new() {
             .unwrap()
     );
 
-    // The same word again, through `dispatch` this time. A rule that lived in
-    // the dispatch arm would show up here as the two paths disagreeing.
     match ok(api
         .dispatch(Request::CreateFlashcard {
             book_id,
@@ -1540,9 +1316,6 @@ async fn a_card_can_be_made_across_the_seam_and_the_second_is_not_new() {
     );
 }
 
-/// Handles do not cross: the write takes ids and the engine re-reads them, so a
-/// stale or mismatched handle is a typed refusal rather than a raw
-/// foreign-key error surfacing as `internal`.
 #[tokio::test]
 async fn a_card_pointing_at_nothing_is_refused_by_name() {
     let (api, _tmp) = api().await;
@@ -1575,8 +1348,6 @@ async fn a_card_pointing_at_nothing_is_refused_by_name() {
     assert!(api.list_flashcards(true).await.unwrap().is_empty());
 }
 
-/// The Anki export, typed and dispatched, agrees — and the
-/// saved form says where it wrote.
 #[tokio::test]
 async fn the_anki_export_crosses_the_seam_both_ways() {
     let (api, _tmp) = api().await;
@@ -1604,7 +1375,6 @@ async fn the_anki_export_crosses_the_seam_both_ways() {
         other => panic!("{other:?}"),
     }
 
-    // Marked by the two above, so the default sends nothing and writes nothing.
     match ok(api
         .dispatch(Request::SaveAnkiExport {
             book_id: None,
@@ -1629,8 +1399,6 @@ async fn the_anki_export_crosses_the_seam_both_ways() {
     let err = api.export_anki(Some(9_999), false).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);
 
-    // Both fields default: an empty params object is the whole library, new
-    // cards only.
     let req: Request = serde_json::from_str(r#"{"method":"export_anki","params":{}}"#).unwrap();
     assert_eq!(
         req,
@@ -1641,9 +1409,6 @@ async fn the_anki_export_crosses_the_seam_both_ways() {
     );
 }
 
-/// `CitationsForNotes`: one call for a page of notes, one entry per id asked, in that
-/// order, empties included — including for an id that is not a note at all, to
-/// which "cites nothing" is the honest answer.
 #[tokio::test]
 async fn the_citation_batch_answers_every_id_asked_in_order() {
     let (api, _tmp) = api().await;
@@ -1682,15 +1447,9 @@ async fn the_citation_batch_answers_every_id_asked_in_order() {
         other => panic!("{other:?}"),
     }
 
-    // And the empty ask is not an error.
     assert!(api.citations_for_notes(&[]).await.unwrap().is_empty());
 }
 
-/// The batch carries **handles, not passages**, and the wire is where that
-/// claim is worth pinning: a `Vec<HighlightDto>` per note would put the
-/// reader's private text back on the wire once per citing note, for a screen
-/// whose whole output is a tick. `CitationsFor` is untouched and still returns
-/// the passages, because the pane that shows them needs the words.
 #[test]
 fn the_citation_batch_puts_no_highlight_text_on_the_wire() {
     let json = serde_json::to_string(&Response::NoteCitations(vec![
@@ -1707,8 +1466,6 @@ fn the_citation_batch_puts_no_highlight_text_on_the_wire() {
     assert!(!json.contains("text"));
 }
 
-/// Card capture and the citation batch are **additive**, and this is what that
-/// claim means on the wire: no existing request changed shape, so `API_VERSION` does not move.
 #[test]
 fn a_payload_written_before_the_cards_wave_still_parses() {
     let single: Request =
@@ -1724,8 +1481,6 @@ fn a_payload_written_before_the_cards_wave_still_parses() {
         }
     );
 
-    // And the new shapes are reachable by name. A card with no passage and no
-    // context is the ordinary typed one, so both are `#[serde(default)]`.
     let minimal: Request = serde_json::from_str(
         r#"{"method":"create_flashcard","params":{"book_id":4,"word":"mot"}}"#,
     )
@@ -1750,16 +1505,6 @@ fn a_payload_written_before_the_cards_wave_still_parses() {
     );
 }
 
-// ---- readings across the library -------------------------------------------
-
-/// The minimal payload for the library-wide readings methods means what a
-/// client with no opinion means.
-///
-/// Neither method existed before, so nothing *old* can be replayed at
-/// them — which is exactly why they are new methods and not four fields on
-/// `ListReadings`. What is pinned here is the other half of the same guarantee:
-/// every added field is `#[serde(default)]`, so the smallest honest payload is
-/// the whole-library read, and `API_VERSION` did not have to move.
 #[test]
 fn the_new_reading_methods_parse_from_the_smallest_honest_payload() {
     let rows: Request =
@@ -1777,16 +1522,11 @@ fn the_new_reading_methods_parse_from_the_smallest_honest_payload() {
         serde_json::from_str(r#"{"method":"count_readings","params":{}}"#).unwrap();
     assert_eq!(count, Request::CountReadings { filter: None });
 
-    // And a payload written against `list_readings` still means what it did —
-    // it was not reshaped to make room for this.
     let old: Request =
         serde_json::from_str(r#"{"method":"list_readings","params":{"book_id":3}}"#).unwrap();
     assert_eq!(old, Request::ListReadings { book_id: 3 });
 }
 
-/// The wall, end to end: one call carries the book, the reading, the read
-/// number and the passage, and the count is a second call answering the same
-/// filter.
 #[tokio::test]
 async fn a_page_of_readings_carries_what_a_card_needs_in_one_call() {
     let (api, _tmp) = api().await;
@@ -1819,8 +1559,6 @@ async fn a_page_of_readings_carries_what_a_card_needs_in_one_call() {
     );
     assert_eq!(typed[1].reading.finished_at, None);
 
-    // The dispatch arm is the same call, which is the claim this suite exists
-    // for — the four values travel flat and are assembled by pure fan-out.
     match ok(api
         .dispatch(Request::ListReadingRows {
             limit: -1,
@@ -1834,7 +1572,6 @@ async fn a_page_of_readings_carries_what_a_card_needs_in_one_call() {
         other => panic!("{other:?}"),
     }
 
-    // The count is its own call, answering the same filter.
     assert_eq!(api.count_readings(query.filter.clone()).await.unwrap(), 2);
     match ok(api
         .dispatch(Request::CountReadings {
@@ -1847,13 +1584,6 @@ async fn a_page_of_readings_carries_what_a_card_needs_in_one_call() {
     }
 }
 
-/// **The passage is on the row and still not on `ReadingDto`** — asserted
-/// rather than trusted.
-///
-/// Putting it on `ReadingDto` would ride the reader's private highlight text
-/// along on every row of every `ListReadings`, including the ones nobody is
-/// drawing a card for. Serialising both and reading the keys is the only check
-/// that fails when somebody adds the convenient field.
 #[tokio::test]
 async fn the_readings_list_carries_no_passage_and_the_wall_does() {
     let (api, _tmp) = api().await;
@@ -1876,7 +1606,6 @@ async fn the_readings_list_carries_no_passage_and_the_wall_does() {
         .unwrap();
     let json = serde_json::to_value(&rows[0]).unwrap();
     assert!(json.get("passage").is_some(), "the wall's row carries it");
-    // And it is not a card: no rating, no notes, no composition of a layout.
     for absent in ["rating", "notes", "reflection", "review"] {
         assert!(
             json.get(absent).is_none(),
@@ -1885,11 +1614,6 @@ async fn the_readings_list_carries_no_passage_and_the_wall_does() {
     }
 }
 
-/// An inverted year is refused, not answered with a confident empty wall.
-///
-/// The rule lives in the engine's own `DayRange` and this layer must not be able
-/// to route around it — the rule the two activity aggregates already follow,
-/// applied to a filter.
 #[tokio::test]
 async fn a_backwards_year_is_refused_by_both_doors() {
     let (api, _tmp) = api().await;
@@ -1928,14 +1652,6 @@ async fn a_backwards_year_is_refused_by_both_doors() {
     }
 }
 
-// ---- the years the wall has ------------------------------------------------
-
-/// The picker's request, through both doors, and the two facts it carries.
-///
-/// A read finished and a read still open, so the answer has to hold a year
-/// **and** the open bucket — which is the shape's whole reason for existing:
-/// without `open`, the years do not add up to the wall and a reader who picks
-/// each in turn never sees the book they are in.
 #[tokio::test]
 async fn the_year_picker_gets_the_years_and_the_open_bucket() {
     let (api, _tmp) = api().await;
@@ -1954,8 +1670,6 @@ async fn the_year_picker_gets_the_years_and_the_open_bucket() {
         other => panic!("{other:?}"),
     }
 
-    // The years the picker offers are the years the wall draws — asked with the
-    // same filter, through the count that shares the engine's predicate.
     for year in &typed.years {
         let scoped = ReadingFilterDto {
             finished_in: Some(DayRangeDto {
@@ -1971,23 +1685,17 @@ async fn the_year_picker_gets_the_years_and_the_open_bucket() {
     }
 }
 
-/// The smallest honest payload is the whole-library question, and no existing
-/// request was reshaped to make room for this one.
 #[test]
 fn the_year_request_parses_from_the_smallest_honest_payload() {
     let years: Request = serde_json::from_str(r#"{"method":"reading_years","params":{}}"#).unwrap();
     assert_eq!(years, Request::ReadingYears { filter: None });
 
-    // `API_VERSION` stays at 2 because this is additive: the request beside it
-    // still means exactly what it did.
     let count: Request =
         serde_json::from_str(r#"{"method":"count_readings","params":{}}"#).unwrap();
     assert_eq!(count, Request::CountReadings { filter: None });
     assert_eq!(bookmole_api::API_VERSION, 2);
 }
 
-/// A backwards year is refused here too, rather than answering with a confident
-/// empty picker.
 #[tokio::test]
 async fn a_backwards_year_is_refused_by_the_year_list_as_well() {
     let (api, _tmp) = api().await;
@@ -2015,11 +1723,6 @@ async fn a_backwards_year_is_refused_by_the_year_list_as_well() {
     }
 }
 
-/// **No number rides with a year.** The reply enumerates; it does not measure.
-///
-/// A per-year count is a scoreboard, which bookmole never draws, and it is
-/// the field somebody adds for cheapness — so the absence is asserted over the
-/// serialized reply rather than left to review.
 #[tokio::test]
 async fn the_year_list_puts_no_count_on_the_wire() {
     let (api, _tmp) = api().await;
@@ -2030,12 +1733,8 @@ async fn the_year_list_puts_no_count_on_the_wire() {
 
     let json = serde_json::to_string(&api.reading_years(None).await.unwrap()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    // Sorted before comparing: the wire's key order is not part of the
-    // protocol, and it is not even stable across builds — any crate in a
-    // workspace that turns on serde_json's `preserve_order` feature hands it,
-    // through feature unification, to every crate in a `--workspace` build,
-    // so a `-p bookmole-api` run and a workspace run could otherwise
-    // disagree about this one assertion.
+    // Keys are sorted: wire key order varies when any workspace crate enables serde_json's
+    // `preserve_order`.
     let mut keys: Vec<&str> = value
         .as_object()
         .expect("an object")
@@ -2058,12 +1757,7 @@ async fn the_year_list_puts_no_count_on_the_wire() {
     );
 }
 
-/// The DTO's `Default` and the engine's are the **same query**.
-///
-/// Two types with one name meaning opposite things by *the whole-library read*
-/// is the trap a derived `Default` walks into here: it would put `limit: 0`
-/// against the engine's `-1`, and a page of nothing is indistinguishable from a
-/// library of nothing at every call site.
+/// The DTO's `Default` and the engine's must be the same query (`limit: -1`, not 0).
 #[test]
 fn the_two_reading_query_defaults_are_one_query() {
     let dto = ReadingQueryDto::default();
@@ -2072,12 +1766,8 @@ fn the_two_reading_query_defaults_are_one_query() {
     assert!(dto.limit < 0, "the whole-library read has one spelling");
 }
 
-// ---- the plugin ------------------------------------------------------------
-
-/// A plausible KOReader install. Deliberately hand-rolled rather than reaching
-/// for the engine's own test helper: `crates/api` links `bookmole` as a
-/// dependency, so its `#[cfg(test)]` modules do not exist here — and this is
-/// also the only place the *dispatch* path is exercised end to end.
+/// A plausible KOReader install, hand-rolled because the engine's `#[cfg(test)]` helpers are not
+/// visible here.
 fn fake_reader(root: &std::path::Path) {
     let dir = root.join("koreader");
     std::fs::create_dir_all(dir.join("frontend")).unwrap();
@@ -2085,8 +1775,6 @@ fn fake_reader(root: &std::path::Path) {
     std::fs::write(dir.join("reader.lua"), "-- entry point\n").unwrap();
 }
 
-/// Claim 1 again, for the three writes on the plugin seam — and the round trip
-/// a frontend actually makes: look, install, look, remove.
 #[tokio::test]
 async fn the_plugin_seam_round_trips_through_dispatch() {
     let (api, _tmp) = api().await;
@@ -2147,9 +1835,6 @@ async fn the_plugin_seam_round_trips_through_dispatch() {
     assert!(api.paired_devices().await.unwrap().is_empty());
 }
 
-/// The token is a shared secret and the wire is the one place it must not be.
-/// A `PairedDeviceDto` has no field for it, so this is really a test that
-/// nobody adds one — serialize the whole reply and look.
 #[tokio::test]
 async fn no_reply_ever_carries_the_pairing_token() {
     let (api, _tmp) = api().await;
@@ -2163,8 +1848,7 @@ async fn no_reply_ever_carries_the_pairing_token() {
     .await
     .unwrap();
 
-    // The token is on the device, so read it from there rather than trusting a
-    // constant: this has to fail if the value ever starts travelling.
+    // Read the token off the device, not a constant, so this fails if the value ever travels.
     let pairing = std::fs::read_to_string(
         reader
             .path()
@@ -2184,8 +1868,6 @@ async fn no_reply_ever_carries_the_pairing_token() {
     }
 }
 
-/// A refusal is a decision, and it reaches a client as its own code rather than
-/// as prose to be pattern-matched.
 #[tokio::test]
 async fn refusing_an_unrecognised_volume_is_its_own_error_code() {
     let (api, _tmp) = api().await;
@@ -2201,16 +1883,7 @@ async fn refusing_an_unrecognised_volume_is_its_own_error_code() {
     assert_eq!(std::fs::read_dir(plain.path()).unwrap().count(), 0);
 }
 
-// ---- paired readers: forget, rename, sync a mount ----------------------------
-
-/// The three new methods, through `dispatch`, in the order a devices page uses
-/// them: look (which stamps *seen*), sync (which stamps *synced*), rename,
-/// forget.
-///
-/// The two stamps are asserted **apart**, because that separation is the whole
-/// of migration `0020`: a page that read `last_seen_at` as "your highlights are
-/// here" would tell somebody who plugged a Kobo in to charge it that it had
-/// synced.
+/// `last_seen_at` and `last_synced_at` are asserted apart: a look must not read as a sync.
 #[tokio::test]
 async fn the_devices_seam_round_trips_through_dispatch() {
     let (api, _tmp) = api().await;
@@ -2228,7 +1901,6 @@ async fn the_devices_seam_round_trips_through_dispatch() {
         other => panic!("{other:?}"),
     };
 
-    // Looking is what records that the reader was in our hands.
     ok(api
         .dispatch(Request::PluginStatus {
             mount: mount.clone(),
@@ -2242,10 +1914,7 @@ async fn the_devices_seam_round_trips_through_dispatch() {
     );
     assert_eq!(seen[0].last_mount_path.as_deref(), Some(mount.as_str()));
 
-    // Syncing is what records that the data came across. The reader is empty,
-    // which is the case worth pinning: `found` and `synced` are both zero and
-    // the device is still identified, so a page can say *nothing new* rather
-    // than *no device*.
+    // An empty reader: `found` and `synced` are zero yet the device is still identified.
     let sync = match ok(api
         .dispatch(Request::SyncMount {
             mount: mount.clone(),
@@ -2264,17 +1933,10 @@ async fn the_devices_seam_round_trips_through_dispatch() {
             .is_some()
     );
 
-    // The two breadcrumbs the wireless link stamps are a fourth fact
-    // beside these, and neither a look nor a whole-volume sync over a cable
-    // is a reader reaching us over the air. They cross the seam as `None`
-    // here — not as a missing key, which the DTO's own test pins — so a card
-    // can leave the line out rather than say *not since* about a verb the
-    // user never chose.
     let after = &api.paired_devices().await.unwrap()[0];
     assert_eq!(after.last_wireless_at, None, "a cable is not the air");
     assert_eq!(after.last_lan_addr, None);
 
-    // A name of your own, and a blank one puts the fallback back.
     match ok(api
         .dispatch(Request::RenameDevice {
             device_id: report.device_id.clone(),
@@ -2297,7 +1959,6 @@ async fn the_devices_seam_round_trips_through_dispatch() {
         .await);
     assert_eq!(api.paired_devices().await.unwrap()[0].label, None);
 
-    // Forgetting is our side only — and this is the assertion that says so.
     match ok(api
         .dispatch(Request::ForgetDevice {
             device_id: report.device_id.clone(),
@@ -2314,7 +1975,6 @@ async fn the_devices_seam_round_trips_through_dispatch() {
         "forgetting must not reach the reader — the plugin is still on it"
     );
 
-    // And it says whether there was anything to forget.
     match ok(api
         .dispatch(Request::ForgetDevice {
             device_id: report.device_id,
@@ -2326,12 +1986,8 @@ async fn the_devices_seam_round_trips_through_dispatch() {
     }
 }
 
-/// `SyncMount` against a tree that is nobody's reader — a library directory on
-/// a disk. It must work and it must stamp nothing.
-///
-/// The refusal it would be easy to add here is the bug: `plugin::inspect`
-/// failing is not a reason to fail a sync, because importing sidecars has never
-/// needed a pairing.
+/// A non-reader mount must sync and stamp nothing; a failed plugin inspection must not fail the
+/// sync.
 #[tokio::test]
 async fn syncing_a_tree_that_is_not_a_reader_is_ordinary() {
     let (api, _tmp) = api().await;
@@ -2350,14 +2006,6 @@ async fn syncing_a_tree_that_is_not_a_reader_is_ordinary() {
     assert!(api.paired_devices().await.unwrap().is_empty());
 }
 
-/// Forget/rename/sync-mount are additive: three new methods and one new field
-/// on a **response**
-/// DTO. A payload written before it still parses to the request it meant.
-///
-/// The field is the half worth stating. `ts-rs` emits a new field as required
-/// TypeScript however `#[serde(default)]` the Rust is, which is why a field may
-/// never be added to an existing `Request` — and why adding one to
-/// `PairedDeviceDto`, which no request carries, is safe.
 #[test]
 fn a_payload_written_before_the_devices_page_still_parses() {
     let before: Request =
@@ -2372,14 +2020,8 @@ fn a_payload_written_before_the_devices_page_still_parses() {
     );
 }
 
-/// Pairing over wifi is one new method and one new field on a **response**
-/// DTO; nothing a client already sends changed shape.
-///
-/// What can be asserted here without a reader on the network is the edge of
-/// it: the request parses with and without the optional address, something
-/// that is not a code is refused as `wireless_refused` before any socket is
-/// opened — so a typo costs no wait — and the refusal's sentence does not
-/// repeat what was typed, because what was typed is meant to be a secret.
+/// A non-code is refused as `wireless_refused` before any socket opens, without echoing what was
+/// typed.
 #[tokio::test]
 async fn pairing_over_wifi_is_additive_and_refuses_what_is_not_a_code() {
     let (api, _tmp) = api().await;
@@ -2411,9 +2053,7 @@ async fn pairing_over_wifi_is_additive_and_refuses_what_is_not_a_code() {
     );
     assert!(api.paired_devices().await.unwrap().is_empty());
 
-    // The door's status now says where this computer is, for a person to type
-    // into a reader. Present as a key whether or not there is an address —
-    // `bindings.ts` is keyed by name, and a missing key reads as `undefined`.
+    // The key must be present even with no address: bindings are keyed by name.
     let status = serde_json::to_value(api.listener_status().await.unwrap()).unwrap();
     assert!(status.get("lan_address").is_some(), "{status}");
 
@@ -2424,10 +2064,6 @@ async fn pairing_over_wifi_is_additive_and_refuses_what_is_not_a_code() {
     );
 }
 
-/// `ResurfaceNote` crosses the seam with the caller's local date as text: a
-/// fresh notebook answers `null` (a note kept today is still resting), a note
-/// a month old comes back with its reason, and a malformed date is
-/// `invalid_input` rather than a guess at UTC's today.
 #[tokio::test]
 async fn resurface_note_takes_the_callers_day_and_answers_null_when_nothing_qualifies() {
     let (api, _tmp) = api().await;
@@ -2463,11 +2099,6 @@ async fn resurface_note_takes_the_callers_day_and_answers_null_when_nothing_qual
     assert_eq!(bad.code, ErrorCode::InvalidInput);
 }
 
-/// `ResurfacePassage` crosses like its twin: through both doors, `null` for
-/// a library with no passage old enough, and a malformed day is
-/// `invalid_input`. The pick itself is the engine's and is tested there —
-/// this crate has no way to store a highlight, which is the seam working (the
-/// storage layer is not reachable from here).
 #[tokio::test]
 async fn resurface_passage_crosses_the_seam_like_the_note() {
     let (api, _tmp) = api().await;
@@ -2494,9 +2125,6 @@ async fn resurface_passage_crosses_the_seam_like_the_note() {
     assert_eq!(bad.code, ErrorCode::InvalidInput);
 }
 
-/// `LinkContexts` through both doors: the typed method and the dispatch arm
-/// answer alike, and the direction crosses as a snake_case word a client can
-/// match on. Values only — no paragraph is printed.
 #[tokio::test]
 async fn link_contexts_cross_the_seam_with_their_paragraph() {
     let (api, _tmp) = api().await;
@@ -2549,10 +2177,6 @@ async fn link_contexts_cross_the_seam_with_their_paragraph() {
     assert_eq!(json["link_range"], serde_json::json!([4, 16]));
 }
 
-// ---- note rows, threads, links and parts ----------------------------------
-
-/// Every new Notes request through `dispatch`, once: each answers its own
-/// shape, and the list's typed method agrees with its arm. Values only.
 #[tokio::test]
 async fn the_notes_boards_round_trip_through_dispatch() {
     let (api, _tmp) = api().await;
@@ -2583,7 +2207,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         .unwrap();
     assert_eq!(hub.title, "Symphony", "the heading names the note");
 
-    // ListNoteRows
     let typed = api
         .list_note_rows(None, None, None, None, None, 10)
         .await
@@ -2621,12 +2244,10 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::InvalidInput);
 
-    // NotePeriods
     match ok(api.dispatch(Request::NotePeriods).await) {
         Response::NotePeriods(p) => assert_eq!(p.len(), 1),
         other => panic!("{other:?}"),
     }
-    // ThreadsFor
     match ok(api
         .dispatch(Request::ThreadsFor {
             note_ids: vec![spoke.id],
@@ -2641,7 +2262,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         }
         other => panic!("{other:?}"),
     }
-    // LinksFromNotes
     match ok(api
         .dispatch(Request::LinksFromNotes {
             note_ids: vec![spoke.id],
@@ -2654,7 +2274,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         }
         other => panic!("{other:?}"),
     }
-    // NoteGraph
     match ok(api
         .dispatch(Request::NoteGraph {
             scope: GraphScopeDto::Around {
@@ -2676,7 +2295,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
     }
     let json = serde_json::to_value(GraphScopeDto::Recent { since: 5 }).unwrap();
     assert_eq!(json, serde_json::json!({"scope": "recent", "since": 5}));
-    // ContinueNote, NoteParts, UpdateNotePart
     match ok(api
         .dispatch(Request::ContinueNote {
             note_id: hub.id,
@@ -2703,7 +2321,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         Response::NoteParts(p) => assert_eq!((p[1].n, p[1].page), (2, Some(12))),
         other => panic!("{other:?}"),
     }
-    // UnlinkedMentions, LinkMention
     match ok(api
         .dispatch(Request::UnlinkedMentions {
             note_id: spoke.id,
@@ -2725,7 +2342,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
             .await),
         Response::Unit
     ));
-    // CreateHighlight
     match ok(api
         .dispatch(Request::CreateHighlight {
             book_id,
@@ -2738,7 +2354,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
         Response::Highlight(Some(h)) => assert_eq!((h.source.as_str(), h.page), ("user", Some(58))),
         other => panic!("{other:?}"),
     }
-    // PreviewLinks
     match ok(api
         .dispatch(Request::PreviewLinks {
             title: Some("Unwritten".into()),
@@ -2755,10 +2370,6 @@ async fn the_notes_boards_round_trip_through_dispatch() {
     }
 }
 
-// ---- reading history, the library table, settings, more notes ------------
-
-/// Every new request through `dispatch`, once: each answers its own shape, and
-/// the typed method agrees with its arm where both read. Values only.
 #[tokio::test]
 async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
     use bookmole_api::{
@@ -2779,7 +2390,6 @@ async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
     let review = api.open_review(book_id, Some(reading)).await.unwrap();
     api.set_rating(review.id, 4.0).await.unwrap();
 
-    // Settings.
     ok(api
         .dispatch(Request::SetSetting {
             key: "history.overview.cards".into(),
@@ -2813,7 +2423,6 @@ async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::InvalidInput);
 
-    // History.
     let typed = api.history_timeline(None, None).await.unwrap();
     match ok(api
         .dispatch(Request::HistoryTimeline {
@@ -2933,7 +2542,6 @@ async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
         other => panic!("{other:?}"),
     }
 
-    // The Library.
     match ok(api.dispatch(Request::LibraryTable).await) {
         Response::LibraryTable(t) => {
             assert_eq!(t.counts.all, 1);
@@ -2945,7 +2553,6 @@ async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
         other => panic!("{other:?}"),
     }
 
-    // The Notes gaps.
     match ok(api.dispatch(Request::GetHighlight { id: passage.id }).await) {
         Response::Highlight(h) => assert_eq!(h.unwrap().id, passage.id),
         other => panic!("{other:?}"),
@@ -3006,15 +2613,11 @@ async fn history_library_and_the_notes_gaps_round_trip_through_dispatch() {
     }
 }
 
-/// Three small additions (matched parts, zoned note periods, …), each through
-/// both doors,
-/// plus the wire spelling a client writes for each.
 #[tokio::test]
 async fn the_cleanup_requests_round_trip_through_dispatch() {
     let (api, _tmp) = api().await;
     let book_id = seed(&api).await;
 
-    // MatchedParts: which part of a continued note a search found.
     let note = api
         .create_note(NewNoteDto {
             book_id: Some(book_id),
@@ -3050,7 +2653,6 @@ async fn the_cleanup_requests_round_trip_through_dispatch() {
         .unwrap_err();
     assert_eq!(missing.code, ErrorCode::NotFound);
 
-    // NotePeriodsIn: zero is NotePeriods; beyond ±18 hours is refused.
     let utc = api.note_periods().await.unwrap();
     let wire: Request =
         serde_json::from_str(r#"{"method":"note_periods_in","params":{"utc_offset_minutes":0}}"#)
@@ -3067,7 +2669,6 @@ async fn the_cleanup_requests_round_trip_through_dispatch() {
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::InvalidInput);
 
-    // HistoryReadingNow: the open read, as the timeline's row.
     api.update_progress(book_id, Some(10), None).await.unwrap();
     let typed = api.history_reading_now().await.unwrap();
     assert_eq!(typed.len(), 1);
@@ -3088,8 +2689,6 @@ async fn the_cleanup_requests_round_trip_through_dispatch() {
         "a finished read is not reading now"
     );
 }
-
-// ---- lists and copies -------------------------------------------------------
 
 async fn save(api: &Api, title: &str, isbn: &str) -> i64 {
     api.save_book(BookDto {
@@ -3118,15 +2717,12 @@ fn list_of(response: Response) -> bookmole_api::ListDto {
     }
 }
 
-/// Create, read, rename, add, move, note, remove and delete a list, each by
-/// request, and the errors each refuses with.
 #[tokio::test]
 async fn a_list_is_made_filled_ordered_and_deleted_by_request() {
     let (api, _tmp) = api().await;
     let a = save(&api, "Alpha", "9780000000002").await;
     let b = save(&api, "Bravo", "9780000000019").await;
     let c = save(&api, "Charlie", "9780000000026").await;
-    // Only `a` is in the library; a list holds any book.
     have(&api, a).await;
 
     let list = list_of(ok(api
@@ -3153,7 +2749,6 @@ async fn a_list_is_made_filled_ordered_and_deleted_by_request() {
     let got = list_of(ok(api.dispatch(Request::GetList { id: list.id }).await));
     assert_eq!((got.book_count, got.not_in_library), (3, 2));
 
-    // Move `c` to the front; a sort is a view and never rewrites the order.
     ok(api
         .dispatch(Request::MoveInList {
             list_id: list.id,
@@ -3256,7 +2851,6 @@ async fn a_list_is_made_filled_ordered_and_deleted_by_request() {
         2
     );
 
-    // Errors: a blank name is invalid input; an unknown list or book is not found.
     let blank = api
         .dispatch(Request::CreateList {
             name: "   ".into(),
@@ -3290,8 +2884,6 @@ async fn a_list_is_made_filled_ordered_and_deleted_by_request() {
     );
 }
 
-/// A Goodreads shelf is offered, kept as a list, and a dismissed one is not
-/// offered again.
 #[tokio::test]
 async fn a_shelf_is_kept_or_dismissed_by_request() {
     let (api, tmp) = api().await;
@@ -3345,8 +2937,6 @@ async fn a_shelf_is_kept_or_dismissed_by_request() {
     assert_eq!(missing.code, ErrorCode::NotFound);
 }
 
-/// Record a copy, say you no longer have it, say you do again, and read the
-/// book's standing through each step.
 #[tokio::test]
 async fn a_copy_is_added_ended_resumed_and_deleted_by_request() {
     let (api, _tmp) = api().await;
@@ -3468,7 +3058,6 @@ async fn a_copy_is_added_ended_resumed_and_deleted_by_request() {
     assert_eq!(orphan.code, ErrorCode::NotFound);
 }
 
-/// The Library lists only books you have, and the copy filters count them.
 #[tokio::test]
 async fn the_library_hides_a_copyless_book_and_filters_by_copy() {
     let (api, _tmp) = api().await;
@@ -3516,7 +3105,6 @@ async fn the_library_hides_a_copyless_book_and_filters_by_copy() {
     add(owned, TenureDto::Own, None).await;
     add(loan, TenureDto::Borrowed, Some(true)).await;
     let gone_copy = add(gone, TenureDto::Unrecorded, None).await;
-    // `none` stays copy-less.
 
     assert_eq!(count(api.clone()).await, 3);
     match ok(api
@@ -3536,10 +3124,8 @@ async fn the_library_hides_a_copyless_book_and_filters_by_copy() {
         other => panic!("{other:?}"),
     }
     assert_eq!(table_ids(api.clone()).await, [owned, loan, gone]);
-    // A single-book fetch is not scoped.
     assert!(api.get_book(none).await.unwrap().is_some());
 
-    // Ended and untouched: out of the library, and out of the table.
     ok(api
         .dispatch(Request::EndCopy {
             copy_id: gone_copy.id,
@@ -3564,7 +3150,6 @@ async fn the_library_hides_a_copyless_book_and_filters_by_copy() {
         other => panic!("{other:?}"),
     }
 
-    // Touch the ended book (a reading) and it stays: now it is *had*.
     api.update_progress(gone, Some(10), None).await.unwrap();
     match ok(api.dispatch(Request::LibraryCopies).await) {
         Response::LibraryCopies(l) => {
@@ -3576,15 +3161,10 @@ async fn the_library_hides_a_copyless_book_and_filters_by_copy() {
     }
     assert_eq!(table_ids(api.clone()).await, [owned, loan, gone]);
 
-    // A copy added later brings the copy-less book in.
     add(none, TenureDto::Own, None).await;
     assert_eq!(count(api).await, 4);
 }
 
-// ---- lists stage B, keep-here, where a highlight came from -----------------
-
-/// A search result onto a list: the book exists, has no copy, and is not in the
-/// library; the same candidate again is the same book and the same entry.
 #[tokio::test]
 async fn a_candidate_goes_on_a_list_without_being_owned() {
     let (api, _tmp) = api().await;
@@ -3627,7 +3207,6 @@ async fn a_candidate_goes_on_a_list_without_being_owned() {
         .unwrap();
     assert_eq!(entries.len(), 1);
 
-    // A book we own is reused, and is then in the library.
     let owned = seed(&api).await;
     let again = api
         .add_candidate_to_list(
@@ -3651,8 +3230,6 @@ async fn a_candidate_goes_on_a_list_without_being_owned() {
     assert_eq!(err.code, ErrorCode::NotFound);
 }
 
-/// A copy with no file on this computer cannot be kept, says so on the wire
-/// (`can_keep_here`), and the request fails as `invalid_input`.
 #[tokio::test]
 async fn keep_a_copy_here_is_refused_where_there_is_no_file() {
     let (api, _tmp) = api().await;
@@ -3674,8 +3251,6 @@ async fn keep_a_copy_here_is_refused_where_there_is_no_file() {
     assert_eq!(err.code, ErrorCode::NotFound);
 }
 
-/// Where a highlight came from: a KOReader import (origin, copy, a `reader`
-/// place) and a highlight made here (no copy), and no same-passage groups.
 #[tokio::test]
 async fn highlight_origins_round_trip() {
     let (api, _tmp) = api().await;
@@ -3735,9 +3310,6 @@ async fn highlight_origins_round_trip() {
     }
 }
 
-// ---- reading-app imports, and library membership --------------------------
-
-/// The committed Kindle fixtures the engine's own suite imports.
 fn kindle_fixture(rel: &str) -> String {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../engine/tests/fixtures/kindle")
@@ -3746,9 +3318,6 @@ fn kindle_fixture(rel: &str) -> String {
     p.display().to_string()
 }
 
-/// `My Clippings.txt` by request: three titles matched, one left on the report
-/// with its candidates and entry count, then attached by hand; the paths a
-/// client sends are re-checked below the seam.
 #[tokio::test]
 async fn kindle_clippings_import_and_attach_by_request() {
     let (api, tmp) = api().await;
@@ -3824,7 +3393,6 @@ async fn kindle_clippings_import_and_attach_by_request() {
     assert_eq!(attached.summary.inserted, 2);
     assert!(attached.unmatched.is_empty());
 
-    // Handles do not cross: each path is looked at again here.
     let err = api
         .dispatch(Request::ImportKindleClippings {
             path: tmp.path().join("gone.txt").display().to_string(),
@@ -3860,9 +3428,7 @@ async fn kindle_clippings_import_and_attach_by_request() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);
 
-    // The mounted pair parse as named; dispatching them would read whatever
-    // reader is plugged into this machine, so the engine's suite tests the
-    // volume walk over temp roots instead.
+    // Parse only: dispatching would read whatever reader is plugged into this machine.
     let parsed: Request = serde_json::from_str(r#"{"method":"find_kindle_clippings"}"#).unwrap();
     assert!(matches!(parsed, Request::FindKindleClippings));
     let parsed: Request =
@@ -3874,8 +3440,6 @@ async fn kindle_clippings_import_and_attach_by_request() {
     ));
 }
 
-/// The Kindle app's notebook by request: matched by its title, unmatched with
-/// the file's own title and nothing written, then imported into a named book.
 #[tokio::test]
 async fn a_kindle_notebook_imports_by_request() {
     let (api, _tmp) = api().await;
@@ -3945,8 +3509,7 @@ async fn a_kindle_notebook_imports_by_request() {
     assert_eq!(err.code, ErrorCode::InvalidInput);
 }
 
-/// An `Api` whose engine looks for Apple Books at `root` (or nowhere), so no
-/// test ever reads the real container under `~/Library`.
+/// Points Apple Books at `root` (or nowhere) so no test reads the real container.
 async fn api_with_apple_books(root: Option<PathBuf>) -> (Api, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -3966,10 +3529,6 @@ async fn api_with_apple_books(root: Option<PathBuf>) -> (Api, tempfile::TempDir)
     (Api::new(Arc::new(engine)), tmp)
 }
 
-/// Apple Books by request. Its import is tested over fixture databases in the
-/// engine's suite (this crate does not link `sqlx` to build them); here, the
-/// request answers "no data here" as a report and never as an error, and the
-/// link records an app copy holding the asset.
 #[tokio::test]
 async fn apple_books_with_no_data_is_a_report_and_a_link_makes_a_copy() {
     for root in [
@@ -4039,13 +3598,6 @@ async fn apple_books_with_no_data_is_a_report_and_a_link_makes_a_copy() {
     assert_eq!(err.code, ErrorCode::NotFound);
 }
 
-/// Preview by request. A generated annotated PDF is behind the engine's
-/// `internals` feature, which this crate's tests do not turn on, so the
-/// annotations themselves are the engine suite's
-/// (`the_facade_adds_a_named_pdf_and_rescans_the_books_pdfs`). Here: a file
-/// that is not a readable PDF still becomes the book's copy and comes back as
-/// a diagnostic, the book-wide rescan sees its place, and the paths are
-/// re-checked below the seam.
 #[tokio::test]
 async fn preview_requests_add_the_file_and_refuse_what_is_not_a_pdf() {
     let (api, tmp) = api().await;
@@ -4132,9 +3684,6 @@ async fn preview_requests_add_the_file_and_refuse_what_is_not_a_pdf() {
     assert_eq!(err.code, ErrorCode::NotFound);
 }
 
-/// `ResolveLibraryBooks` answers only
-/// books you have, where `ResolveBooks` answers every book; by title, ISBN
-/// and id alike.
 #[tokio::test]
 async fn resolve_library_books_hides_a_book_only_on_a_list() {
     let (api, _tmp) = api().await;
@@ -4187,7 +3736,6 @@ async fn resolve_library_books_hides_a_book_only_on_a_list() {
             .await)),
         vec![owned]
     );
-    // The typed method is the same call.
     let typed: Vec<i64> = api
         .resolve_library_books("Dune")
         .await
@@ -4198,8 +3746,6 @@ async fn resolve_library_books_hides_a_book_only_on_a_list() {
     assert_eq!(typed, vec![owned]);
 }
 
-/// A list carries how many of its books are in the library, counted by the
-/// engine beside `not_in_library`, on the list and on its summary.
 #[tokio::test]
 async fn a_list_says_how_many_of_its_books_are_in_the_library() {
     let (api, _tmp) = api().await;
@@ -4246,10 +3792,6 @@ async fn a_list_says_how_many_of_its_books_are_in_the_library() {
     assert_eq!(json["in_library_count"], 1, "{json}");
 }
 
-// ---- a copy's files and highlight sources -------------------------------
-
-/// The three new requests parse from their smallest honest payload, and none
-/// reshapes a request that was already there.
 #[test]
 fn the_copies_place_requests_parse_from_the_smallest_payload() {
     let files: Request =
@@ -4272,10 +3814,6 @@ fn the_copies_place_requests_parse_from_the_smallest_payload() {
     );
 }
 
-/// A file added to a book is a row with its size and `on_disk`; moved away, it
-/// says so; *Find the file…* puts the copy's place where the file is now. A
-/// highlight made here is a source with no copy and no "last read in", and the
-/// wire carries no count. Unknown ids and someone else's file are refused.
 #[tokio::test]
 async fn the_copies_place_round_trips_through_dispatch() {
     let (api, tmp) = api().await;
@@ -4307,7 +3845,6 @@ async fn the_copies_place_round_trips_through_dispatch() {
     assert_eq!(json["kind"], "path");
     assert!(json.get("calibre_library").is_some_and(|v| v.is_null()));
 
-    // Moved: nothing marked it, the look says so.
     let moved = tmp.path().join("moved");
     std::fs::create_dir_all(&moved).unwrap();
     let new = moved.join("A Found Book.mobi");
@@ -4335,7 +3872,6 @@ async fn the_copies_place_round_trips_through_dispatch() {
     assert_eq!(rows[0].path.as_deref(), Some(new.to_str().unwrap()));
     assert_eq!(rows[0].on_disk, Some(true));
 
-    // Where the highlights came from: one typed here, no copy, no count.
     api.create_highlight(book, "a line I kept", None, None)
         .await
         .unwrap();
@@ -4353,7 +3889,6 @@ async fn the_copies_place_round_trips_through_dispatch() {
     assert!(!json.contains("count"), "{json}");
     assert!(!json.contains("a line I kept"), "{json}");
 
-    // Refusals, each typed.
     let code = |r: Request| {
         let api = api.clone();
         async move { api.dispatch(r).await.unwrap_err().code }

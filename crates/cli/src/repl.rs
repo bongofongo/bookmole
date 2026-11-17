@@ -4,7 +4,6 @@ use bookmole::Engine;
 use crate::commands::{self, search::SearchArgs};
 use crate::prompt::get_user_input;
 
-/// Interactive mode — the descendant of the original BookBuddy s/r/d/rd loop.
 pub async fn run(engine: &Engine) -> Result<()> {
     let menu = "\nbookmole:\
         \n\tsearch for books        [s]\

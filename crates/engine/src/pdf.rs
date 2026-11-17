@@ -1,93 +1,26 @@
-//! What a PDF will say about itself — a length, and sometimes a name.
-//!
-//! [`crate::epub::epub_info`]'s twin. Everything else reading a PDF locally
-//! needed already existed:
-//! `book_files` stores any format, `import_file` copies bytes in
-//! content-addressed, `update_progress` writes to the active reading. What no
-//! module could answer was *how long is this file*, and without that every
-//! display of a locally-read PDF degrades to a page with no denominator.
-//!
-//! ## Zero is not a page count
-//!
-//! This module has exactly one rule and it is worth stating before the API:
-//! **a length we could not read is [`None`], never `Some(0)`.**
-//!
-//! That is not defensive phrasing. `lopdf`'s `extract_page_count` returns `0`
-//! from *seven* different failure branches — no `/Root`, an unresolvable
-//! catalog, a catalog that is not a dictionary, no `/Pages`, an unresolvable
-//! page tree, a page tree that is not a dictionary, and a reference cycle — as
-//! well as from a document that genuinely has no pages. A password-protected
-//! PDF also returns `0`, because the page tree is behind the encryption.
-//! Passing that number through would put a false denominator into
-//! [`crate::Progress`], which is built so that it cannot hold one:
-//! `a_reported_length_is_never_zero` is the property, and `Progress::Started {
-//! page: Some(n), of: None, fraction: None }` — "there is a page and no
-//! percentage" — is the answer this module exists to make reachable.
-//!
-//! So [`pdf_info`] normalises `0` to `None` at the boundary, once, and the
-//! callers downstream never see the sentinel.
-//!
-//! ## The title most PDFs do not have
-//!
-//! `/Info /Title` is optional and usually absent; where it is present it is
-//! very often the *producer's* echo of a source filename — `Microsoft Word -
-//! chapter3final.doc` is the canonical shape, and Acrobat Distiller, LaTeX
-//! front-ends and half the office suites all do some version of it. A book
-//! created with that as its title is wrong in a way no type checker reaches, so
-//! [`title_or_none`] refuses a title that still carries an authoring-tool file
-//! extension and lets the caller fall back to the filename stem, which
-//! `files.rs` already does for every format with no metadata reader.
-//!
-//! **The empty title is observed, not guessed.** Run against three PDFs off
-//! this machine (`README-hintview.pdf` 1.5, `READ ME FIRST.pdf` 1.7, one of
-//! Automator's icons 1.6), two of the three came back `Some("")` — the `/Info`
-//! dictionary is present and the `/Title` entry is an empty string. `Some("")`
-//! is not absence to anything downstream: it survives `Option` handling, it
-//! survives `unwrap_or_default`, and it lands as a book with a blank name. That
-//! is why this function returns `Option<String>` with emptiness folded into
-//! `None` at the boundary rather than a `String` the caller has to remember to
-//! check, and why `a_title_is_absent_or_non_empty` is a property.
-//!
-//! Nothing else is read. No text extraction, no outline, no embedded cover, and
-//! **no viewer**: displaying a PDF is the job of the reader's own PDF app, and
-//! deliberately out of scope here.
+//! What a PDF says about itself: a page count and sometimes a title.
+//! Zero is never a page count: an unknown length is absent.
 
 use std::path::Path;
 
 use crate::error::{EngineError, Result};
 
-/// What a PDF said about itself.
-///
-/// Both fields are absent far more often than an epub's are, and that is the
-/// normal case rather than a degraded one.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PdfInfo {
-    /// How many pages the file has. **Never `Some(0)`** — see the module doc.
+    /// Page count; never `Some(0)`, since zero means unknown.
     pub page_count: Option<i64>,
-    /// The document's own title, where it has one worth believing. Never
-    /// `Some("")`.
+    /// The document's own title; never `Some("")`.
     pub title: Option<String>,
 }
 
-/// Read a PDF's metadata.
-///
-/// `Err` means the bytes are not a PDF this engine can parse at all — no
-/// header, no cross-reference table, a truncated file. `Ok` with everything
-/// absent means the file parsed and would not say, which includes the
-/// password-protected case: an encrypted PDF is still a file worth owning, and
-/// its page tree simply is not readable without the password.
-///
-/// Only the cross-reference table, the catalog and the `/Info` dictionary are
-/// read; the page *contents* are never touched, so this is cheap on a large
-/// file and does not depend on how the pages were compressed.
+/// Reads a PDF's metadata. `Err` means unparseable; `Ok` with nothing set means it parsed and
+/// would not say (encrypted included). Only xref, catalog and `/Info` are read, not page contents.
 #[tracing::instrument(fields(path = %path.display()))]
 pub fn pdf_info(path: &Path) -> Result<PdfInfo> {
     let meta = lopdf::Document::load_metadata(path)
         .map_err(|e| EngineError::Pdf(format!("{}: {e}", path.display())))?;
 
-    // The one rule. `0` is lopdf's sentinel for every way of not knowing as
-    // well as for a genuinely empty document, and the two are the same answer
-    // here: we do not have a length.
+    // lopdf reports 0 for every way of not knowing, so 0 is absence, not an empty document.
     let page_count = (meta.page_count > 0).then_some(i64::from(meta.page_count));
     let title = meta.title.as_deref().and_then(title_or_none);
 
@@ -95,24 +28,12 @@ pub fn pdf_info(path: &Path) -> Result<PdfInfo> {
     Ok(PdfInfo { page_count, title })
 }
 
-/// Authoring-tool extensions that appear in `/Info /Title` when a producer has
-/// echoed a source filename rather than a title.
-///
-/// Deliberately **not** a general "does this look like a filename" heuristic:
-/// real books are called *Sync* and *Java*, and a rule broad enough to catch
-/// those is a rule that throws away good titles. This list is the observable
-/// artefact — a word-processor or typesetter document name that survived into
-/// the PDF — and nothing wider.
+/// Extensions that show up in `/Info /Title` when a producer echoed a source filename.
+/// Deliberately narrow: a broader filename heuristic would discard real titles like *Sync*.
 const AUTHORING_EXTENSIONS: [&str; 10] = [
     ".doc", ".docx", ".rtf", ".odt", ".pages", ".tex", ".indd", ".qxd", ".pdf", ".ps",
 ];
 
-/// A `/Info /Title` worth believing, or [`None`].
-///
-/// Trimmed, never empty, and never a producer's echo of the file it was made
-/// from. The caller's fallback is the filename stem, which is no worse and
-/// often much better — `Kant - Critique of Pure Reason.pdf` beats
-/// `Microsoft Word - kant_final_v2.doc` by a distance.
 fn title_or_none(raw: &str) -> Option<String> {
     let t = raw.trim();
     if t.is_empty() {
@@ -126,27 +47,8 @@ fn title_or_none(raw: &str) -> Option<String> {
     Some(t.to_string())
 }
 
-/// Build a classic (PDF 1.4, uncompressed cross-reference table) document, so
-/// that no test has to commit one.
-///
-/// Generated rather than committed, for `gen-kostats`' reason: a `.pdf` in the
-/// tree would be the one fixture nobody can read a diff of, and its bytes would
-/// depend on whichever writer produced it. Assembling it here from text also
-/// means the fixture owes nothing to `lopdf` — the same argument
-/// `crates/corpus` makes about not building its fixtures with the engine's own
-/// parser.
-///
-/// The byte offsets in the cross-reference table are computed while the objects
-/// are written, because they have to be exact: `startxref` pointing at the
-/// wrong byte is how a "valid" fixture silently tests the error path.
-///
-/// **Test-only**, behind the same `internals` feature that carries
-/// `Engine::storage`. It is reachable from this module's own unit tests and
-/// from `crates/engine/tests/`, and it is not in a shipped build — a plain
-/// `cargo check --workspace` is what enforces that. A fixture builder is what
-/// that feature is for; the alternative was a second copy of this function in
-/// `tests/common/`, and two PDF writers is two definitions of what a valid
-/// fixture is.
+/// Builds a classic (PDF 1.4, uncompressed xref) document so no test commits a binary fixture.
+/// Assembled by hand so the fixture owes nothing to `lopdf`.
 #[cfg(any(test, feature = "internals"))]
 pub fn synthetic_pdf(pages: usize, title: Option<&[u8]>) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
@@ -238,16 +140,8 @@ mod tests {
         let info = pdf_info(&p).unwrap();
         assert_eq!(info.page_count, Some(3));
         assert_eq!(info.title, None);
-        // The ordinary case, not a degraded one: most PDFs carry no title, and
-        // the caller's filename stem is the honest fallback.
     }
 
-    /// The whole point of the module, as an assertion.
-    ///
-    /// A document whose page tree says `/Count 0` is indistinguishable from
-    /// every one of lopdf's seven "could not tell" branches, and both must come
-    /// back as absence. `Some(0)` here would be a false denominator that
-    /// `Progress` cannot tell from a real one.
     #[test]
     fn a_length_that_could_not_be_read_is_absent_and_never_zero() {
         let (_d, p) = write(&synthetic_pdf(0, None), "empty.pdf");
@@ -257,16 +151,12 @@ mod tests {
 
     #[test]
     fn a_pdf_with_no_catalog_is_absence_rather_than_zero() {
-        // A structurally valid file whose trailer names no `/Root`: lopdf's
-        // first `return Ok(0)` branch, reached without corrupting anything.
         let mut bytes = synthetic_pdf(4, None);
         let s = String::from_utf8(bytes.clone()).unwrap();
         bytes = s.replace("/Root 1 0 R", "").into_bytes();
         let (_d, p) = write(&bytes, "rootless.pdf");
         match pdf_info(&p) {
             Ok(info) => assert_eq!(info.page_count, None),
-            // Refusing the file outright is also an acceptable answer; what is
-            // not acceptable is a length of zero.
             Err(EngineError::Pdf(_)) => {}
             Err(e) => panic!("unexpected error: {e}"),
         }
@@ -307,8 +197,7 @@ mod tests {
         for good in [
             "Long Walk to Freedom",
             "The C Programming Language",
-            // Ends in a word that is *also* an extension, but not preceded by a
-            // dot. The narrow rule is what keeps these.
+            // Ends in a word that is also an extension but with no dot: the narrow rule must keep these.
             "Learning Pages",
             "Ghosts of the Tsunami",
         ] {
@@ -322,19 +211,6 @@ mod tests {
         assert_eq!(title_or_none("   \n "), None);
     }
 
-    /// A PDF from the user's own disk, when one has been dropped in.
-    ///
-    /// `crates/engine/tests/fixtures/pdf/real/` is a gitignored drop-in, like
-    /// the other local, uncommitted fixture directories some tests look for:
-    /// the synthetic documents above cover *shape*, and only a file some real
-    /// producer wrote covers a cross-reference **stream** with the page tree
-    /// inside a compressed object stream, which is what most PDFs made this
-    /// decade actually are.
-    ///
-    /// It **prints `SKIPPED:` and honours `BOOKMOLE_REQUIRE_FIXTURES=1`**
-    /// rather than returning silently — `epub.rs` had two tests that returned
-    /// silently for months, and a test that is green without asserting anything
-    /// is worse than no test.
     #[test]
     fn a_real_pdf_reports_a_plausible_length() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdf/real");
@@ -382,9 +258,6 @@ mod tests {
         use proptest::prelude::*;
 
         proptest! {
-            /// The invariant the rest of the engine relies on, over every
-            /// document shape this generator can make: a length is absent or
-            /// positive, and there is no third answer.
             #[test]
             fn a_reported_length_is_never_zero(pages in 0usize..24) {
                 let (_d, p) = write(&synthetic_pdf(pages, None), "p.pdf");
@@ -396,9 +269,6 @@ mod tests {
                 }
             }
 
-            /// A title that survives the filter is the trimmed input, and one
-            /// that does not is absence. Never an empty string, which is the
-            /// third state a `String` return would have allowed.
             #[test]
             fn a_title_is_absent_or_non_empty(s in ".{0,80}") {
                 match title_or_none(&s) {

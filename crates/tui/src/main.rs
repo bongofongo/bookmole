@@ -1,13 +1,5 @@
-//! bookmole TUI — the ratatui frontend.
-//!
-//! All engine work goes through `bookmole::Engine`; this crate owns every
-//! byte that reaches the terminal.
-//!
-//! Comments across this crate refer to **the axiom**, the app's one design
-//! rule: *a place, not a tool*. State persists and is visible; nothing is
-//! modal by default and no screen is a dead end (every screen names a next
-//! move); idle is not blank; and there is no task-completion framing — no
-//! badge or tally counting what you have not done, only places you can go.
+//! bookmole TUI, the ratatui frontend. All engine work goes through `bookmole::Engine`;
+//! this crate owns every byte that reaches the terminal.
 
 mod ambient;
 mod app;
@@ -47,9 +39,7 @@ use render3d::{RenderParams, Scene};
     about = "Reading companion, on screen: browse the library and view a book in 3D"
 )]
 struct Cli {
-    /// Data directory root (default: BOOKMOLE_DATA_DIR env, else the
-    /// platform data dir — ~/Library/Application Support/bookmole on macOS,
-    /// $XDG_DATA_HOME/bookmole or ~/.local/share/bookmole on Linux)
+    /// Data directory root (default: BOOKMOLE_DATA_DIR, else the platform data dir)
     #[arg(long)]
     data_dir: Option<PathBuf>,
 
@@ -74,72 +64,51 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = GlyphArg::Octant)]
     glyphs: GlyphArg,
 
-    /// Book-view renderer. `rich` is the hybrid — glyphs while the book turns,
-    /// pixels when it parks — which is also what `auto` picks wherever the
-    /// terminal can take pixels.
+    /// Book-view renderer. `rich` is glyphs while the book turns, pixels when it parks; `auto` picks it
+    /// where pixels work.
     #[arg(long, value_enum, default_value_t = RenderArg::Auto)]
     render: RenderArg,
 
-    /// Compress the pixel payload (`o=z`). `auto` sends it raw on a libghostty
-    /// host — Ghostty and herdr crash decoding a compressed image — and zlib
-    /// everywhere else. Force it either way when the guess is wrong.
+    /// Compress the pixel payload. `auto` sends it raw on libghostty hosts (they crash on compressed
+    /// images).
     #[arg(long, value_enum, default_value_t = CompressArg::Auto, value_name = "WHEN")]
     kitty_compress: CompressArg,
 
-    /// Probe the terminal, print what it can do and which renderer that picks,
-    /// then exit. Needs a real tty — pipe it and it reports the safe floor.
+    /// Probe the terminal, print its capabilities and the renderer picked, then exit (needs a real tty)
     #[arg(long)]
     probe: bool,
 
-    /// Panic on purpose, to verify the crash hook restores the terminal, writes
-    /// a report, and prints where it went. Hidden: a test affordance, not UI.
+    /// Panic on purpose, to check the crash hook restores the terminal (hidden)
     #[arg(long, hide = true)]
     panic_now: bool,
 
-    /// Push N rich frames at the terminal as fast as it will take them and
-    /// report the achieved rate. Separates our cost from the terminal's: run it
-    /// in a real pane, since it measures the pty and the compositor too.
+    /// Push N rich frames at the terminal as fast as it will take them and report the rate (real pane)
     #[arg(long, value_name = "N")]
     bench_rich: Option<u32>,
 
-    /// Run a scripted spin/park/resize workload through the real presenter and
-    /// report what it cost — including how long the terminal itself took to
-    /// answer while under load. Run it in a real, *active* pane.
+    /// Run a scripted spin/park/resize workload through the real presenter and report its cost (real,
+    /// active pane)
     #[arg(long, value_enum, value_name = "MODE")]
     bench_render: Option<BenchArg>,
 
-    /// Repeat the --bench-render script N times (default 1). The rect the
-    /// object gets is whatever the real pane gives it, and is reported — it
-    /// cannot be forced without lying about what is being measured.
+    /// Repeat the --bench-render script N times (default 1)
     #[arg(long, value_name = "N", requires = "bench_render")]
     bench_reps: Option<u32>,
 
-    /// Draw as fast as the machine allows instead of pacing to the app's 20fps
-    /// tick. Answers "how much throughput is there", *not* "what does the app
-    /// cost" — the retransmit throttle keys off pose, so free-running inflates
-    /// the send rate far above anything a real session produces.
+    /// Draw as fast as possible instead of pacing to 20fps; inflates send rate beyond a real session
     #[arg(long, requires = "bench_render")]
     bench_free_run: bool,
 
-    /// Name the environment this run was measured in, recorded in the history
-    /// TSV (default `live`). `scripts/bench-sandbox.sh` passes `box`.
-    ///
-    /// Rows from different environments are *not* comparable — a disposable
-    /// kitty window with a pinned font and a private tmux server has a
-    /// different cell size, window size and neighbour set from the pane you
-    /// work in. This column is what stops the trend line from silently mixing
-    /// them, the same failure `cover_px` was added to prevent.
+    /// Environment name recorded in the history TSV (default `live`); rows from different environments
+    /// are not comparable.
     #[arg(long, value_name = "NAME", requires = "bench_render")]
     bench_env: Option<String>,
 
-    /// Append a JSON record per frame to this file. Off by default; the
-    /// recording calls cost one relaxed atomic load when it is absent.
+    /// Append a JSON record per frame to this file (off by default)
     #[arg(long, value_name = "PATH", env = "BOOKMOLE_PERF_LOG")]
     perf_log: Option<PathBuf>,
 
-    /// Append one summary row per benched mode to this TSV, so runs can be
-    /// compared over time. The per-frame log is the detail for one run; this is
-    /// the trend line across many.
+    /// Append one summary row per benched mode to this TSV, to compare runs over time
     #[arg(long, value_name = "PATH", env = "BOOKMOLE_PERF_HISTORY")]
     perf_history: Option<PathBuf>,
 }
@@ -148,8 +117,7 @@ struct Cli {
 enum BenchArg {
     Glyph,
     Rich,
-    /// The known-bad configuration — pixels even while moving. Kept so the
-    /// latency numbers have something pathological to be calibrated against.
+    /// Pixels even while moving; a known-bad diagnostic configuration
     RichAlways,
     /// All three, one after another, on identical work.
     All,
@@ -161,29 +129,14 @@ enum RenderArg {
     Auto,
     /// Block glyphs always. Works anywhere truecolor does.
     Glyph,
-    /// The hybrid: block glyphs while the book turns, true pixels the moment it
-    /// parks. Falls back to glyphs on a terminal with no pixel protocol.
+    /// Glyphs while the book turns, pixels when it parks; glyphs only without a pixel protocol.
     Rich,
-    /// Pixels even while the book is moving. **Known bad** — kept as a
-    /// diagnostic so the terminal-latency measurement has something
-    /// pathological to be calibrated against, not as a usable setting.
+    /// Pixels even while the book moves. Known bad; a diagnostic, not a usable setting.
     RichAlways,
 }
 
 impl RenderArg {
-    /// Resolve to a concrete mode against what the terminal actually reported.
-    ///
-    /// `Auto` takes pixels wherever the terminal can hold them. That is a
-    /// reversal: it used to pick glyphs unconditionally, because an animated
-    /// pixel book cost the terminal far more than block glyphs and undercut the
-    /// point of a lightweight tmux-native TUI. What changed is that `Rich` no
-    /// longer animates in pixels — it is the hybrid, glyphs in motion and pixels
-    /// at rest — so the spin now costs exactly what it always did, and the one
-    /// thing standing against `auto` is gone.
-    ///
-    /// A mode forced on a terminal that can't take pixels still degrades to
-    /// glyph rather than spraying escapes at it — the flag is a preference, not
-    /// a promise the terminal has to keep.
+    /// A mode forced on a terminal that cannot take pixels still degrades to glyphs.
     fn resolve(self, caps: render3d::Caps) -> render3d::RenderMode {
         use render3d::RenderMode;
         match self {
@@ -199,15 +152,13 @@ impl RenderArg {
 enum CompressArg {
     /// Raw on a libghostty host (Ghostty, herdr), zlib everywhere else.
     Auto,
-    /// zlib always. What every terminal but a libghostty one wants — and the
-    /// way to confirm a libghostty host is still crashing.
+    /// zlib always; what every terminal but a libghostty one wants.
     On,
-    /// Raw always. Six times the bytes, so the pixel budget shrinks with it.
+    /// Raw always. Six times the bytes, so the pixel budget shrinks.
     Off,
 }
 
 impl CompressArg {
-    /// Apply the flag over what the environment suggested.
     fn apply(self, caps: render3d::Caps) -> render3d::Caps {
         use render3d::ImageWire;
         let image_wire = match self {
@@ -238,29 +189,19 @@ impl From<GlyphArg> for render3d::GlyphSet {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Before anything opens the engine: the probe is pure terminal I/O and must
-    // not create a `database/` directory as a side effect of a diagnostic.
+    // Before anything opens the engine: the probe must not create a `database/` directory.
     if cli.probe {
         return report_caps(&cli);
     }
 
-    // One rule for every frontend: flag, then BOOKMOLE_DATA_DIR, then the
-    // platform data dir. Never the cwd (`crates/engine/src/data_dir.rs`).
     let data_root = bookmole::data_dir::resolve(cli.data_dir.as_deref())?;
     let mut engine_config = EngineConfig::rooted_at(data_root);
     let config_dir = config::default_dir();
-    // Env wins (matching the CLI's precedence); otherwise fall back to the
-    // shared config file, so a key set in either frontend is picked up here.
     if engine_config.google_api_key.is_none() {
         engine_config.google_api_key = config_dir.as_deref().and_then(config::load_google_key);
     }
-    // Held for the whole run: dropping the guard flushes, and dropping it early
-    // truncates the tail of the log — the part that matters after a crash.
-    // Installed BEFORE setup_terminal, and that ordering is the whole trick:
-    // `set_hook` chains via `take_hook`, so the LAST hook installed runs FIRST.
-    // setup_terminal installs the terminal-restoring hook afterwards, giving
-    // TUI hook -> restore_terminal() -> this -> write file -> std default.
-    // The pane is therefore already sane before anything prints.
+    // Held for the whole run (dropping early truncates the log). Installed before `setup_terminal`:
+    // the last hook installed runs first, so the terminal is restored before anything prints.
     bookmole::crash::install_hook(bookmole::CrashContext {
         app: "bookmole-tui",
         version: env!("CARGO_PKG_VERSION"),
@@ -273,17 +214,12 @@ async fn main() -> Result<()> {
         tracing::info!(version = env!("CARGO_PKG_VERSION"), log = %h.path.display(), "bookmole-tui starting");
     }
     let engine = Engine::open(engine_config).await?;
-    // A library in a synced folder opens anyway; this is the one thing said
-    // about it, once per launch (`location.rs`). The interactive app shows it
-    // on its status line; the headless paths below have none, so they put it
-    // on stderr, beside their own `wrote …`.
+    // Headless paths have no status line, so they put the cloud-folder notice on stderr.
     let cloud_line = engine
         .library_location()
         .cloud_folder
         .map(|f| location::cloud_folder_line(&f));
 
-    // Deliberate crash, for verifying the hook end-to-end (terminal restored,
-    // report written, path echoed). Hidden: it is a test affordance, not UI.
     if cli.panic_now {
         panic!("--panic-now: deliberate crash to exercise the crash hook");
     }
@@ -306,8 +242,6 @@ async fn main() -> Result<()> {
         return bench_render(engine, which, &cli).await;
     }
 
-    // Apply the persisted settings before the first draw. A bad/missing file is
-    // a warning, never fatal — it must not brick the TUI.
     let mut motif = ambient::Motif::default();
     let mut library_sort = ui::library::Sort::default();
     let loaded = config_dir
@@ -319,8 +253,6 @@ async fn main() -> Result<()> {
             if let Some(rgb) = cfg.accent.as_deref().and_then(theme::parse_hex) {
                 theme::set_accent(rgb);
             }
-            // Same forgiveness as the motif below: an unrecognised order is the
-            // default, not an error.
             if let Some(s) = cfg
                 .library_sort
                 .as_deref()
@@ -328,8 +260,6 @@ async fn main() -> Result<()> {
             {
                 library_sort = s;
             }
-            // An unrecognised motif is simply "off", not an error: the layer is
-            // decoration, and a hand-edited typo should not stop the app.
             if let Some(m) = cfg.ambient.as_deref().and_then(ambient::Motif::from_label) {
                 motif = m;
             }
@@ -350,28 +280,23 @@ async fn main() -> Result<()> {
         app.status = Some(line);
     }
 
-    // One meter for both classes of byte: it is handed to the ratatui backend
-    // (text) and to the graphics writer (image), so the two are counted apart.
+    // One meter shared by the ratatui backend (text) and the graphics writer (image), counted apart.
     let meter = perf::Meter::new();
     if let Some(path) = &cli.perf_log {
         match perf::Recorder::open(path, meter.clone()) {
             Ok(rec) => app.perf = rec,
-            // A diagnostic that refuses to start is not a reason to refuse to
-            // run: warn before the alternate screen swallows it, and carry on.
             Err(e) => eprintln!("warning: perf log {}: {e}", path.display()),
         }
     }
 
-    // The probe has to run with raw mode on and before ratatui reads any input,
-    // so the mode can only be settled once the terminal is up.
+    // The probe needs raw mode and must run before ratatui reads input, so it follows terminal setup.
     let (mut terminal, caps) = setup_terminal(meter.clone())?;
     let caps = cli.kitty_compress.apply(caps);
     app.set_caps(caps);
     app.set_render_mode(cli.render.resolve(caps));
     app.rich.count_bytes(meter);
-    // A machine that cannot watch is a machine that still runs the app: every
-    // device screen, `r` and `ko scan` work exactly as before. Warned about in
-    // the log rather than on screen, since the alternate screen is already up.
+    // Warn to the log, not the screen: the alternate screen is already up and the app runs without a
+    // watcher.
     let mounts = match bookmole::watch_mounts() {
         Ok(w) => Some(w),
         Err(e) => {
@@ -379,11 +304,7 @@ async fn main() -> Result<()> {
             None
         }
     };
-    // Same degradation, same reason. A machine that cannot watch the vault
-    // still has a working vault: `app::run` sweeps it once before the first
-    // frame, and every note written here is indexed as it is written. What is
-    // lost is only liveness — an edit made in Obsidian *while the TUI is open*
-    // then waits for the next start instead of arriving in half a second.
+    // Without a watcher the vault is still swept once before the first frame; only live edits wait.
     let vault = match app.engine.watch_vault() {
         Ok(w) => Some(w),
         Err(e) => {
@@ -396,11 +317,7 @@ async fn main() -> Result<()> {
     result
 }
 
-/// `--probe`: run the capability probe and report it in plain text.
-///
-/// Raw mode is required for the replies to arrive unechoed and unbuffered, so
-/// this puts the terminal in raw mode for the length of the probe and takes it
-/// straight back out. No alternate screen — the output is meant to be read.
+/// Raw mode is held only for the probe so replies arrive unechoed; no alternate screen.
 fn report_caps(cli: &Cli) -> Result<()> {
     let raw_mode = enable_raw_mode().is_ok();
     let (caps, raw) = render3d::caps::probe_verbose();
@@ -408,7 +325,6 @@ fn report_caps(cli: &Cli) -> Result<()> {
     if raw_mode {
         let _ = disable_raw_mode();
     }
-    // Give tmux its pane option back before we print anything.
     render3d::caps::restore_passthrough();
 
     let mode = cli.render.resolve(caps);
@@ -425,16 +341,12 @@ fn report_caps(cli: &Cli) -> Result<()> {
     println!("tmux           : {}", caps.in_tmux);
     println!("passthrough    : {:?}", caps.passthrough);
     println!("pixels usable  : {}", caps.supports_pixels());
-    // Not something the terminal reported — nothing answers "I crash on zlib" —
-    // so print it beside what it did report rather than leaving the one setting
-    // that is a guess invisible.
+    // Not reported by the terminal (it is a guess), so print it beside what was reported.
     println!(
         "image payload  : {:?} (--kitty-compress {:?})",
         caps.image_wire, cli.kitty_compress
     );
     println!("renderer       : {mode:?} (--render {:?})", cli.render);
-    // The bytes the terminal actually sent. When detection surprises you this
-    // is the only evidence that settles it, so print it rather than describe it.
     println!(
         "raw reply      : {}",
         String::from_utf8_lossy(&raw).escape_debug()
@@ -442,19 +354,14 @@ fn report_caps(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// One phase of the bench script.
 #[derive(Debug, Clone, Copy)]
 enum Phase {
-    /// The book turns, one draw per simulated tick.
     Spin(u32),
-    /// The book is parked and redrawn anyway, which is what a settle costs.
     Park(u32),
-    /// Slide the divider, changing the object's rect exactly as `[`/`]` do.
     Slide(f32),
 }
 
-/// The workload every mode is measured on. Fixed, so two runs are comparable
-/// and so no mode gets an easier ride than another.
+/// Fixed, so runs and modes are comparable.
 const SCRIPT: &[Phase] = &[
     Phase::Spin(100),
     Phase::Park(20),
@@ -464,30 +371,16 @@ const SCRIPT: &[Phase] = &[
     Phase::Park(20),
 ];
 
-/// Sample the terminal's own latency this often (in frames).
-///
-/// 8 gives ~30 samples over the script, which is the floor for a p90 that means
-/// anything — at 12 samples the "p90" is just the second-worst value. Each probe
-/// returns as soon as both replies land (a few ms), so it fits inside a tick
-/// without becoming the load itself.
+/// 8 gives ~30 samples per script, the floor for a meaningful p90.
 const RTT_EVERY: u32 = 8;
 
-/// Frames drawn and thrown away before each mode's measured run.
 const WARMUP: u32 = 25;
 
-/// How long to wait for the terminal to answer a latency probe.
-///
-/// Deliberately **shorter than a tick**. A probe that outlives the frame budget
-/// has stopped measuring the workload and started changing it: at a 250ms
-/// deadline, a run where the terminal never answered stalled 30 times per mode
-/// and dragged a paced 20fps bench down to 13fps — the numbers then described a
-/// workload that does not exist.
+/// Shorter than a tick: a probe that outlives the frame budget changes the workload it measures.
 const RTT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(40);
 
-/// Consecutive silent probes before sampling gives up for the rest of the run.
 const RTT_GIVE_UP: u32 = 2;
 
-/// What one mode's run cost.
 struct BenchSummary {
     mode: &'static str,
     frames: u32,
@@ -498,32 +391,13 @@ struct BenchSummary {
     rect: (u16, u16),
     trace_us: u64,
     draw_us: u64,
-    /// Image bytes emitted on frames where the book was moving. **The number
-    /// this whole exercise is about**: for the hybrid it must be zero.
+    /// Image bytes on frames where the book was moving; must be zero for the hybrid.
     moving_image_bytes: u64,
     rtt_kitty: Vec<u64>,
     rtt_tmux: Vec<u64>,
 }
 
-/// `--bench-render`: what a mode actually costs, terminal included.
-///
-/// The difference from [`bench_rich`] is that this drives the **real presenter
-/// through a real `Terminal::draw`**, so the retransmit throttle, the
-/// placeholder cells and ratatui's diff are all in the measurement — and so the
-/// glyph path can be measured at all, which nothing could do before.
-///
-/// It also samples `caps::rtt_probe` under load. That is the honest number: our
-/// own timings all looked healthy while the first rich renderer was making
-/// terminals unusable, because the cost is paid inside the terminal. A terminal
-/// that is drowning answers slowly, so ask it.
-///
-/// Run it in a real, **active** pane: tmux routes input to the focused pane
-/// only, so a background pane sees no replies and the RTT column comes back
-/// empty.
 async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> {
-    // Fail with a reason rather than the raw `Device not configured` that
-    // enabling raw mode on a pipe produces. Piping this measures nothing anyway:
-    // the point is the terminal's own behaviour.
     if !std::io::IsTerminal::is_terminal(&stdout()) {
         bail!("--bench-render needs a real terminal — it measures the terminal, not us");
     }
@@ -539,16 +413,8 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
         ],
     };
 
-    // A procedural plate compresses several times better than a photograph, so
-    // benching without a real cover produces numbers that are wrong in the
-    // flattering direction. Pick a book that has one rather than whichever was
-    // touched last — an explicit `--book` still wins, and the warning still
-    // fires if nothing in the library qualifies.
-    // Ask the renderer's own resolver, not a second guess at the same rule —
-    // and rank by the decoded width, because a 180px OpenLibrary thumbnail
-    // upscaled into a 358px render is smooth, compresses far better than a real
-    // photograph, and flatters the image numbers almost as much as the
-    // procedural plate does.
+    // Pick a book with a real cover, ranked by decoded width: procedural plates and upscaled thumbnails
+    // compress far better than photographs and flatter the image numbers. An explicit `--book` wins.
     let cover_width = |b: &Book| -> u32 {
         b.cover_path
             .as_deref()
@@ -590,11 +456,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     app.set_caps(caps);
     app.rich.count_bytes(meter);
 
-    // Reps outer, modes inner: whichever mode runs first absorbs whatever the
-    // machine was still doing (a release build's IO tail, a cold cache), and a
-    // transient that lands entirely inside one mode's block reads as that mode
-    // being slow. Interleaving spreads it, so `--bench-reps 3` is the answer to
-    // a result that looks surprising.
+    // Reps outer, modes inner: interleaving keeps a transient from reading as one mode being slow.
     let mut summaries = Vec::new();
     let mut rtt_silent = 0u32;
     for _ in 0..reps {
@@ -605,23 +467,10 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
             app.params.pose = render3d::Pose::default();
             let _ = app.perf.drain_frames();
 
-            // Pace to the app's own tick unless asked not to. Free-running
-            // measures throughput, which is the wrong question: the retransmit
-            // throttle keys off *pose*, so at 1000fps consecutive frames land in
-            // different coarse buckets far more often and the send rate inflates
-            // by ~50x over anything a real session produces. Same interval and
-            // the same missed-tick behaviour as `app::run`, so a bench frame is
-            // a real frame.
+            // Paced like `app::run`: free-running inflates the retransmit send rate far beyond a real session.
             let mut ticker = tokio::time::interval(app::TICK);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            // Warm-up, discarded. The first frames of a mode pay for a cold
-            // cover decode, a cold frame cache and whatever the OS was still
-            // finishing. Measured: the first 20 frames ran 40% slower than the
-            // rest of the same run, which is enough to swamp the difference the
-            // bench exists to show.
-            // Spinning, so the warm-up exercises the motion path — and
-            // deterministic, so every mode starts the script from the same pose.
             app.spinning = true;
             for _ in 0..WARMUP {
                 if !cli.bench_free_run {
@@ -648,21 +497,11 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
                             }
                             app.tick();
                             app::redraw(&mut terminal, &mut app)?;
-                            // Sample **immediately after handing the terminal a
-                            // frame**, and before waiting out the rest of the
-                            // tick. Probing before the draw instead put every
-                            // sample in the idle gap, where the terminal has
-                            // already caught up: paced runs then showed all
-                            // three modes at an identical ~3.6 ms, which is the
-                            // quiescent round-trip through tmux passthrough and
-                            // measures nothing about load. The sample lands on
-                            // the next frame's record — immaterial at this
-                            // sampling rate, and honest about when it was taken.
+                            // Sample right after handing the terminal a frame: in the idle gap it has caught up and shows
+                            // nothing.
                             if frame.is_multiple_of(RTT_EVERY) && rtt_silent < RTT_GIVE_UP {
                                 let rtt = render3d::caps::rtt_probe(caps.in_tmux, RTT_DEADLINE);
-                                // A terminal that is not answering will not
-                                // start; keep waiting on it and the stalls
-                                // become the workload.
+                                // A silent terminal is not waited on, or its stalls become the workload.
                                 rtt_silent = if rtt.kitty.is_none() {
                                     rtt_silent + 1
                                 } else {
@@ -692,38 +531,18 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
         let env = cli.bench_env.as_deref().unwrap_or("live");
         match append_history(path, &summaries, cover_px, caps, env) {
             Ok(()) => eprintln!("history     : {}", path.display()),
-            // The measurement already happened; failing to file it is not a
-            // reason to fail the command.
             Err(e) => eprintln!("warning: perf history {}: {e}", path.display()),
         }
     }
     Ok(())
 }
 
-/// Append one row per mode to a TSV, creating it with a header.
-///
-/// Deliberately not JSON: this file is meant to be `sort`ed, `cut`, pasted into
-/// a spreadsheet, or plotted, and it accumulates across runs — whereas the
-/// per-frame JSONL is written fresh per run and describes a single session.
-///
-/// The timestamp is epoch seconds. No date formatting crate is worth adding for
-/// one column, and epoch sorts correctly without one.
-///
-/// A file whose header does not match the current columns is **rotated aside**
-/// rather than appended to. Appending under a stale header is silent corruption
-/// of the one artefact whose entire purpose is being compared over time — it
-/// already happened once, when `real_cover` (a bool) became `cover_px` (a width)
-/// and three runs' rows landed under the old name.
+/// A file whose header does not match the current columns is rotated aside, never appended to.
 const HISTORY_HEADER: &str = "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
      trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
      rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px\tenv\tload1";
 
-/// The 1-minute load average, or 0 where the OS will not say.
-///
-/// Recorded per row because the latency columns are the ones that move under
-/// contention, and after the fact there is no other way to tell a real
-/// regression from "a release build was still linking". A row measured at load
-/// 4 on an 8-core machine is evidence about the machine, not the renderer.
+/// The 1-minute load average, or 0 where unavailable; recorded to tell contention from regression.
 fn load1() -> f64 {
     #[cfg(unix)]
     {
@@ -777,9 +596,6 @@ fn append_history(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Sampled once, after the run: the load the machine carried *through* the
-    // measurement is what the reader wants, and the 1-minute average at the end
-    // covers roughly that window for a run of this length.
     let load = load1();
     for s in summaries {
         let secs = s.wall.as_secs_f64().max(1e-9);
@@ -849,9 +665,7 @@ fn sorted(it: impl Iterator<Item = u64>) -> Vec<u64> {
 }
 
 fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps, free_run: bool) {
-    // Smoothness is what compresses, so both "no cover" and "a thumbnail
-    // upscaled into the render" understate the image bytes — the second is the
-    // sneakier one, because the book visibly has a cover.
+    // No cover and an upscaled thumbnail both compress well and understate the image bytes.
     if cover_px == 0 {
         eprintln!(
             "WARNING: this book has no cover image on disk, so the render used the\n\
@@ -912,9 +726,6 @@ fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps,
          hybrid this must be 0 — that is the invariant, not a budget."
     );
     eprintln!();
-    // The honest number: how long the terminal took to answer while we loaded
-    // it. Every timing on our side of the pty looked healthy during the version
-    // that made terminals unusable.
     eprintln!(
         "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
         "mode", "kitty p50", "kitty p90", "kitty max", "tmux p50", "tmux p90", "tmux max"
@@ -940,8 +751,6 @@ fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps,
              pane only. Check with `--probe` from the same pane."
         );
     }
-    // A paced run that missed its pacing measured a different workload than the
-    // one it reports, so say so rather than let the columns look ordinary.
     if !free_run {
         let target = 1.0 / app::TICK.as_secs_f64();
         if let Some(worst) = summaries
@@ -959,12 +768,6 @@ fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps,
     }
 }
 
-/// `--bench-rich N`: the decisive measurement for "why is the spin slow".
-///
-/// Traces, encodes and *actually writes* N frames at the terminal, timing each
-/// stage separately. Our own cost (trace + encode) is known to be small; if the
-/// write time dwarfs it, the pty and the compositor are the bottleneck and the
-/// fix has to be fewer or smaller frames, not faster code.
 async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
     use std::time::Instant;
 
@@ -1033,7 +836,6 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
         }
     }
     let total = wall.elapsed();
-    // Leave nothing on screen.
     let _ = out.write_all(render3d::kitty::delete(id, caps.in_tmux).as_bytes());
     let _ = out.flush();
 
@@ -1052,7 +854,6 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// First match for a selector, or a clear error listing the ambiguity.
 async fn resolve_book(engine: &Engine, selector: &str) -> Result<Book> {
     let mut found = engine.resolve_books(selector).await?;
     match found.len() {
@@ -1061,8 +862,7 @@ async fn resolve_book(engine: &Engine, selector: &str) -> Result<Book> {
     }
 }
 
-/// `--dump-frame`: render the object once and write it to stdout with ANSI
-/// truecolor. No alternate screen, no raw mode — it works in a pipe.
+/// No alternate screen and no raw mode, so it works in a pipe.
 async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
     let (w, h) = parse_size(spec)?;
     let book = match cli.book.as_deref() {
@@ -1109,33 +909,22 @@ fn parse_size(spec: &str) -> Result<(u16, u16)> {
     Ok((w.trim().parse()?, h.trim().parse()?))
 }
 
-/// The terminal, with every byte on its way out counted.
-///
-/// Wrapping the backend's writer is the only way to measure the *glyph* path at
-/// all: its bytes are produced by ratatui's diff, which the app never sees. Once
-/// that number exists, "glyphs are cheap" stops being a claim and becomes a
-/// measurement.
+/// Wrapping the writer is the only way to measure the glyph path: ratatui's diff produces its
+/// bytes.
 type CountedTerminal = Terminal<CrosstermBackend<perf::CountingWriter<Stdout>>>;
 
 fn setup_terminal(meter: perf::Meter) -> Result<(CountedTerminal, render3d::Caps)> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
-    // Probe here and nowhere else: raw mode is on (so replies aren't echoed or
-    // line-buffered), we're on the alternate screen (so nothing lands in the
-    // user's scrollback), and ratatui's event reader has not started — which is
-    // what guarantees the reply bytes can't leak into the later `EventStream`.
+    // Probe only here: raw mode is on, the alternate screen is up, and the event reader has not
+    // started, so replies cannot leak into it.
     let caps = render3d::caps::probe();
-    // Ask for the Kitty keyboard protocol so modified keys like Shift+Enter
-    // arrive as distinct events (plain terminals report them as bare Enter).
-    // Purely a nicety — terminals that don't support it are left untouched.
     if supports_keyboard_enhancement().unwrap_or(false) {
         let _ = execute!(
             stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    // A panic must never leave the pane in raw mode with no cursor — nor with
-    // an orphaned image on screen or tmux left in a state we imposed.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -1149,16 +938,12 @@ fn setup_terminal(meter: perf::Meter) -> Result<(CountedTerminal, render3d::Caps
 }
 
 fn restore_terminal() {
-    // First, while the alternate screen is still current: the image placement
-    // lives on *that* screen, so it has to be deleted before we leave, or it
-    // ghosts over whatever the user had underneath.
+    // First, on the alternate screen: the image placement lives there and ghosts if left.
     render3d::kitty::teardown();
-    // Pop the enhancement flags we may have pushed; terminals that never got a
-    // push ignore the pop, so it's safe to send unconditionally.
+    // Terminals that never got a push ignore the pop, so it is safe unconditionally.
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
-    // Hand tmux's pane option back last, once nothing else needs to get out.
     render3d::caps::restore_passthrough();
 }
 
@@ -1185,10 +970,7 @@ mod tests {
 
     #[test]
     fn the_history_file_gets_a_header_once_and_a_row_per_run() {
-        // The point of this file is comparison across runs, so appending (not
-        // truncating) and writing the header exactly once are the behaviours
-        // that matter — a second header line in the middle breaks every tool
-        // that would read it.
+        // Append, never truncate, and write the header once: a mid-file header breaks every reader.
         let dir = std::env::temp_dir().join(format!("bookmole-history-{}", std::process::id()));
         let path = dir.join("history.tsv");
         let _ = std::fs::remove_file(&path);
@@ -1213,21 +995,18 @@ mod tests {
             1,
             "the header was written more than once"
         );
-        // Every row must have as many fields as the header, or `cut`/`column`
-        // silently misalign the columns instead of failing.
+        // Every row needs as many fields as the header, or `cut`/`column` silently misalign.
         let cols = lines[0].split('\t').count();
         for row in &lines[1..] {
             assert_eq!(row.split('\t').count(), cols, "ragged row: {row}");
         }
-        // The column the whole exercise is about.
         assert!(
             lines[1].contains("\t0\t"),
             "moving_KB missing: {}",
             lines[1]
         );
         assert!(lines[3].contains("\t4\t"), "moving_KB wrong: {}", lines[3]);
-        // Rows must carry the environment they were measured in, or a sandbox
-        // run and a live-pane run trend against each other.
+        // Rows carry their environment so sandbox and live-pane runs do not trend together.
         assert!(lines[1].contains("\tlive\t"), "env missing: {}", lines[1]);
         assert!(lines[3].contains("\tbox\t"), "env missing: {}", lines[3]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1235,10 +1014,7 @@ mod tests {
 
     #[test]
     fn a_history_file_with_stale_columns_is_rotated_not_appended_to() {
-        // This is the bug that already happened: `real_cover` (a bool) became
-        // `cover_px` (a width), and three runs' rows went on landing under the
-        // old column name. Rows that mean different things must not share a
-        // header, and the old ones must not be destroyed either.
+        // Rows meaning different things must not share a header, and old rows must survive.
         let dir = std::env::temp_dir().join(format!("bookmole-rotate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.tsv");

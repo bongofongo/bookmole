@@ -1,18 +1,5 @@
-//! Chapter content: the spine's documents as bytes, and as plain text in
-//! blocks.
-//!
-//! [`Package::spine_document`] reads one spine position's resource, bounded
-//! like every other read. [`Package::spine_text`] reads it and turns its
-//! XHTML into a sequence of [`Block`]s — headings, paragraphs, list items,
-//! quotations, preformatted text — each holding its text with whitespace
-//! collapsed (except in `pre`), and nothing of `head`, `script`, `style` or
-//! `template`. Content is parsed leniently: the not-quite-XHTML real books
-//! carry (upper-case tags, `<br>` left open, a stray `&`, an end tag that skips
-//! one, a file that breaks off) yields what could be read plus a
-//! [`Warning::MarkupRecovered`](crate::Warning::MarkupRecovered).
-//!
-//! This is the base for locating a passage in a book; it does not locate
-//! anything itself.
+//! Spine documents as bytes and as plain-text [`Block`]s.
+//! Parsing is lenient: recovered markup yields the readable text plus a `Warning::MarkupRecovered`.
 
 use std::io::{Read, Seek};
 use std::iter::FusedIterator;
@@ -54,8 +41,8 @@ pub enum BlockKind {
     Blockquote,
     /// `pre`: its text keeps its whitespace.
     Preformatted,
-    /// Any other block (`div`, `section`, table cells, `dd`, …), and text
-    /// that sits directly in `body`.
+    /// Any other block (`div`, `section`, table cells, `dd`, …), and text that sits directly in
+    /// `body`.
     Other,
 }
 
@@ -65,13 +52,12 @@ pub enum BlockKind {
 pub struct Block {
     /// What it was.
     pub kind: BlockKind,
-    /// Its text: XML whitespace collapsed to single spaces and trimmed, a
-    /// `<br>` kept as `\n`. Inside `pre`, the text exactly as written (less
-    /// one leading newline). Never empty.
+    /// Whitespace collapsed and trimmed, `<br>` as `\n`; inside `pre`, as written less one
+    /// leading newline. Never empty.
     pub text: String,
 }
 
-/// Media types read as markup. Everything else is refused as [`Error::NotText`].
+/// Media types read as markup; others are refused as `Error::NotText`.
 fn is_markup(media_type: &str) -> bool {
     let m = media_type
         .split(';')
@@ -113,8 +99,7 @@ impl<R: Read + Seek> Package<R> {
         })
     }
 
-    /// Every spine position's resource, in reading order. Each read is
-    /// separate: one that fails is an `Err` and the next is still tried.
+    /// Each read is separate: a failure is an `Err` and the next is still tried.
     pub fn spine_documents(&mut self) -> SpineDocuments<'_, R> {
         SpineDocuments {
             package: self,
@@ -122,12 +107,8 @@ impl<R: Read + Seek> Package<R> {
         }
     }
 
-    /// The text of the resource at this spine position, in blocks.
-    ///
-    /// Refused as [`Error::NotText`] when its media type is not markup, and
-    /// as [`Error::LimitExceeded`] past a size, depth, attribute or node
-    /// cap. A document that is not well-formed is read as far as it can be,
-    /// with a [`Warning::MarkupRecovered`](crate::Warning::MarkupRecovered).
+    /// `Error::NotText` for non-markup, `Error::LimitExceeded` past a cap; malformed markup is
+    /// read as far as possible with a `Warning::MarkupRecovered`.
     pub fn spine_text(&mut self, index: usize) -> Result<Vec<Block>, Error> {
         let doc = self.spine_document(index)?;
         if !is_markup(&doc.media_type) {
@@ -222,8 +203,8 @@ struct Extract {
     buf: String,
     /// The open blocks' kinds, innermost last.
     open: Vec<BlockKind>,
-    /// How many of them are `pre`: a counter, so asking costs nothing per
-    /// piece of text however deep the nesting.
+    /// How many of them are `pre`: a counter, so asking costs nothing per piece of text however
+    /// deep the nesting.
     pre: usize,
 }
 
@@ -292,8 +273,6 @@ impl Extract {
             }
             Role::Block(kind) => kind,
         };
-        // A paragraph or a plain block inside a list item or a quotation
-        // is part of that item or quotation.
         let kind = match (kind, self.open.last()) {
             (
                 BlockKind::Paragraph | BlockKind::Other,
@@ -321,8 +300,7 @@ impl Extract {
     }
 }
 
-/// A document's text, in blocks: from `body` when there is one, else from
-/// the root.
+/// A document's text, in blocks: from `body` when there is one, else from the root.
 fn blocks(root: &Node) -> Vec<Block> {
     let start = if root.name == "body" {
         Some(root)
@@ -430,8 +408,8 @@ mod tests {
         );
     }
 
-    /// The XHTML real books carry: upper-case tags, no namespace, `<br>`
-    /// left open, a stray `&`, a skipped end tag, and a file that stops.
+    /// The XHTML real books carry: upper-case tags, no namespace, `<br>` left open, a stray `&`,
+    /// a skipped end tag, and a file that stops.
     #[test]
     fn tolerates_sloppy_xhtml_and_says_so() {
         let (blocks, warnings) = text_of(
@@ -575,8 +553,7 @@ mod props {
             }
         }
 
-        /// Paragraphs written out come back as paragraphs, in order, their
-        /// whitespace collapsed.
+        /// Paragraphs written out come back as paragraphs, in order, their whitespace collapsed.
         #[test]
         fn paragraphs_round_trip(paras in proptest::collection::vec("[A-Za-z0-9é&<>'\",.]{1,10}( {1,3}[A-Za-z0-9é&<>]{1,8}){0,4}", 1..12)) {
             let body: String = paras.iter().map(|p| format!("<p>\n  {}\n</p>\n", esc(p))).collect();

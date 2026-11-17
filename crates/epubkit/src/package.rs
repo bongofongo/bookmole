@@ -21,9 +21,7 @@ pub struct ManifestItem {
     pub id: String,
     /// `href`, as written.
     pub href: String,
-    /// `href` resolved against the package document's directory — the
-    /// archive path the item is read from. Not percent-decoded and not
-    /// dot-folded: reads try both, but this is the name as the book gives it.
+    /// Not percent-decoded or dot-folded: reads try both, but this is the name as the book gives it.
     pub path: String,
     /// `media-type`.
     pub media_type: String,
@@ -50,8 +48,7 @@ pub struct SpineItem {
     pub idref: String,
     /// `id`.
     pub id: Option<String>,
-    /// `linear`: false only for `linear="no"` (any value but `yes` counts as
-    /// no, as it always has here).
+    /// Absent counts as `yes`; any value other than `yes` makes it false.
     pub linear: bool,
     /// EPUB 3 `properties`, as written.
     pub properties: Option<String>,
@@ -75,20 +72,13 @@ pub struct Spine {
 pub struct Cover {
     /// Its manifest id.
     pub id: String,
-    /// Its declared `media-type` — the book's claim, not a reading of the
-    /// bytes.
+    /// The book's declared media type, not sniffed from the bytes.
     pub media_type: String,
     /// The image bytes.
     pub bytes: Vec<u8>,
 }
 
-/// An opened EPUB.
-///
-/// The container, the package document, its manifest, spine and metadata are
-/// read once, by the constructors. Everything else — resources, the cover,
-/// the table of contents — is read when asked for, through the same bounded
-/// archive; those methods take `&mut self` because reading a zip moves its
-/// cursor.
+/// An opened EPUB. Reads take `&mut self` because reading a zip moves its cursor.
 pub struct Package<R = BufReader<File>> {
     archive: Archive<R>,
     opf_path: String,
@@ -97,19 +87,14 @@ pub struct Package<R = BufReader<File>> {
     unique_identifier: Option<String>,
     /// Complete items, in document order, duplicates of an id kept.
     manifest: Vec<ManifestItem>,
-    /// id → index in `manifest` of the *last* item with that id: the one a
-    /// lookup by id answers, as the old crate's map did.
+    /// id -> index of the *last* manifest item with that id.
     by_id: HashMap<String, usize>,
     spine: Spine,
     /// idref → its first spine position.
     spine_by_id: HashMap<String, usize>,
-    /// A manifest path, compared by `std::path` components → the earliest
-    /// spine position that reads it. `Path`'s `Hash` agrees with its
-    /// component-wise `Eq`, so this answers what a scan with `path::same`
-    /// would, in O(1).
+    /// Manifest path, compared by path components -> earliest spine position that reads it.
     spine_by_path: HashMap<PathBuf, usize>,
-    /// The same, keyed on the path percent-decoded with `.`/`..` folded: the
-    /// fallback when the component match finds nothing.
+    /// Same, keyed on the percent-decoded, dot-folded path: the fallback when components do not match.
     spine_by_folded: HashMap<String, usize>,
     metadata: Metadata,
     cover_id: Option<String>,
@@ -164,10 +149,7 @@ impl<R: Read + Seek> Package<R> {
         let mut archive = Archive::new(reader, limits)?;
         let mut warnings = Vec::new();
 
-        // container.xml → the package document's path. A container may list
-        // several renditions; the first `<rootfile>` is the default one, and
-        // it is the only one read. `full-path` is relative to the archive
-        // root, unlike every manifest `href`, which is relative to the OPF.
+        // Only the first `<rootfile>` is read; `full-path` is relative to the archive root, not the OPF.
         let container = archive.read(CONTAINER).map_err(|e| match e {
             Error::MissingEntry { .. } => Error::MissingContainer,
             other => other,
@@ -187,10 +169,7 @@ impl<R: Read + Seek> Package<R> {
         let version = root.attr("version").map(str::to_string);
         let unique_id = root.attr("unique-identifier").map(str::to_string);
 
-        // Manifest. An item missing a required attribute is skipped with a
-        // warning rather than failing the book. On a duplicate id the later
-        // item wins the id lookup (the map overwrites) and the earlier one is
-        // shadowed, though both stay in `manifest`.
+        // On a duplicate id the later item wins lookups; both stay in `manifest`.
         let manifest_node = root.find("manifest").ok_or(Error::MissingElement {
             element: "manifest",
         })?;
@@ -227,8 +206,7 @@ impl<R: Read + Seek> Package<R> {
             }
         }
 
-        // Spine. An idref the spine lists twice maps to its first position;
-        // `linear` defaults to `yes`, as the spec says.
+        // An idref listed twice maps to its first position.
         let spine_node = root
             .find("spine")
             .ok_or(Error::MissingElement { element: "spine" })?;
@@ -261,10 +239,7 @@ impl<R: Read + Seek> Package<R> {
             });
         }
 
-        // Path → spine position, built once so a table of contents with N
-        // entries over a manifest of M items costs N + M, not N × M. Only the
-        // item an id lookup answers counts: a shadowed duplicate is not what
-        // the spine's idref reads.
+        // Only the item an id lookup answers counts: a shadowed duplicate is not what idref reads.
         let mut spine_by_path: HashMap<PathBuf, usize> = HashMap::new();
         let mut spine_by_folded: HashMap<String, usize> = HashMap::new();
         for (i, m) in manifest.iter().enumerate() {
@@ -287,7 +262,6 @@ impl<R: Read + Seek> Package<R> {
             }
         }
 
-        // Metadata.
         let metadata_node = root.find("metadata").ok_or(Error::MissingElement {
             element: "metadata",
         })?;
@@ -296,8 +270,7 @@ impl<R: Read + Seek> Package<R> {
         });
         warnings.extend(parsed.warnings);
 
-        // The cover: EPUB 2's `<meta name="cover">` wins, as it always has,
-        // when it names a manifest item; otherwise EPUB 3's `cover-image`.
+        // EPUB 2's `<meta name="cover">` wins when it names a manifest item; else EPUB 3 `cover-image`.
         let mut cover_id = None;
         if let Some(meta) = parsed.cover_meta {
             if by_id.contains_key(&meta) {
@@ -341,14 +314,12 @@ impl<R: Read + Seek> Package<R> {
         self.archive.read(&path)
     }
 
-    /// Read any archive entry by path: exactly, then percent-decoded, then
-    /// with `.`/`..` folded.
+    /// Reads an archive entry: exactly, then percent-decoded, then with `.`/`..` folded.
     pub fn resource_by_path(&mut self, path: &str) -> Result<Vec<u8>, Error> {
         self.archive.read(path)
     }
 
-    /// The cover image, when the book names one and it can be read. A cover
-    /// that is named but unreadable records a [`Warning::CoverUnreadable`].
+    /// A named but unreadable cover records `Warning::CoverUnreadable`.
     pub fn cover(&mut self) -> Option<Cover> {
         let id = self.cover_id.clone()?;
         let media_type = self.manifest_item(&id)?.media_type.clone();
@@ -400,8 +371,7 @@ impl<R> Package<R> {
         self.version.as_deref()
     }
 
-    /// The value of the identifier the package names as its
-    /// `unique-identifier`, untrimmed.
+    /// The identifier's value, untrimmed.
     pub fn unique_identifier(&self) -> Option<&str> {
         self.unique_identifier.as_deref()
     }
@@ -411,13 +381,12 @@ impl<R> Package<R> {
         &self.metadata
     }
 
-    /// The manifest items that carry an id, href and media type, in document
-    /// order.
+    /// Only items carrying an id, href and media type.
     pub fn manifest(&self) -> &[ManifestItem] {
         &self.manifest
     }
 
-    /// The manifest item with this id; the last, when the id is repeated.
+    /// The last item when an id is repeated.
     pub fn manifest_item(&self, id: &str) -> Option<&ManifestItem> {
         self.by_id.get(id).and_then(|&i| self.manifest.get(i))
     }
@@ -432,14 +401,8 @@ impl<R> Package<R> {
         self.spine_by_id.get(id).copied()
     }
 
-    /// The spine position that reads the resource at this archive path.
-    ///
-    /// Paths are compared component-wise first (repeated `/` and interior `.`
-    /// ignored), which is how the `epub` 2.x crate matched; when that finds
-    /// nothing, both sides are percent-decoded and `.`/`..` folded, so
-    /// `OEBPS/nav/../text/ch1.xhtml` finds `OEBPS/text/ch1.xhtml`. Of several
-    /// manifest items at one path, the first in the spine wins. Constant time:
-    /// the index is built at open.
+    /// Matches by path components first, then percent-decoded with `.`/`..` folded; the first spine
+    /// position wins when several items share a path.
     pub fn spine_index_of_path(&self, path: &str) -> Option<usize> {
         self.spine_by_path
             .get(Path::new(path))
@@ -458,8 +421,7 @@ impl<R> Package<R> {
     }
 }
 
-/// Parse a well-formed XML document, turning unexpanded entities into
-/// warnings.
+/// Parse a well-formed XML document, turning unexpanded entities into warnings.
 pub(crate) fn parse_xml(
     bytes: &[u8],
     path: &str,
@@ -471,8 +433,8 @@ pub(crate) fn parse_xml(
     Ok(doc)
 }
 
-/// Parse an XHTML document leniently, turning unexpanded entities and every
-/// repair into warnings.
+/// Parse an XHTML document leniently, turning unexpanded entities and every repair into
+/// warnings.
 pub(crate) fn parse_html(
     bytes: &[u8],
     path: &str,
@@ -580,8 +542,7 @@ mod tests {
         ));
     }
 
-    /// An empty `full-path` is an error. (The old `epub` crate panicked on
-    /// it: it took the path's parent with `expect`.)
+    /// An empty `full-path` is an error.
     #[test]
     fn an_empty_rootfile_path_is_an_error_not_a_panic() {
         let bytes = zip_of(&[(
@@ -717,8 +678,7 @@ mod tests {
         ));
     }
 
-    /// A bomb that lies: the archive declares the entry to be 10 bytes. The
-    /// read must still stop at the cap rather than trusting the declaration.
+    /// The archive declares 10 bytes but the read must still stop at the cap.
     #[test]
     fn a_lying_declared_size_does_not_lift_the_cap() {
         let big = vec![b'a'; 4 * 1024 * 1024];
@@ -726,8 +686,6 @@ mod tests {
             r#"{CH1}<item id="big" href="big.bin" media-type="application/octet-stream"/>"#
         );
         let mut bytes = book("", &manifest, SPINE, &[("OEBPS/big.bin", &big)]);
-        // Rewrite the uncompressed size in big.bin's local and central
-        // headers to 10.
         let name = b"OEBPS/big.bin";
         let mut patched = 0;
         let mut i = 0;
@@ -967,14 +925,13 @@ mod tests {
         let p = Package::from_bytes(&bytes).unwrap();
         let m = p.metadata();
         let titles: Vec<&str> = m.values("title").collect();
-        // Untrimmed, and CDATA is not text — exactly what the old map held.
+        // The flat view is untrimmed and does not count CDATA as text.
         assert_eq!(titles, vec!["  Spaced  ", ""]);
         assert_eq!(m.values("calibre:series").collect::<Vec<_>>(), vec!["S"]);
         assert_eq!(
             m.values("dcterms:modified").collect::<Vec<_>>(),
             vec!["2020"]
         );
-        // The typed view trims and reads CDATA.
         assert_eq!(m.titles[1].value, "In CDATA");
         assert_eq!(m.titles[0].value, "Spaced");
     }
@@ -1020,8 +977,8 @@ mod tests {
         );
     }
 
-    /// The spine index answers the same for every spelling of a path that
-    /// compares equal by component, and the earliest spine position wins.
+    /// The spine index answers the same for every spelling of a path that compares equal by
+    /// component, and the earliest spine position wins.
     #[test]
     fn spine_index_of_path_by_component_then_folded() {
         let manifest = r#"<item id="a" href="t/a.xhtml" media-type="application/xhtml+xml"/>
@@ -1079,9 +1036,8 @@ mod tests {
         ));
     }
 
-    /// A `<meta name="cover">` naming no manifest item, beside a valid
-    /// `cover-image` item, falls back to that item. (The old `epub` crate let
-    /// the dangling meta win and found no cover.)
+    /// A `<meta name="cover">` naming no manifest item, beside a valid `cover-image` item, falls
+    /// back to that item.
     #[test]
     fn a_dangling_cover_meta_falls_back_to_the_cover_image_item() {
         let manifest = format!(
@@ -1097,10 +1053,8 @@ mod tests {
         assert_eq!(p.cover().unwrap().bytes, PNG);
     }
 
-    /// A cover outside the package document's directory (`../Images/c.png`)
-    /// is found by folding `..` at read time; the manifest path itself stays
-    /// as joined. (The old crate looked `OEBPS/../Images/c.png` up verbatim
-    /// and missed.)
+    /// A cover outside the package document's directory (`../Images/c.png`) is found by folding
+    /// `..` at read time; the manifest path itself stays as joined.
     #[test]
     fn a_cover_outside_the_package_directory_is_found_and_its_path_kept() {
         let manifest =
@@ -1116,8 +1070,7 @@ mod tests {
         assert_eq!(p.cover().unwrap().bytes, PNG);
     }
 
-    /// A namespace prefix nobody declared is read by its local part, like
-    /// every other name. (xml-rs, under the old crate, refused the book.)
+    /// A namespace prefix nobody declared is read by its local part, like every other name.
     #[test]
     fn an_undeclared_namespace_prefix_does_not_refuse_the_book() {
         let opf = opf(
@@ -1147,8 +1100,8 @@ mod props {
     use crate::{SeriesSource, metadata::Contributor};
     use proptest::prelude::*;
 
-    /// Text with no leading or trailing whitespace, and markup characters
-    /// that must be escaped on the way in.
+    /// Text with no leading or trailing whitespace, and markup characters that must be escaped on
+    /// the way in.
     fn text() -> impl Strategy<Value = String> {
         "[A-Za-z0-9é][A-Za-z0-9 &<>'\"é,.-]{0,14}[A-Za-z0-9é]"
     }
@@ -1368,9 +1321,8 @@ mod props {
 
     proptest! {
 
-        /// An OPF written from an arbitrary metadata model, zipped, reads
-        /// back as that model — through both conventions for every field
-        /// that has two.
+        /// An OPF written from an arbitrary metadata model, zipped, reads back as that model —
+        /// through both conventions for every field that has two.
         #[test]
         fn a_generated_package_round_trips(m in model()) {
             let bytes = minimal_book(&to_opf_metadata(&m));
@@ -1409,8 +1361,8 @@ mod props {
             prop_assert_eq!(got, want);
         }
 
-        /// Arbitrary bytes are opened or refused — never a panic — and so is
-        /// everything a caller might then ask of what opened.
+        /// Arbitrary bytes are opened or refused — never a panic — and so is everything a caller
+        /// might then ask of what opened.
         #[test]
         fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..2048)) {
             if let Ok(mut p) = Package::from_bytes(&bytes) {
@@ -1423,8 +1375,8 @@ mod props {
             }
         }
 
-        /// A valid book cut short or with bits flipped anywhere is opened or
-        /// refused, never a panic, and every read on it is bounded.
+        /// A valid book cut short or with bits flipped anywhere is opened or refused, never a panic,
+        /// and every read on it is bounded.
         #[test]
         fn a_damaged_book_never_panics(
             cut in any::<prop::sample::Index>(),
@@ -1450,9 +1402,9 @@ mod props {
             }
         }
 
-        /// Any file name, in any directory relative to the package document,
-        /// is found from its href — written plain or percent-encoded — and
-        /// the spine position of its resolved path is the one it was given.
+        /// Any file name, in any directory relative to the package document, is found from its href —
+        /// written plain or percent-encoded — and the spine position of its resolved path is the one
+        /// it was given.
         #[test]
         fn hrefs_resolve_to_their_files(
             opf_dir in proptest::collection::vec("[A-Za-z0-9_-]{1,6}", 0..3),

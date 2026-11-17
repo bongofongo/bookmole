@@ -1,16 +1,10 @@
-//! Archive paths: how an `href` becomes the name of a zip entry.
-//!
-//! Resolution is **textual**, the way the `epub` 2.x crate did it and the way
-//! callers that store a resolved path have always seen it: the package
-//! document's directory joined with the href, by `std::path` rules, with `/`
-//! as the separator on every platform. `.` and `..` are *not* folded here;
-//! [`normalize`] is the archive's last lookup fallback, not the name a caller
-//! is given.
+//! Archive paths: an `href` is joined textually to the package directory, `/`-separated.
+//! `.` and `..` are not folded here; [`normalize`] is only a lookup fallback.
 
 use std::path::Path;
 
-/// The directory a package document sits in, as an archive path (`""` for a
-/// document at the archive root).
+/// The directory a package document sits in, as an archive path (`""` for a document at the
+/// archive root).
 pub(crate) fn parent_dir(path: &str) -> String {
     Path::new(path)
         .parent()
@@ -18,25 +12,21 @@ pub(crate) fn parent_dir(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `base` joined with `href`, as `Path::join` does it: an absolute href
-/// replaces the base, an empty base yields the href unchanged.
+/// `base` joined with `href`, as `Path::join` does it: an absolute href replaces the base, an
+/// empty base yields the href unchanged.
 pub(crate) fn join(base: &str, href: &str) -> String {
     slashes(&Path::new(base).join(href).to_string_lossy())
 }
 
-/// Whether two archive paths name the same entry by `std::path`'s component
-/// comparison — which ignores repeated separators and interior `.`, but not
-/// `..`. This is how the `epub` 2.x crate matched a TOC target to the spine;
-/// the package now answers it from a map keyed on `PathBuf`, whose `Hash`
-/// agrees with this comparison.
+/// Whether two archive paths name the same entry by `std::path`'s component comparison —
+/// which ignores repeated separators and interior `.`, but not `..`.
 #[cfg(test)]
 pub(crate) fn same(a: &str, b: &str) -> bool {
     Path::new(a) == Path::new(b)
 }
 
-/// The path percent-decoded, then [`normalize`]d: the loosest key two
-/// spellings of one archive entry share. `None` when it is not UTF-8 once
-/// decoded, or climbs out of the root.
+/// The path percent-decoded, then [`normalize`]d: the loosest key two spellings of one
+/// archive entry share.
 pub(crate) fn folded(path: &str) -> Option<String> {
     let decoded = percent_encoding::percent_decode_str(path)
         .decode_utf8()
@@ -44,9 +34,9 @@ pub(crate) fn folded(path: &str) -> Option<String> {
     normalize(&decoded)
 }
 
-/// Whether an href is an absolute URL (`https://…`, `mailto:…`) rather than a
-/// path inside the book: it starts with a URI scheme — a letter, then
-/// letters, digits, `+`, `-` or `.`, then `:`.
+/// Whether an href is an absolute URL (`https://…`, `mailto:…`) rather than a path inside the
+/// book: it starts with a URI scheme — a letter, then letters, digits, `+`, `-` or `.`, then
+/// `:`.
 pub(crate) fn has_scheme(href: &str) -> bool {
     let Some((scheme, _)) = href.split_once(':') else {
         return false;
@@ -56,8 +46,8 @@ pub(crate) fn has_scheme(href: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-/// The path with `.` and `..` segments folded and empty segments dropped, or
-/// `None` when a `..` would climb out of the archive root.
+/// The path with `.` and `..` segments folded and empty segments dropped, or `None` when a
+/// `..` would climb out of the archive root.
 pub(crate) fn normalize(path: &str) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
     for seg in path.split('/') {
@@ -149,8 +139,8 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Folding never yields a path that still carries a `.`/`..` segment
-        /// or an empty one, and folding twice changes nothing.
+        /// Folding never yields a path that still carries a `.`/`..` segment or an empty one, and
+        /// folding twice changes nothing.
         #[test]
         fn normalize_is_idempotent_and_clean(segs in proptest::collection::vec("(\\.|\\.\\.|[a-z]{1,4}|)", 0..8)) {
             let p = segs.join("/");
@@ -161,8 +151,8 @@ mod props {
             }
         }
 
-        /// A relative href with no dot segments joins to `dir/href` exactly,
-        /// and the result is the same entry as its normalized form.
+        /// A relative href with no dot segments joins to `dir/href` exactly, and the result is the
+        /// same entry as its normalized form.
         #[test]
         fn plain_relative_hrefs_join_textually(
             dir in proptest::collection::vec("[A-Za-z0-9_-]{1,6}", 0..3),

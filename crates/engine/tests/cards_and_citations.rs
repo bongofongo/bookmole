@@ -1,20 +1,11 @@
-//! Flashcards and citations through the facade: a card can be made, and "which passages
-//! are already cited" can be asked once for a page of notes.
-//!
-//! Offline, `sqlite::memory:` plus a `TempDir` vault, like every other suite
-//! here.
-
 use bookmole::{Engine, EngineError};
 
 mod common;
 use common::{engine, highlight, seed_book};
 
-/// Insert `n` highlights into `book` and return their ids in insertion order.
 async fn highlights(engine: &Engine, book: i64, texts: &[&str]) -> Vec<i64> {
     let mut ids = Vec::new();
     for (i, text) in texts.iter().enumerate() {
-        // Distinct device stamps, so `CITATION_ORDER`'s first two keys are
-        // meaningful rather than a wall of ties.
         let when = format!("2026-01-{:02} 09:00:00", i + 1);
         ids.push(
             engine
@@ -28,11 +19,6 @@ async fn highlights(engine: &Engine, book: i64, texts: &[&str]) -> Vec<i64> {
     ids
 }
 
-// ---- a flashcard can be made -----------------------------------------------
-
-/// The point, end to end: a card minted through the facade comes
-/// back out of both list queries carrying the handles that let a frontend show
-/// it beside the passage it was taken from.
 #[tokio::test]
 async fn a_card_round_trips_its_book_and_its_passage() {
     let (_tmp, engine) = engine().await;
@@ -62,10 +48,6 @@ async fn a_card_round_trips_its_book_and_its_passage() {
     }
 }
 
-/// *You already had this one* and *a card now exists* are different facts, and
-/// the second attempt must not quietly repoint the first card at a different
-/// passage — `UNIQUE(book_id, word)` dedupes, and `DO NOTHING` is what makes
-/// the returned bool mean what it says.
 #[tokio::test]
 async fn a_repeat_word_reports_not_new_and_leaves_the_first_card_alone() {
     let (_tmp, engine) = engine().await;
@@ -96,10 +78,6 @@ async fn a_repeat_word_reports_not_new_and_leaves_the_first_card_alone() {
     );
 }
 
-/// Handles do not cross. Nothing in the schema stops a client pairing a book
-/// with another book's highlight, and a card that took the pair on trust would
-/// sit beside a passage from somewhere else for ever, with nothing on screen
-/// looking wrong.
 #[tokio::test]
 async fn a_card_cannot_be_anchored_to_another_books_passage() {
     let (_tmp, engine) = engine().await;
@@ -122,9 +100,6 @@ async fn a_card_cannot_be_anchored_to_another_books_passage() {
         "a refused card writes nothing"
     );
 
-    // The neighbouring failures are their own answers rather than a raw
-    // foreign-key error out of the driver: a frontend offering a list can
-    // always name a row another pane has just deleted.
     assert!(matches!(
         engine
             .create_flashcard(middlemarch, Some(9_999), "ghost", None)
@@ -143,9 +118,6 @@ async fn a_card_cannot_be_anchored_to_another_books_passage() {
     ));
 }
 
-/// Unanchored is ordinary — a card typed rather than captured — and the word is
-/// trimmed on the way in, because `UNIQUE(book_id, word)` is the dedup and
-/// `" mot"` is not a second word.
 #[tokio::test]
 async fn a_card_needs_no_passage_and_its_word_is_trimmed() {
     let (_tmp, engine) = engine().await;
@@ -171,15 +143,6 @@ async fn a_card_needs_no_passage_and_its_word_is_trimmed() {
     assert_eq!(cards[0].highlight_id, None);
 }
 
-// ---- which passages are already cited --------------------------------------
-
-/// The agreement that makes the batch safe to prefer: for **any** set of note
-/// ids, its answer for each note is exactly what `citations_for` returns for
-/// that note alone — same members, same order.
-///
-/// Without this the batch is a second implementation of a question the engine
-/// already answers, and the two would drift the first time either query
-/// changed.
 #[tokio::test]
 async fn the_batch_and_the_single_note_call_cannot_disagree() {
     let (_tmp, engine) = engine().await;
@@ -198,8 +161,7 @@ async fn the_batch_and_the_single_note_call_cannot_disagree() {
 
     let reflection = engine.open_reflection(book, None).await.unwrap();
     let review = engine.open_review(book, None).await.unwrap();
-    // Cited out of reading order on purpose: the reply is ordered by the book,
-    // never by when the citation was made.
+    // Cited out of reading order on purpose: the reply is ordered by the book, not by citation time.
     for h in [hs[3], hs[0], hs[2]] {
         engine.cite(reflection.id, h).await.unwrap();
     }
@@ -221,10 +183,6 @@ async fn the_batch_and_the_single_note_call_cannot_disagree() {
     }
 }
 
-/// One row per requested id, in the order asked, including for a note that
-/// cites nothing and for an id that is not a note at all — so a caller can zip
-/// the reply against the page it already holds, and "nothing behind this one"
-/// is an answer rather than a missing row.
 #[tokio::test]
 async fn every_requested_note_gets_a_row_in_the_order_asked() {
     let (_tmp, engine) = engine().await;
@@ -254,17 +212,8 @@ async fn every_requested_note_gets_a_row_in_the_order_asked() {
     );
 }
 
-/// More ids than one statement is allowed to bind, so the split is crossed
-/// three times over: 1,203 is more than two chunks and not a multiple of one.
-///
-/// **This does not prove the chunk exists** — measured, not assumed: with the
-/// split removed the test still passes, because the SQLite sqlx bundles binds
-/// 32,766 parameters and only an older build refuses. What it proves is that
-/// crossing the boundary does not lose, duplicate or reorder a row, which is
-/// the bug a *present* chunk introduces. That the chunk is there at all is
-/// `no_batch_statement_exceeds_the_parameter_ceiling`, in `storage/notes.rs`,
-/// which reads the generated SQL: a behavioural test that cannot fail is no
-/// guard, so the structure is what gets asserted.
+/// Crosses the parameter-chunk boundary (1,203 ids) to check no row is lost, duplicated or
+/// reordered; a SQLite that binds 32,766 parameters passes even without the chunk.
 #[tokio::test]
 async fn more_ids_than_one_statement_can_bind() {
     let (_tmp, engine) = engine().await;
@@ -274,8 +223,6 @@ async fn more_ids_than_one_statement_can_bind() {
     let real = engine.open_reflection(book, None).await.unwrap();
     engine.cite(real.id, hs[0]).await.unwrap();
 
-    // One real note among 1,202 ids that are not notes. The absent ones still
-    // owe a row each, which is what makes the count assertion meaningful.
     let mut asked: Vec<i64> = (100_000..101_202).collect();
     asked.insert(700, real.id);
 
@@ -289,10 +236,6 @@ async fn more_ids_than_one_statement_can_bind() {
     );
 }
 
-/// A citation is by reference, so the batch is live in exactly the way
-/// `citations_for` is: uncite one and the mark goes; delete the book and the
-/// cascade takes the rest, leaving a row that says *nothing* rather than a
-/// missing row.
 #[tokio::test]
 async fn the_batch_follows_the_citation_rather_than_a_copy_of_it() {
     let (_tmp, engine) = engine().await;

@@ -1,22 +1,7 @@
-//! A ranked search over the books (migration `0033`), and the reads *you have
-//! this* stands on: the library read once per search into the form the
-//! matcher compares against, never once per result row.
-//!
-//! **Candidates come from the index, the order from Rust.** The trigram index
-//! answers *which books share the query's letters* — an OR of the query's
-//! trigrams, so a typo still shares most of them; a prefix `LIKE` when no word
-//! is three characters long, since a trigram index cannot see a shorter one;
-//! the two ISBN columns exactly, for an ISBN. The caller's [`BookFilter`] and
-//! [`LibraryScope`] narrow them **in the same statement, before the cut**: a
-//! filter applied after `LIMIT` returns nothing whenever the best few hundred
-//! hits are elsewhere (the same truncation `search_marks` guards against).
-//! What is left is ranked by `search::local`, which is
-//! `search::ranking::rank` — the scorer provider results get — so searching
-//! your own library and searching to add a book cannot disagree about what a
-//! good match is.
-//!
-//! The query is the reader's private interest: nothing here logs it, or
-//! anything derived from it, above `trace!`.
+//! Ranked search over books: candidates from the trigram index (a prefix `LIKE` when no word has
+//! three characters, the ISBN columns for an ISBN), narrowed by filter and scope in the same
+//! statement before the cut, then ranked in Rust. The query is private: never logged above
+//! `trace!`.
 
 use std::collections::BTreeSet;
 
@@ -29,45 +14,28 @@ use crate::book::{Book, isbn10_to_13};
 use crate::error::Result;
 use crate::search::query::{KnowsNothing, ParsedQuery, parse};
 
-/// Candidates read per result asked for, before ranking. bm25 over trigrams is
-/// a good first cut and a poor final order, so the cut is generous.
 const CANDIDATES_PER_RESULT: usize = 8;
-/// At least this many candidates, however few results are asked for: the
-/// ranker, not bm25, decides which ones survive.
 const MIN_CANDIDATES: usize = 200;
-/// The most trigrams one `MATCH` names: a pasted paragraph is not a query, and
-/// sixty-four trigrams of it find whatever it is about.
 const MAX_TRIGRAMS: usize = 64;
 
-/// One book a search found, and how well it answers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BookMatch {
     pub book_id: i64,
-    /// [`crate::search::ranking::rank`]'s score. Comparable within one answer,
-    /// and with a provider result's score for the same query.
+    /// Comparable within one answer and with a provider result's score for the same query.
     pub score: f64,
 }
 
-/// What the app holds of one book, for a search's *books you already have*
-/// section (in the library or not, its copies, passages, notes and lists):
-/// read for a whole answer in one statement ([`Storage::held_facts`]), never
-/// per row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldFacts {
     pub book_id: i64,
     /// In the library by the copies rule (`in_library_sql`).
     pub in_library: bool,
-    /// Any copy recorded at all, had now or not.
     pub has_copy: bool,
-    /// Passages kept from it (highlights of every origin).
     pub passages: i64,
-    /// Notes written about it, of every kind.
     pub notes: i64,
-    /// The lists it is on, by name.
     pub lists: Vec<(i64, String)>,
 }
 
-/// One book as *you have this* reads it: its identities and its words.
 #[derive(Debug, Clone)]
 pub(crate) struct LibraryBook {
     pub id: i64,
@@ -80,33 +48,23 @@ pub(crate) struct LibraryBook {
     pub in_library: bool,
 }
 
-/// Every book the app holds, and every other system's id for one — what a
-/// search prepares once (`search::held::Library`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LibraryIdentities {
     pub books: Vec<LibraryBook>,
-    /// `(source, external_id, book_id)` from `external_ids`.
     pub external: Vec<(String, String, i64)>,
 }
 
-/// How the index is asked, for one parsed query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ask {
-    /// Nothing to ask with: no statement is issued.
     Nothing,
-    /// The two ISBN columns, exactly: the ISBN-13 and, where it has one, its
-    /// ISBN-10.
     Isbn {
         thirteen: String,
         ten: Option<String>,
     },
-    /// A prefix of the title, or of a word in it.
     Prefix(String),
-    /// The trigram index, as an fts5 `MATCH` expression.
     Trigrams(String),
 }
 
-/// The ISBN-10 of a `978` ISBN-13, which is the only kind that has one.
 fn isbn13_to_10(isbn13: &str) -> Option<String> {
     let body = isbn13.strip_prefix("978")?.get(..9)?;
     let mut sum = 0u32;
@@ -122,8 +80,7 @@ fn isbn13_to_10(isbn13: &str) -> Option<String> {
     Some(format!("{body}{check}"))
 }
 
-/// The distinct trigrams of every word of three characters or more, sorted so
-/// one query is one statement however its words were ordered.
+/// Distinct trigrams of words of three or more characters, sorted so one query is one statement.
 fn trigrams(words: &[String]) -> Vec<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     for w in words {
@@ -152,8 +109,7 @@ fn ask_of(q: &ParsedQuery) -> Ask {
     }
     let grams = trigrams(&q.words);
     if !grams.is_empty() {
-        // Every trigram a quoted phrase (fts.rs' rule): a folded word holds
-        // only letters and digits, but `OR` and `NEAR` are words too.
+        // Each trigram is a quoted phrase: `OR` and `NEAR` are words too.
         let expr = grams
             .iter()
             .map(|g| format!("\"{}\"", g.replace('"', "\"\"")))
@@ -169,7 +125,7 @@ fn ask_of(q: &ParsedQuery) -> Ask {
     }
 }
 
-/// `LIKE`'s wildcards escaped, `\` first (the clause declares it the escape).
+/// Escapes `LIKE` wildcards, `\` first; the clause declares `\` as the escape.
 fn like_escape(needle: &str) -> String {
     let mut out = String::with_capacity(needle.len());
     for c in needle.chars() {
@@ -182,13 +138,8 @@ fn like_escape(needle: &str) -> String {
 }
 
 impl Storage {
-    /// Search the books for `query`, best match first: ids and scores, at most
-    /// `limit` of them.
-    ///
-    /// `filter` is the caller's [`BookFilter`] and `scope` which books count —
-    /// a search of your library asks with [`LibraryScope::InLibrary`], a
-    /// search to add a book with [`LibraryScope::All`]. Both narrow the candidates in SQL, before the
-    /// cut. An empty query is no hits and no statement.
+    /// At most `limit` ids with scores, best first. `filter` and `scope` narrow candidates in SQL
+    /// before the cut; an empty query issues no statement.
     pub async fn search_books(
         &self,
         query: &str,
@@ -204,8 +155,6 @@ impl Storage {
             .collect())
     }
 
-    /// [`Storage::search_books`], with the books themselves — what a row for a
-    /// book you already have shows, read in the same statement that found it.
     pub(crate) async fn search_books_ranked(
         &self,
         query: &str,
@@ -289,9 +238,7 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
-    /// What the app holds of each of `ids`, in the order asked, in **one**
-    /// statement: in the library or not, any copy, how many passages and
-    /// notes, and the lists the book is on. An id with no book is left out.
+    /// One statement for all of `ids`, in the order asked; an id with no book is left out.
     pub(crate) async fn held_facts(&self, ids: &[i64]) -> Result<Vec<HeldFacts>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -332,9 +279,6 @@ impl Storage {
             .collect()
     }
 
-    /// Every book's identities and words, and every external id: the library
-    /// as a search prepares it, once per search and never once per row. Two
-    /// statements, whatever the size of the library.
     pub(crate) async fn library_identities(&self) -> Result<LibraryIdentities> {
         let sql = format!(
             "SELECT books.id, books.title, books.authors, books.isbn_13, books.isbn_10,
@@ -406,12 +350,10 @@ mod tests {
             panic!("a word of four letters is two trigrams")
         };
         assert_eq!(expr, "\"dun\" OR \"une\"");
-        // The order the words were typed in does not change the statement.
         assert_eq!(ask_of(&q("dune herbert")), ask_of(&q("herbert dune")));
     }
 }
 
-/// The index against the real writers, in a real (in-memory) database.
 #[cfg(test)]
 mod storage_tests {
     use super::*;
@@ -438,9 +380,8 @@ mod storage_tests {
             .collect()
     }
 
-    /// fts5's own check that the index holds exactly what the content table
-    /// says — `rank = 1` makes it read `books` back and compare. The only
-    /// assertion that can see an index drifting from its table.
+    /// fts5's integrity check (`rank = 1`): the only assertion that sees the index drifting from its
+    /// table.
     async fn index_is_true(s: &Storage) {
         sqlx::query("INSERT INTO books_search (books_search, rank) VALUES ('integrity-check', 1)")
             .execute(s.pool())
@@ -460,9 +401,6 @@ mod storage_tests {
         .unwrap();
     }
 
-    /// Every writer of `books` keeps the index true, `merge_books` above all:
-    /// a merge fills `dst` and deletes `src` in one transaction, and both
-    /// halves have to reach the index without naming it.
     #[tokio::test]
     async fn every_books_writer_keeps_the_index_true() {
         let s = storage().await;
@@ -474,7 +412,6 @@ mod storage_tests {
         assert_eq!(found(&s, "possess").await, vec![a], "infix");
         assert_eq!(found(&s, "le guin").await, vec![a], "authors");
 
-        // enrich (incoming wins), fill (stored wins), a user's edit.
         s.enrich_book(
             a,
             &Book {
@@ -507,7 +444,6 @@ mod storage_tests {
         assert!(found(&s, "possess").await.is_empty(), "the old title left");
         assert_eq!(found(&s, "anarres").await, vec![a]);
 
-        // A merge: `src` goes, `dst` takes its ISBN.
         let src = s
             .upsert_book(
                 &Book {
@@ -534,9 +470,8 @@ mod storage_tests {
         assert!(found(&s, "9781900000178").await.is_empty());
     }
 
-    /// The caller's filter and scope narrow the candidates **before** the cut.
-    /// Two hundred and fifty short titles outrank the one long one under bm25,
-    /// so a scope applied after `LIMIT` would find nothing.
+    /// Filter and scope narrow candidates before the cut: under bm25 250 short titles outrank the one
+    /// long one.
     #[tokio::test]
     async fn scope_and_filter_narrow_before_the_cut() {
         let s = storage().await;
@@ -576,7 +511,6 @@ mod storage_tests {
             got.iter().map(|m| m.book_id).collect::<Vec<_>>(),
             vec![kept]
         );
-        // And with nothing narrowing, the count asked for is the count given.
         let all = s
             .search_books("dune", &BookFilter::default(), LibraryScope::All, 5)
             .await
@@ -601,8 +535,6 @@ mod storage_tests {
         );
     }
 
-    /// One statement for a whole section: membership, copies, passages,
-    /// notes and lists, in the order asked, a missing id left out.
     #[tokio::test]
     async fn held_facts_come_back_for_a_whole_section() {
         let s = storage().await;
@@ -660,8 +592,7 @@ mod storage_tests {
                 (later.id, "Later".to_string())
             ]
         );
-        // Not had any more, and untouched until the note: a note is a touch,
-        // so the book stays (the copies rule).
+        // A note is a touch, so the book stays in the library by the copies rule.
         assert!(gone_f.has_copy && gone_f.in_library);
         assert_eq!(gone_f.notes, 1);
         assert!(s.held_facts(&[]).await.unwrap().is_empty());

@@ -1,38 +1,5 @@
-//! What the terminal can actually do — probed once, at startup.
-//!
-//! The book has more than one presentation, and which one is best is a property
-//! of the *situation*, not of a single boolean. `$TMUX` alone was the old test
-//! and it is the wrong one: kitty graphics survive tmux perfectly well through
-//! DCS passthrough, so the interesting question is "does this terminal answer
-//! the kitty graphics query, and can bytes reach it?"
-//!
-//! The probe writes three escapes and reads the replies off the tty:
-//!
-//! | query | reply | tells us |
-//! |---|---|---|
-//! | `_Ga=q` (tmux-wrapped) | `_Gi=<id>;OK` | kitty graphics works, passthrough included |
-//! | `CSI 16 t` (tmux-wrapped) | `CSI 6;h;w t` | the outer terminal's cell size in pixels |
-//! | `CSI c` (never wrapped) | `CSI ? … c` | **sentinel**: proof the terminal is answering at all |
-//!
-//! The sentinel is the load-bearing part. Every terminal answers DA1, and DA1
-//! goes unwrapped so tmux itself answers it. So a DA1 reply with no `_G` reply
-//! is a *definitive* "no kitty graphics here" rather than an indistinguishable
-//! timeout — which is what lets the probe finish fast and be sure. Total
-//! silence means we are not talking to a real terminal, and only then do the
-//! environment heuristics get a vote.
-//!
-//! Two things measured in kitty + tmux 3.5a, both of which shape the code:
-//!
-//! - The replies really do come back through passthrough, but **out of order**:
-//!   tmux answers DA1 locally and immediately, while kitty's `_G` and cell-size
-//!   replies make the longer trip and land *after* it. Stopping at the sentinel
-//!   would therefore miss both, which is why [`GRACE`] exists.
-//! - tmux routes terminal input to the **active pane only**. Probing from a
-//!   background pane sees DA1 (tmux's own) but never kitty's replies, and so
-//!   concludes "no graphics". That is a false negative, but a safe one: it
-//!   degrades to glyphs rather than spraying escapes, it only happens if the
-//!   pane is unfocused during the first 200 ms of startup, and `--render rich`
-//!   or the runtime toggle overrides it.
+//! Startup probe of terminal capabilities: kitty graphics, cell pixel size, tmux passthrough.
+//! A DA1 reply with no kitty reply means no graphics; replies can arrive out of order.
 
 use std::io::{IsTerminal, Write, stdin, stdout};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -40,67 +7,38 @@ use std::time::{Duration, Instant};
 
 use super::kitty::ImageWire;
 
-/// How long to wait for any reply at all before giving up on the terminal.
 const DEADLINE: Duration = Duration::from_millis(200);
-/// Once the DA1 sentinel lands, how much longer to wait for stragglers. The
-/// kitty reply travels further than tmux's own DA1 answer, so it can arrive
-/// second even though it was asked first.
+/// Wait this long after DA1 lands: the kitty reply can arrive after tmux's local DA1 answer.
 const GRACE: Duration = Duration::from_millis(60);
-/// Arbitrary id for the query image; distinct from the ids the renderer uses so
-/// a stray reply can never be mistaken for a real one.
 const PROBE_ID: u32 = 31;
-/// Assumed cell size when nothing reports one. Conservative: guessing small
-/// under-renders (slightly soft) where guessing large would blow the pixel
-/// budget for no visible gain.
 const ASSUMED_CELL_PX: (u16, u16) = (8, 16);
 
-/// State of tmux's `allow-passthrough` for our pane.
-///
-/// It is a *pane* option, which is the whole reason this is tractable: we can
-/// turn it on for our own pane and put it back on the way out, without ever
-/// touching the user's `tmux.conf` or affecting any other pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Passthrough {
-    /// Not running under tmux — nothing to arrange.
     NotTmux,
-    /// Already enabled (inherited or set by the user).
     Already,
-    /// We turned it on and owe a restore.
     EnabledByUs,
-    /// tmux is present but we could not enable it; pixels cannot get out.
     Unavailable,
 }
 
 impl Passthrough {
-    /// Can escape sequences reach the outer terminal?
     pub fn is_open(self) -> bool {
         !matches!(self, Passthrough::Unavailable)
     }
 }
 
-/// The probed situation. `Copy` on purpose: `ui::book::present_book` relies on
-/// disjoint *direct field* borrows of `App`, so anything the presenter needs
-/// must be copyable out of `App` before the `&mut app.scene` borrow starts.
+/// `Copy` so `ui::book::present_book` can copy it out of `App` before the `&mut app.scene` borrow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
-    /// The terminal answered the kitty graphics query.
     pub kitty_graphics: bool,
-    /// Cell size in device pixels, `(width, height)`.
     pub cell_px: (u16, u16),
-    /// False when `cell_px` is the assumed default rather than a real report.
     pub cell_px_measured: bool,
     pub in_tmux: bool,
     pub passthrough: Passthrough,
-    /// How image payloads go on the wire. Not a terminal *capability* — every
-    /// terminal that speaks the protocol takes zlib — but a property of the
-    /// situation in exactly the way the rest of this struct is: on a libghostty
-    /// host, compressing is what crashes it. See [`ImageWire`].
     pub image_wire: ImageWire,
 }
 
 impl Default for Caps {
-    /// The safe floor: block glyphs, nothing assumed. Tests and `--dump-frame`
-    /// get this, so no test can accidentally emit graphics escapes.
     fn default() -> Self {
         Caps {
             kitty_graphics: false,
@@ -114,26 +52,18 @@ impl Default for Caps {
 }
 
 impl Caps {
-    /// Is the pixel path actually usable? Both halves matter: a terminal that
-    /// speaks the protocol is no use if tmux is eating the bytes.
     pub fn supports_pixels(self) -> bool {
         self.kitty_graphics && self.passthrough.is_open()
     }
 }
 
-/// What came back off the tty. Separated from the I/O so the parsing is a pure
-/// function over bytes and can be unit-tested against captured replies.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ProbeReplies {
     pub kitty_ok: bool,
-    /// `(width, height)` in pixels, from `CSI 6 ; height ; width t`.
     pub cell_px: Option<(u16, u16)>,
-    /// The DA1 sentinel landed, so the terminal is definitely answering.
     pub da1: bool,
 }
 
-/// Wrap a payload for tmux's DCS passthrough: `ESC P tmux; … ESC \`, with every
-/// inner ESC doubled so tmux forwards it instead of interpreting it.
 pub fn wrap_tmux(payload: &str) -> String {
     let mut out = String::with_capacity(payload.len() + 16);
     out.push_str("\x1bPtmux;");
@@ -147,7 +77,6 @@ pub fn wrap_tmux(payload: &str) -> String {
     out
 }
 
-/// Pass `payload` through tmux when needed, or hand it back untouched.
 pub fn maybe_wrap(payload: &str, in_tmux: bool) -> String {
     if in_tmux {
         wrap_tmux(payload)
@@ -156,12 +85,8 @@ pub fn maybe_wrap(payload: &str, in_tmux: bool) -> String {
     }
 }
 
-/// Scan raw tty bytes for the three replies. Tolerant by design: replies can
-/// interleave, arrive in any order, and be surrounded by unrelated input.
 pub fn parse_replies(bytes: &[u8], probe_id: u32) -> ProbeReplies {
     let mut out = ProbeReplies::default();
-    // `_Gi=<id>;OK` — the id must match so an unrelated graphics response
-    // (or an echo of our own query) can't be read as success.
     let expected = format!("\x1b_Gi={probe_id};OK");
     out.kitty_ok = find(bytes, expected.as_bytes()).is_some();
 
@@ -171,7 +96,6 @@ pub fn parse_replies(bytes: &[u8], probe_id: u32) -> ProbeReplies {
             i += 1;
             continue;
         }
-        // CSI 6 ; height ; width t — the cell-size report.
         if let Some(rest) = bytes.get(i + 1..)
             && rest.starts_with(b"[6;")
             && let Some(end) = rest.iter().position(|&b| b == b't')
@@ -185,7 +109,6 @@ pub fn parse_replies(bytes: &[u8], probe_id: u32) -> ProbeReplies {
                 out.cell_px = Some(px);
             }
         }
-        // CSI ? … c — DA1.
         if let Some(rest) = bytes.get(i + 1..)
             && rest.starts_with(b"[?")
             && rest.iter().take_while(|&&b| b != 0x1b).any(|&b| b == b'c')
@@ -197,12 +120,7 @@ pub fn parse_replies(bytes: &[u8], probe_id: u32) -> ProbeReplies {
     out
 }
 
-/// Reject cell sizes no real font produces. A garbage report is worse than no
-/// report: it silently scales every rich frame to the wrong resolution, whereas
-/// falling back to the assumed size is merely slightly soft.
-///
-/// Text cells are taller than they are wide, by somewhere between 1.2x and 3x
-/// on anything anyone reads code in.
+/// Rejects cell sizes no real font produces; a garbage report would scale every frame wrongly.
 fn sane_cell_px(w: u16, h: u16) -> Option<(u16, u16)> {
     if !(4..=64).contains(&w) || !(8..=128).contains(&h) {
         return None;
@@ -218,23 +136,15 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
-/// Probe the terminal. Must run with raw mode already on (so replies are not
-/// line-buffered or echoed) and before ratatui's event reader starts, so the
-/// reply bytes cannot leak into the later `EventStream`.
+/// Must run with raw mode on and before the event reader starts, or replies leak into it.
 pub fn probe() -> Caps {
     probe_verbose().0
 }
 
-/// [`probe`], plus the raw reply bytes. `--probe` prints them: when detection
-/// surprises you, the bytes the terminal actually sent are the only evidence
-/// that settles it.
 pub fn probe_verbose() -> (Caps, Vec<u8>) {
     let in_tmux = std::env::var_os("TMUX").is_some();
     let mut caps = Caps {
         in_tmux,
-        // Decided from the environment even when the probe never runs (piped
-        // output, no tty): it is not a reply, and a `--dump-png` or a bench that
-        // does reach a terminal must reach it the same way the app would.
         image_wire: if env_suggests_libghostty() {
             ImageWire::Raw
         } else {
@@ -243,7 +153,6 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
         ..Caps::default()
     };
 
-    // Not a terminal (piped, redirected, a test harness): never write escapes.
     if !stdin().is_terminal() || !stdout().is_terminal() {
         return (caps, Vec::new());
     }
@@ -251,7 +160,6 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
     if in_tmux {
         caps.passthrough = enable_passthrough();
         if caps.passthrough == Passthrough::Unavailable {
-            // Nothing can reach the outer terminal; don't bother asking.
             return (caps, Vec::new());
         }
     }
@@ -260,8 +168,7 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
     let mut out = String::new();
     out.push_str(&maybe_wrap(&kitty_query, in_tmux));
     out.push_str(&maybe_wrap("\x1b[16t", in_tmux));
-    // DA1 goes unwrapped on purpose: inside tmux, tmux answers it itself, so it
-    // arrives even when passthrough is broken. That makes it a true sentinel.
+    // DA1 goes unwrapped: tmux answers it itself, so it arrives even when passthrough is broken.
     out.push_str("\x1b[c");
 
     let mut stdout = stdout();
@@ -274,12 +181,8 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
     if replies.kitty_ok {
         caps.kitty_graphics = true;
     } else if !replies.da1 {
-        // Total silence — the terminal never answered anything, so we learned
-        // nothing. Only here do environment guesses earn a vote.
         caps.kitty_graphics = env_suggests_kitty();
     }
-    // A DA1 with no `_G` reply is definitive: this terminal has no kitty
-    // graphics, and no env var gets to overrule what the terminal just said.
 
     if let Some(px) = replies.cell_px {
         caps.cell_px = px;
@@ -292,8 +195,6 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
     (caps, raw)
 }
 
-/// Read from the tty until we have what we need, the sentinel's grace period
-/// expires, or the hard deadline passes. Never blocks indefinitely.
 #[cfg(unix)]
 fn read_replies() -> Vec<u8> {
     use std::os::fd::AsRawFd;
@@ -336,7 +237,6 @@ fn read_replies() -> Vec<u8> {
         buf.extend_from_slice(&chunk[..n as usize]);
 
         let replies = parse_replies(&buf, PROBE_ID);
-        // Everything we asked for is in: stop early rather than burn the grace.
         if replies.kitty_ok && replies.cell_px.is_some() && replies.da1 {
             break;
         }
@@ -353,49 +253,15 @@ fn read_replies() -> Vec<u8> {
     Vec::new()
 }
 
-/// How long the terminal took to answer a trivial question.
-///
-/// Two layers, deliberately kept apart — see [`rtt_probe`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rtt {
-    /// Round trip to the outer terminal (kitty). Rises when its own parse /
-    /// texture-upload / composite queue is backed up.
     pub kitty: Option<Duration>,
-    /// Round trip for the bare DA1. Inside tmux that is answered by tmux
-    /// locally, so it isolates *tmux's* backlog from the terminal's; outside
-    /// tmux the same terminal answers both, and the pair then reads as "how much
-    /// slower is the graphics path than the plain-escape path".
     pub tmux: Option<Duration>,
 }
 
-/// Id for the latency query. Distinct from [`PROBE_ID`] so a late startup reply
-/// can never be timed as an RTT sample.
 const RTT_ID: u32 = 37;
 
-/// **Measure the terminal's own backlog.**
-///
-/// This is the instrument that was missing when the first rich renderer shipped
-/// at 7.1 MB/s and made the terminal unusable: every number we had was on our
-/// side of the pty (trace, encode, `write`, `flush`) and all of them looked
-/// healthy, because the cost is paid *inside* the terminal decompressing and
-/// re-uploading a whole texture per frame, with tmux re-parsing it on the way.
-///
-/// A terminal that is drowning answers slowly. So: ask it two trivial questions
-/// under load and time the answers.
-///
-/// - The **wrapped `_Ga=q`** is answered by the outer terminal itself, so its
-///   latency is that terminal's queue.
-/// - The **bare `CSI c`** is answered by tmux locally (which is the same
-///   property that makes it a sentinel in [`probe_verbose`]), so its latency is
-///   tmux's queue.
-///
-/// Reading them apart is what turns "it feels laggy" into "kitty is 200 ms
-/// behind and tmux is fine".
-///
-/// **Bench-mode only.** This consumes bytes from stdin, and the running app's
-/// `EventStream` owns stdin — sampling from inside `app::run` would race it for
-/// the reply and eat keystrokes. It also needs raw mode already on, exactly as
-/// [`probe`] does.
+/// Bench-only: reads stdin, which the running app's `EventStream` owns, and needs raw mode on.
 pub fn rtt_probe(in_tmux: bool, deadline: Duration) -> Rtt {
     if !stdin().is_terminal() || !stdout().is_terminal() {
         return Rtt::default();
@@ -413,7 +279,6 @@ pub fn rtt_probe(in_tmux: bool, deadline: Duration) -> Rtt {
     read_rtt(start, deadline)
 }
 
-/// Poll the tty, timestamping each reply the first time it parses.
 #[cfg(unix)]
 fn read_rtt(start: Instant, deadline: Duration) -> Rtt {
     use std::os::fd::AsRawFd;
@@ -445,8 +310,7 @@ fn read_rtt(start: Instant, deadline: Duration) -> Rtt {
         }
         buf.extend_from_slice(&chunk[..n as usize]);
 
-        // Timestamp on first sight only: a later chunk must not overwrite the
-        // moment the answer actually arrived.
+        // Timestamp on first sight only; a later chunk must not overwrite the arrival time.
         let replies = parse_replies(&buf, RTT_ID);
         let now = start.elapsed();
         if replies.kitty_ok && rtt.kitty.is_none() {
@@ -464,9 +328,6 @@ fn read_rtt(_start: Instant, _deadline: Duration) -> Rtt {
     Rtt::default()
 }
 
-/// Derive cell pixels from the kernel's window size, which reports the window
-/// in both cells and pixels. Usually zero inside tmux (tmux is not a real
-/// window), hence the escape query first.
 fn cell_px_from_window_size() -> Option<(u16, u16)> {
     let ws = crossterm::terminal::window_size().ok()?;
     if ws.width == 0 || ws.height == 0 || ws.columns == 0 || ws.rows == 0 {
@@ -475,9 +336,7 @@ fn cell_px_from_window_size() -> Option<(u16, u16)> {
     Some((ws.width / ws.columns, ws.height / ws.rows))
 }
 
-/// Last-resort guess, used *only* when the terminal answered nothing at all.
-/// `TERM_PROGRAM` is useless inside tmux (it reads `tmux`), but the outer
-/// terminal's own markers survive in the environment.
+/// Used only when the terminal answered nothing; `TERM_PROGRAM` reads `tmux` inside tmux.
 fn env_suggests_kitty() -> bool {
     let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
     if has("KITTY_WINDOW_ID") || has("GHOSTTY_RESOURCES_DIR") || has("WEZTERM_EXECUTABLE") {
@@ -493,19 +352,8 @@ fn env_suggests_kitty() -> bool {
     )
 }
 
-/// The wire format this host's decoder can be trusted with.
-///
-/// The one thing the probe cannot ask about. A terminal that crashes on a
-/// compressed payload does not answer "no" to anything — it answers `OK` to the
-/// graphics query, takes the settle frame, and dies, which from here is
-/// indistinguishable from the user quitting. So this is identification rather
-/// than capability, and `--kitty-compress` exists because identification by
-/// name is exactly the kind of thing that goes stale.
-///
-/// **herdr is here for the same reason Ghostty is**: it is a multiplexer, not a
-/// terminal, but it embeds libghostty (`ghostty_terminal_vt_write` sits under
-/// its pty reader in the crash report), so it owns the decode and inherits the
-/// bug — the outer terminal being kitty changes nothing.
+/// Identification, not capability: a libghostty host (including herdr) crashes on compressed
+/// payloads while answering OK to the graphics query, so the probe cannot detect it.
 fn env_suggests_libghostty() -> bool {
     let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
     host_is_libghostty(
@@ -515,12 +363,8 @@ fn env_suggests_libghostty() -> bool {
     )
 }
 
-/// [`env_suggests_libghostty`] as a pure function, so it can be tested. Reading
-/// the environment is what makes the caller untestable — `set_var` is `unsafe`
-/// in edition 2024 and races every other test in the binary.
+/// Pure so it can be tested; `set_var` is unsafe in edition 2024 and races other tests.
 fn host_is_libghostty(has: &dyn Fn(&str) -> bool, term_program: &str, term: &str) -> bool {
-    // herdr exports these into every pane it owns; any one of them is the
-    // multiplexer saying it is between us and the terminal.
     if has("HERDR_ENV") || has("HERDR_PANE_ID") || has("HERDR_SOCKET_PATH") {
         return true;
     }
@@ -530,19 +374,8 @@ fn host_is_libghostty(has: &dyn Fn(&str) -> bool, term_program: &str, term: &str
     term_program == "ghostty" || term.contains("ghostty")
 }
 
-// ---------------------------------------------------------------------------
-// tmux passthrough
-// ---------------------------------------------------------------------------
-
-/// What we owe tmux on the way out.
-///
-/// An atomic rather than a `Mutex`, deliberately: the panic hook runs this, and
-/// a mutex could be poisoned or — worse — still held by the very thread that is
-/// panicking, which would deadlock the hook. There are only three states, so an
-/// atomic says everything a lock would.
-///
-/// We only ever set the option when its effective value was *not* already on,
-/// so the pane-scoped value we displaced can only have been "unset" or "off".
+/// An atomic, not a `Mutex`: the panic hook runs this and a held lock would deadlock it.
+/// The displaced pane value can only have been unset or off, since we set it only when not on.
 const OWE_NOTHING: u8 = 0;
 const OWE_UNSET: u8 = 1;
 const OWE_OFF: u8 = 2;
@@ -559,25 +392,19 @@ fn tmux(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Turn `allow-passthrough` on for *our pane only*, remembering what to put
-/// back. Scoping to the pane is deliberate: it needs no config file edit, no
-/// user action, and it dies with the pane even if we are killed outright.
 fn enable_passthrough() -> Passthrough {
     let pane = std::env::var("TMUX_PANE").unwrap_or_default();
     if pane.is_empty() {
         return Passthrough::Unavailable;
     }
 
-    // The effective value, inherited options included.
     match tmux(&["show", "-pAv", "-t", &pane, "allow-passthrough"]).as_deref() {
         Some("on") | Some("all") => return Passthrough::Already,
         None => return Passthrough::Unavailable,
         _ => {}
     }
 
-    // The pane-scoped value specifically, so the restore is exact rather than
-    // approximate: an empty answer means the pane had no value of its own and
-    // was inheriting, which we must restore by unsetting, not by writing "off".
+    // An empty answer means the pane inherited, so restore by unsetting, not by writing "off".
     let owed = match tmux(&["show", "-pv", "-t", &pane, "allow-passthrough"]).as_deref() {
         Some("") | None => OWE_UNSET,
         Some(_) => OWE_OFF,
@@ -589,10 +416,7 @@ fn enable_passthrough() -> Passthrough {
     Passthrough::EnabledByUs
 }
 
-/// Put `allow-passthrough` back where we found it.
-///
-/// Idempotent (the swap clears the debt), never panics, takes no locks — it has
-/// to be callable from the panic hook.
+/// Idempotent, never panics, takes no locks: it is called from the panic hook.
 pub fn restore_passthrough() {
     let owed = PRIOR_PASSTHROUGH.swap(OWE_NOTHING, Ordering::SeqCst);
     if owed == OWE_NOTHING {
@@ -618,10 +442,6 @@ mod tests {
         let none = |_: &str| false;
         let only = |k: &'static str| move |q: &str| q == k;
 
-        // herdr is a multiplexer, not a terminal, and is here anyway: it embeds
-        // libghostty and so owns the decode. Any one of its pane markers is
-        // enough — a pane inherits all three, and needing all three would make
-        // the detection fail closed in the one situation it exists for.
         for marker in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"] {
             assert!(
                 host_is_libghostty(&only(marker), "", ""),
@@ -632,8 +452,6 @@ mod tests {
         assert!(host_is_libghostty(&none, "ghostty", ""));
         assert!(host_is_libghostty(&none, "tmux", "xterm-ghostty"));
 
-        // kitty's own decoder is C zlib and has never had this problem, so it
-        // must keep the smaller payload.
         assert!(!host_is_libghostty(
             &only("KITTY_WINDOW_ID"),
             "",
@@ -645,9 +463,6 @@ mod tests {
 
     #[test]
     fn the_safe_floor_still_compresses() {
-        // `Caps::default()` is what tests and non-tty runs get. Raw is the
-        // workaround for a named host, not the new normal — if this ever flips,
-        // every other terminal silently starts taking six times the bytes.
         assert_eq!(Caps::default().image_wire, ImageWire::Zlib);
     }
 
@@ -655,7 +470,6 @@ mod tests {
     fn wraps_for_tmux_and_doubles_escapes() {
         assert_eq!(wrap_tmux("\x1b[16t"), "\x1bPtmux;\x1b\x1b[16t\x1b\\");
         assert_eq!(wrap_tmux("plain"), "\x1bPtmux;plain\x1b\\");
-        // Every ESC in the payload must double, not just the first.
         assert_eq!(
             wrap_tmux("\x1ba\x1bb"),
             "\x1bPtmux;\x1b\x1ba\x1b\x1bb\x1b\\"
@@ -673,7 +487,6 @@ mod tests {
         let raw = b"\x1b_Gi=31;OK\x1b\\\x1b[6;39;19t\x1b[?62;c";
         let r = parse_replies(raw, 31);
         assert!(r.kitty_ok);
-        // The report is height-then-width; we store (width, height).
         assert_eq!(r.cell_px, Some((19, 39)));
         assert!(r.da1);
     }
@@ -700,7 +513,6 @@ mod tests {
 
     #[test]
     fn tolerates_interleaved_and_out_of_order_replies() {
-        // DA1 first (tmux answers locally), kitty's reply trailing behind.
         let raw = b"\x1b[?62;c\x1b[6;32;16t\x1b_Gi=31;OK\x1b\\";
         let r = parse_replies(raw, 31);
         assert!(r.kitty_ok && r.da1);
@@ -716,16 +528,12 @@ mod tests {
 
     #[test]
     fn a_truncated_cell_report_is_no_report() {
-        // No terminating 't' yet — must not half-parse into a bogus size.
         assert_eq!(parse_replies(b"\x1b[6;39;19", 31).cell_px, None);
-        // Zero is not a usable cell size.
         assert_eq!(parse_replies(b"\x1b[6;0;0t", 31).cell_px, None);
     }
 
     #[test]
     fn rejects_cell_sizes_no_font_produces() {
-        // A garbage report would silently scale every rich frame wrongly, so
-        // implausible geometry has to be discarded, not clamped into range.
         assert_eq!(
             parse_replies(b"\x1b[6;3;40t", 31).cell_px,
             None,
@@ -737,7 +545,6 @@ mod tests {
             None,
             "square cell"
         );
-        // Plausible geometry survives: a retina kitty cell and a small one.
         assert_eq!(parse_replies(b"\x1b[6;39;19t", 31).cell_px, Some((19, 39)));
         assert_eq!(parse_replies(b"\x1b[6;16;8t", 31).cell_px, Some((8, 16)));
     }

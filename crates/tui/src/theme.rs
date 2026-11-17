@@ -1,22 +1,12 @@
-//! One place for colors.
-//!
-//! Text sticks to `Color::Reset` and `DarkGray` so the pane inherits whatever
-//! theme the terminal has; only accents are hard-coded RGB, and selection uses
-//! `REVERSED` rather than a background color, which reads correctly on both
-//! light and dark terminals.
-//!
-//! The accent is a single **runtime** color held in a process-global atom, so
-//! the zero-arg [`accent`]/[`key`] helpers keep working everywhere while the
-//! user retunes it from the settings screen. It packs RGB as `0x00RRGGBB`.
+//! Colors. Text inherits the terminal theme (`Reset`, `DarkGray`); only accents are RGB, and
+//! selection uses `REVERSED`. The accent is a process-global runtime color packed as `0x00RRGGBB`.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Warm brass — the default accent (progress, keys, the active rule).
 pub const DEFAULT_ACCENT: u32 = 0xC4_8B_3F;
 
-/// A curated palette the settings screen cycles with ←/→.
 pub const PRESETS: &[(&str, u32)] = &[
     ("brass", 0xC4_8B_3F),
     ("teal", 0x3F_A8_9E),
@@ -29,23 +19,19 @@ pub const PRESETS: &[(&str, u32)] = &[
 
 static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
 
-/// Set the accent from packed `0xRRGGBB`.
 pub fn set_accent(rgb: u32) {
     ACCENT.store(rgb & 0x00FF_FFFF, Ordering::Relaxed);
 }
 
-/// The current accent as packed `0xRRGGBB`.
 pub fn accent_rgb() -> u32 {
     ACCENT.load(Ordering::Relaxed)
 }
 
-/// The current accent as a ratatui color.
 pub fn accent_color() -> Color {
     let v = accent_rgb();
     Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
-/// Parse `#RRGGBB` / `RRGGBB` into packed `0xRRGGBB`.
 pub fn parse_hex(s: &str) -> Option<u32> {
     let h = s.trim().trim_start_matches('#');
     if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -54,7 +40,6 @@ pub fn parse_hex(s: &str) -> Option<u32> {
     u32::from_str_radix(h, 16).ok()
 }
 
-/// Render packed `0xRRGGBB` back to `#RRGGBB` for display / persistence.
 pub fn to_hex(rgb: u32) -> String {
     format!("#{:06X}", rgb & 0x00FF_FFFF)
 }

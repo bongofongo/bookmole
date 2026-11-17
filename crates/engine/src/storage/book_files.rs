@@ -1,26 +1,17 @@
-//! The files bookmole owns (`book_files`, migration `0010`).
-//!
-//! One row per distinct *content*, keyed on its sha256 — see the migration for
-//! why the key is global rather than `(book_id, sha256)`. The bytes themselves
-//! are the filesystem's business and live in [`crate::files`]; this module is
-//! only the record of what is owned and by whom.
+//! The files bookmole owns: one row per distinct content, keyed on its sha256 (global, not per
+//! book).
 
 use sqlx::Row;
 
 use super::{Storage, now_unix};
 use crate::error::Result;
 
-/// One owned file.
-///
-/// `original_name` is what the file was called when it arrived and is
-/// deliberately not part of any lookup: content addressing means the path is
-/// derived from `sha256` and `format`, and a filename is a thing that collides.
+/// `original_name` is never part of a lookup: the path derives from `sha256` and `format`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookFile {
     pub sha256: String,
     pub book_id: i64,
-    /// Lowercased extension — `epub`, `azw3`, `pdf`. Also the stored file's
-    /// extension, so the on-disk address is derivable from the row alone.
+    /// Lowercased extension; also the stored file's extension.
     pub format: String,
     pub original_name: Option<String>,
     pub size: i64,
@@ -28,14 +19,8 @@ pub struct BookFile {
 }
 
 impl Storage {
-    /// Record ownership of a file's content.
-    ///
-    /// **`DO NOTHING` on conflict, and the return value is "this was new".**
-    /// Identical bytes are one file by construction, so a conflict is not an
-    /// error — it is level-1 dedup happening, and the caller needs to know it
-    /// happened rather than be told it succeeded. Repointing instead would let
-    /// a second import quietly move a file to another book, which is the one
-    /// thing a content address must never do on its own.
+    /// `DO NOTHING` on conflict; returns true when new. Never repoint: a second import must not move a
+    /// file to another book.
     pub async fn add_book_file(&self, file: &BookFile) -> Result<bool> {
         let done = sqlx::query(
             "INSERT INTO book_files (sha256, book_id, format, original_name, size, added_at)
@@ -57,7 +42,6 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// The owner of these exact bytes, if we already have them. Dedup level 1.
     pub async fn book_file(&self, sha256: &str) -> Result<Option<BookFile>> {
         let row = sqlx::query(
             "SELECT sha256, book_id, format, original_name, size, added_at
@@ -69,8 +53,6 @@ impl Storage {
         row.as_ref().map(row_to_file).transpose()
     }
 
-    /// Every file of one book, oldest first. Dedup level 2 read from the other
-    /// end: epub and azw3 of the same book are two rows here, not two books.
     pub async fn book_files(&self, book_id: i64) -> Result<Vec<BookFile>> {
         let rows = sqlx::query(
             "SELECT sha256, book_id, format, original_name, size, added_at
@@ -82,8 +64,7 @@ impl Storage {
         rows.iter().map(row_to_file).collect()
     }
 
-    /// Forget a file. The caller owns the bytes on disk, the same contract
-    /// [`Storage::delete_book`] has for a cover.
+    /// Forgets the row; the caller owns the bytes on disk.
     pub async fn delete_book_file(&self, sha256: &str) -> Result<bool> {
         let done = sqlx::query("DELETE FROM book_files WHERE sha256 = ?")
             .bind(sha256)
@@ -150,9 +131,6 @@ mod tests {
         );
     }
 
-    /// Level 2, as a test: two formats of one book are two rows and one
-    /// `book_id`. The failure this rules out is the obvious one — a second
-    /// format arriving as a second book.
     #[tokio::test]
     async fn two_formats_of_one_book_are_two_rows_and_one_book() {
         let (s, book) = seeded().await;
@@ -167,9 +145,6 @@ mod tests {
         assert_eq!(formats, ["azw3", "epub"]);
     }
 
-    /// The same bytes may not hang off two books, and the constraint says so
-    /// rather than a convention. Two books holding one file means the *books*
-    /// are duplicates — the move is `merge_books`, not a second row.
     #[tokio::test]
     async fn the_same_bytes_cannot_belong_to_two_books() {
         let (s, first) = seeded().await;

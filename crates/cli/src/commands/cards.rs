@@ -20,8 +20,6 @@ pub async fn list(engine: &Engine, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// Anki's text-import format. The old bare TSV (`Engine::export_flashcards`)
-/// stays in the engine for the TUI; nothing here depends on it.
 pub async fn export(
     engine: &Engine,
     out: Option<&Path>,
@@ -52,7 +50,6 @@ pub async fn export(
     Ok(())
 }
 
-/// The line `export` prints, as a pure function so its wording is assertable.
 pub fn sent(count: usize, out: &Path) -> String {
     let cards = if count == 1 { "card" } else { "cards" };
     format!(

@@ -22,8 +22,6 @@ impl ProviderId {
     /// Every provider this build knows, in the order a search lists them.
     pub const ALL: [ProviderId; 2] = [ProviderId::OpenLibrary, ProviderId::GoogleBooks];
 
-    /// The word for this provider in the database (`provider_records`,
-    /// `search_cache`, `provider_settings`) and in a diagnostic's text.
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::OpenLibrary => "openlibrary",
@@ -31,13 +29,11 @@ impl ProviderId {
         }
     }
 
-    /// The inverse of [`ProviderId::as_str`]; `None` for a word this build does
-    /// not know (a row written by a newer one).
+    /// Inverse of [`ProviderId::as_str`]; `None` for a word from a newer build.
     pub fn parse(word: &str) -> Option<ProviderId> {
         Self::ALL.into_iter().find(|p| p.as_str() == word)
     }
 
-    /// This provider's row of [`PROVIDER_DEFAULTS`].
     pub fn defaults(self) -> &'static ProviderDefaults {
         PROVIDER_DEFAULTS
             .iter()
@@ -46,32 +42,19 @@ impl ProviderId {
     }
 }
 
-// ---- the defaults table -----------------------------------------------------
-//
-// Keyless providers are on out of the box; one that needs the reader's own key
-// is opt-in by having one. Every provider can be switched off.
-
-/// A day, for the keeps below.
 const DAY: std::time::Duration = std::time::Duration::from_secs(86_400);
 
-/// What a provider is out of the box, and how long its answers may be kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderDefaults {
     pub id: ProviderId,
-    /// Switched on when the reader has said nothing (`provider_settings` has no
-    /// row). Keyless providers are; a provider that needs a key is on only once
-    /// it has one, which [`ProviderDefaults::needs_key`] says.
+    /// On when the reader has said nothing (no `provider_settings` row); a keyed provider is on only
+    /// once it has a key.
     pub on_by_default: bool,
-    /// Built at all only with the reader's own key or token.
     pub needs_key: bool,
-    /// How long one of its records may be kept (`provider_records`). `None`:
-    /// never kept — its terms allow no durable copy, so its records live in the
-    /// session's memory and nowhere else.
+    /// How long a record may be kept. `None`: never, because its terms allow no durable copy.
     pub kept_for: Option<std::time::Duration>,
 }
 
-/// One row per provider. A provider added later is a row here and no
-/// migration: `provider_settings` holds only what the reader changed.
 pub const PROVIDER_DEFAULTS: &[ProviderDefaults] = &[
     ProviderDefaults {
         id: ProviderId::OpenLibrary,
@@ -81,36 +64,26 @@ pub const PROVIDER_DEFAULTS: &[ProviderDefaults] = &[
     },
     ProviderDefaults {
         id: ProviderId::GoogleBooks,
-        // On once a key is set: without one it is not built, and keyless
-        // Google answers 429 `RESOURCE_EXHAUSTED` to every call anyway
-        // (checked 2026-11-12).
+        // On once a key is set: without one it is not built, and keyless Google answers 429 to every call.
         on_by_default: true,
         needs_key: true,
-        // "Must not keep a durable copy": session memory only.
         kept_for: None,
     },
 ];
 
-/// Whether a provider is switched on: the reader's own choice where they made
-/// one, else the default. A provider that needs a key is never *built* without
-/// one, whatever this says — that is [`ProviderAvailability::NoKey`].
+/// The reader's choice where made, else the default. A keyed provider is never built without a
+/// key, whatever this says ([`ProviderAvailability::NoKey`]).
 pub fn provider_enabled(id: ProviderId, chosen: Option<bool>) -> bool {
     chosen.unwrap_or(id.defaults().on_by_default)
 }
 
-/// Why a provider is or is not in the list a search asks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAvailability {
-    /// Built, and asked by every search.
     Ready,
-    /// Switched off by the reader (or off by default). Sent nothing.
     Off,
-    /// On, but it needs a key or token and has none. Sent nothing.
     NoKey,
 }
 
-/// [`ProviderAvailability`] for one provider, from the reader's choice and
-/// whether a key is present.
 pub fn availability(id: ProviderId, chosen: Option<bool>, has_key: bool) -> ProviderAvailability {
     if !provider_enabled(id, chosen) {
         ProviderAvailability::Off
@@ -122,13 +95,8 @@ pub fn availability(id: ProviderId, chosen: Option<bool>, has_key: bool) -> Prov
 }
 
 impl From<ProviderId> for crate::storage::Source {
-    /// A provider, as `field_provenance` names it.
-    ///
-    /// An exhaustive `match` and not a string built from [`Display`], though the
-    /// two spell the same words today: `Source`'s vocabulary is wider than this
-    /// enum (calibre, epub, koreader, goodreads, the user) and going through
-    /// text would let a fourth provider land as a source nothing in
-    /// `field_provenance` recognises, silently. Here it is a compile error.
+    /// An exhaustive `match`, not a string from `Display`: a new provider must be a compile error here,
+    /// not a source `field_provenance` silently fails to recognise.
     fn from(id: ProviderId) -> Self {
         match id {
             ProviderId::OpenLibrary => crate::storage::Source::OpenLibrary,
@@ -137,16 +105,13 @@ impl From<ProviderId> for crate::storage::Source {
     }
 }
 
-/// Fielded search request; any combination of fields may be set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SearchRequest {
-    /// Free-text query.
     pub query: Option<String>,
     pub title: Option<String>,
     pub author: Option<String>,
     pub publisher: Option<String>,
-    /// Neither API has a first-class translator field; providers map this to
-    /// their closest contributor/author facility and ranking rewards matches.
+    /// Neither API has a translator field; providers map it to their closest contributor facility.
     pub translator: Option<String>,
     pub language: Option<String>,
     pub year: Option<i64>,
@@ -165,7 +130,6 @@ impl SearchRequest {
     }
 }
 
-/// One raw result from one provider, position preserved for ranking.
 #[derive(Debug, Clone)]
 pub struct ProviderBook {
     pub book: Book,
@@ -173,53 +137,32 @@ pub struct ProviderBook {
     pub position: usize,
 }
 
-/// What a provider says about the **work** a search result stands for, beside
-/// the edition-shaped [`Book`] it returns.
-///
-/// Ranking reads these (`search::ranking`); nothing here is written to a book.
-/// Kept off [`ProviderBook`] so that type's literals (in every provider and in
-/// the engine's tests) keep compiling, and off [`Book`] because none of it is a
-/// column: an edition count is a fact about a provider's catalogue, and the
-/// title of the edition a provider matched is a ranking hint, not the book's
-/// title.
+/// What a provider says about the work a result stands for. Read by ranking; never written to a
+/// book.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkFacts {
-    /// How many editions the provider holds of this work. The *standing*
-    /// signal: a log of it breaks ties between equally good text matches.
     pub edition_count: Option<u32>,
-    /// Other titles the work answers to: the title of the edition the
-    /// provider matched to the query (Open Library's nested best edition), and
-    /// titles with their subtitles (`Perfume: the story of a murderer`). This
-    /// is how *The Name of the Rose* finds a work whose own title is *Il nome
-    /// della rosa*.
+    /// Other titles the work answers to: the matched edition's title and titles with subtitles, so a
+    /// translated title can find the work.
     pub also_titled: Vec<String>,
-    /// The series the provider files the work under, and its place in it.
     pub series: Option<String>,
     pub series_position: Option<f64>,
-    /// Languages the work's editions come in, two-letter where known.
     pub languages: Vec<String>,
-    /// The author a provider was asked for (folded) when it answered with
-    /// this work. The provider's own word that the work is theirs, which
-    /// matters when it files the name differently (`村上春樹` for *Haruki
-    /// Murakami*).
+    /// The author asked for (folded) when the provider returned this work: its own word that the work
+    /// is theirs, which matters when it files the name differently.
     pub found_by_author: Option<String>,
 }
 
-/// One search result with its [`WorkFacts`]. What
-/// [`MetadataProvider::search_works`] returns.
 #[derive(Debug, Clone)]
 pub struct ProviderWork {
     pub found: ProviderBook,
     pub facts: WorkFacts,
-    /// The records this result may be kept as: the provider's own
-    /// JSON for the work and the edition it matched. Empty for a provider whose
-    /// records are never kept (Google Books), and for a result made here rather
-    /// than read off a response.
+    /// The records this result may be kept as. Empty for a provider whose records are never kept, and
+    /// for a result not read off a response.
     pub kept: Vec<KeptRecord>,
 }
 
 impl ProviderWork {
-    /// A result from a provider with no work model: no facts beyond the book.
     pub fn bare(found: ProviderBook) -> Self {
         ProviderWork {
             found,
@@ -228,9 +171,6 @@ impl ProviderWork {
         }
     }
 
-    /// The provider's own id for the **work** this result stands for, when it
-    /// has a work model: Open Library's `/works/…W`. Two results naming the same
-    /// one are one work: the first and strongest grouping rule.
     pub fn work_key(&self) -> Option<&str> {
         match self.found.provider {
             ProviderId::OpenLibrary => self
@@ -244,7 +184,6 @@ impl ProviderWork {
     }
 }
 
-/// Whether a kept record is a work or an edition (`provider_records.kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordKind {
     Work,
@@ -260,14 +199,10 @@ impl RecordKind {
     }
 }
 
-/// How a kept record's body is read (`provider_records.form`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordForm {
-    /// The provider's own JSON for this record, as it sent it.
     Doc,
-    /// The engine's reading of an answer that took several requests to
-    /// assemble (an ISBN lookup: edition, authors, work), where there is no one
-    /// response to keep.
+    /// The engine's reading of an answer assembled from several requests, where no one response exists.
     Book,
 }
 
@@ -288,10 +223,8 @@ impl RecordForm {
     }
 }
 
-/// One record a provider sent, as it may be kept (`provider_records`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptRecord {
-    /// The provider's own id for the record.
     pub key: String,
     pub kind: RecordKind,
     pub form: RecordForm,
@@ -307,8 +240,6 @@ pub trait MetadataProvider: Send + Sync {
     async fn search(&self, req: &SearchRequest) -> Result<Vec<ProviderBook>>;
     async fn by_isbn(&self, isbn: &str) -> Result<Option<ProviderBook>>;
 
-    /// [`MetadataProvider::search`] with what the provider knows about each
-    /// result's work. A provider with no work model keeps this default.
     async fn search_works(&self, req: &SearchRequest) -> Result<Vec<ProviderWork>> {
         Ok(self
             .search(req)
@@ -318,39 +249,19 @@ pub trait MetadataProvider: Send + Sync {
             .collect())
     }
 
-    /// This provider's rate limit and its *come back later* state, when it
-    /// keeps one. The fan-out reads it to report a closed provider as a state
-    /// rather than ask it again.
+    /// The provider's rate limit and closed state, if it keeps one; the fan-out reports a closed
+    /// provider as a state rather than asking again.
     fn manners(&self) -> Option<&Manners> {
         None
     }
 }
 
-// ---- manners ----------------------------------------------------------------
-//
-// One shared HTTP client, a token bucket per provider at its published rate,
-// and a 429 or 503 with `Retry-After` closing the provider for the stated time
-// (capped at `MAX_CLOSED`) — reported as a state, never retried in a loop. A
-// search that would exceed the rate waits inside the provider's budget
-// (`search::PROVIDER_TIMEOUT`) and then degrades.
-
-/// The longest a `Retry-After` is honoured for. A provider asking for a day is
-/// asked again after this, and refused again if it meant it.
 pub const MAX_CLOSED: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// A provider's rate limit and its *closed until* state, shared by every
-/// request the provider makes.
-///
-/// **A token bucket**: `burst` requests may go at once, and tokens come back at
-/// `per_second`. A request with no token waits for one — inside the caller's
-/// [`crate::search`] budget, which is what turns a search that would exceed the
-/// rate into a timeout rather than a 429. On `tokio::time`, so it is tested
-/// under `start_paused` in no wall time.
-///
-/// **Closed** is a provider having said *come back later* (a 429 or 503 with
-/// `Retry-After`): it is not asked again until then, capped at [`MAX_CLOSED`],
-/// and the fan-out reports it as `ProviderRateLimited` instead of retrying in a
-/// loop.
+/// A provider's rate limit and *closed until* state. A token bucket: `burst` requests at once,
+/// tokens return at `per_second`, and a request without one waits inside the caller's search
+/// budget. A 429 or 503 with `Retry-After` closes it (capped at [`MAX_CLOSED`]) instead of being
+/// retried in a loop.
 #[derive(Debug)]
 pub struct Manners {
     per_second: f64,
@@ -366,8 +277,7 @@ struct MannersState {
 }
 
 impl Manners {
-    /// `per_second` tokens a second, at most `burst` held. A `per_second` that
-    /// is not positive and finite means no limit.
+    /// A `per_second` that is not positive and finite means no limit.
     pub fn new(per_second: f64, burst: u32) -> Self {
         let burst = f64::from(burst.max(1));
         Manners {
@@ -381,24 +291,17 @@ impl Manners {
         }
     }
 
-    /// No rate limit; a `Retry-After` still closes it. For a provider pointed
-    /// at a loopback server in a test, which has no rate to keep.
+    /// No rate limit, but a `Retry-After` still closes it; for providers pointed at a test server.
     pub fn unlimited() -> Self {
         Self::new(f64::INFINITY, 1)
     }
 
-    /// Open Library: one request a second, its published anonymous rate, with
-    /// a burst of three so an ISBN lookup's edition, author and work requests
-    /// are not serialised a second apart. Sustained, it is still one a second.
+    /// One request a second, its published anonymous rate, with a burst of three so an ISBN lookup's
+    /// requests are not serialised.
     pub fn open_library() -> Self {
         Self::new(1.0, 3)
     }
 
-    /// Google Books, with the reader's own key: two requests a second, a burst
-    /// of four. Google publishes a daily quota per key (1,000 by default) and a
-    /// per-user rate rather than one number; this is well under both for a
-    /// person searching, and it is what keeps a key's quota from being spent
-    /// by anything faster than a person.
     pub fn google_books() -> Self {
         Self::new(2.0, 4)
     }
@@ -411,7 +314,6 @@ impl Manners {
         self.per_second.is_finite() && self.per_second > 0.0
     }
 
-    /// Wait for a token and take it.
     pub async fn wait_turn(&self) {
         if !self.limited() {
             return;
@@ -435,8 +337,7 @@ impl Manners {
         }
     }
 
-    /// The provider said to come back after `after`. Capped at [`MAX_CLOSED`];
-    /// a later, shorter answer does not shorten a longer one already in force.
+    /// Capped at [`MAX_CLOSED`]; a shorter later answer does not shorten a longer one in force.
     pub fn close_for(&self, after: std::time::Duration) {
         let until = tokio::time::Instant::now() + after.min(MAX_CLOSED);
         let mut s = self.lock();
@@ -445,7 +346,6 @@ impl Manners {
         }
     }
 
-    /// How much longer the provider is closed, or `None` when it is open.
     pub fn closed_for(&self) -> Option<std::time::Duration> {
         let mut s = self.lock();
         let now = tokio::time::Instant::now();
@@ -460,8 +360,6 @@ impl Manners {
     }
 }
 
-/// A `Retry-After` header's value: delta-seconds, or an HTTP date. `None` when
-/// absent or unreadable, which is "no Retry-After" and closes nothing.
 pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
     let raw = headers
         .get(reqwest::header::RETRY_AFTER)?
@@ -481,27 +379,9 @@ pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Du
     })
 }
 
-/// Tidy a provider's subject list: trim, drop the empties, drop repeats.
-///
-/// **Shape only, never vocabulary.** The strings stay exactly as the provider
-/// spelled them — Google's BISAC paths (`Fiction / Literary`) and OpenLibrary's
-/// headings (`Provincial England`) are two different systems of naming and
-/// mapping one onto the other is a *controlled vocabulary*, which is the same
-/// question `book_tags` deferred and is not answerable from two examples. The
-/// merge sidesteps it by taking one provider's set whole rather than mixing
-/// them; see `MERGE_RULES`.
-///
-/// Dedup is case-insensitive and keeps the **first** spelling, because a
-/// provider that says both `Fiction` and `fiction` said one thing twice and the
-/// order it published is the only ranking available.
-///
-/// **No cap.** OpenLibrary works genuinely carry a hundred subjects, many of
-/// them cataloguing artifacts (`Accessible book`, `Protected DAISY`,
-/// `In library`), and dropping the tail would be a silent truncation of exactly
-/// the sort this repo bans elsewhere — a caller cannot tell a trimmed list from
-/// a short one. Filtering the artifacts *is* a vocabulary decision, and it is
-/// left undone on purpose so it can be made against real data rather than
-/// against a guess.
+/// Trims, drops empties, and dedups case-insensitively keeping the first spelling. Shape only,
+/// never vocabulary, and no cap: providers' subject vocabularies differ, and truncating would be
+/// silent.
 pub fn normalize_subjects<I, S>(raw: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -520,9 +400,7 @@ where
     out
 }
 
-/// Normalize language tags across providers: OpenLibrary speaks MARC
-/// 3-letter codes ("eng"), Google Books BCP-47 2-letter ("en"). We store
-/// 2-letter where known, pass through otherwise.
+/// OpenLibrary speaks MARC 3-letter codes, Google BCP-47 2-letter; stores 2-letter where known.
 pub fn normalize_language(raw: &str) -> String {
     let l = raw.trim().to_lowercase();
     match l.as_str() {
@@ -552,7 +430,6 @@ pub fn normalize_language(raw: &str) -> String {
     .to_string()
 }
 
-/// Inverse mapping for building OpenLibrary queries from 2-letter input.
 pub fn to_marc_language(raw: &str) -> String {
     let l = raw.trim().to_lowercase();
     match l.as_str() {
@@ -582,8 +459,6 @@ pub fn to_marc_language(raw: &str) -> String {
     .to_string()
 }
 
-/// Extract the first 4-digit year from a free-form date string
-/// ("Aug 25, 2017", "2017-08-25", "2017").
 pub fn year_of_date(s: &str) -> Option<i64> {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -616,8 +491,6 @@ mod tests {
         assert_eq!(year_of_date(""), None);
     }
 
-    /// The bucket under paused time: a burst goes at once, the next waits for
-    /// its token, and the wait is the rate's.
     #[tokio::test(start_paused = true)]
     async fn the_bucket_lets_a_burst_through_and_then_keeps_the_rate() {
         let m = Manners::new(1.0, 3);
@@ -637,13 +510,11 @@ mod tests {
                 && waited <= std::time::Duration::from_millis(1001),
             "{waited:?}"
         );
-        // Ten more take ten more seconds: sustained, it is the rate.
         for _ in 0..10 {
             m.wait_turn().await;
         }
         let total = start.elapsed().as_secs_f64();
         assert!((total - 11.0).abs() < 0.01, "{total}");
-        // An idle stretch refills to the burst and no further.
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         let idle = tokio::time::Instant::now();
         for _ in 0..3 {
@@ -664,14 +535,12 @@ mod tests {
         assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 
-    /// Closed for what was asked, capped at ten minutes, and open again after.
     #[tokio::test(start_paused = true)]
     async fn retry_after_closes_for_its_time_capped() {
         let m = Manners::open_library();
         assert_eq!(m.closed_for(), None);
         m.close_for(std::time::Duration::from_secs(30));
         assert_eq!(m.closed_for(), Some(std::time::Duration::from_secs(30)));
-        // A shorter answer does not shorten it.
         m.close_for(std::time::Duration::from_secs(5));
         assert_eq!(m.closed_for(), Some(std::time::Duration::from_secs(30)));
         tokio::time::sleep(std::time::Duration::from_secs(31)).await;
@@ -688,7 +557,6 @@ mod tests {
         assert_eq!(retry_after(&h), None);
         h.insert(RETRY_AFTER, HeaderValue::from_static("120"));
         assert_eq!(retry_after(&h), Some(std::time::Duration::from_secs(120)));
-        // A date in the past is "now", not an error.
         h.insert(
             RETRY_AFTER,
             HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),

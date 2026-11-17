@@ -24,8 +24,6 @@ pub async fn add_isbn(engine: &Engine, isbn: &str, no_cover: bool) -> Result<()>
 
 pub async fn import_epub(engine: &Engine, path: &Path) -> Result<()> {
     let book = engine.import_epub(path).await?;
-    // Point at the file (a `path` place on an own file copy) so the book stays
-    // on the shelf; idempotent for a path already recorded.
     if let Some(id) = book.id {
         engine.add_file_to_book(id, path).await?;
     }
@@ -37,10 +35,6 @@ pub async fn import_epub(engine: &Engine, path: &Path) -> Result<()> {
 }
 
 pub async fn list(engine: &Engine, limit: i64, sort: &str) -> Result<()> {
-    // `author` and `year` once existed in the engine and never reached a user:
-    // this match was the only door and it was not widened, so two of the engine's
-    // five sorts were unreachable from the CLI. Named here rather than reported,
-    // because a sort nothing can ask for is a sort nothing exercises.
     let sort = match sort {
         "title" => BookSort::Title,
         "progress" => BookSort::Progress,
@@ -74,7 +68,6 @@ pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
         if !highlights.is_empty() {
             println!("  {:<14} {}", "highlights", highlights.len());
         }
-        // Rereads are first-class, so the history is a list rather than a count.
         let readings = engine.list_readings(id).await?;
         for (i, r) in readings.iter().enumerate() {
             println!("  {}", render::reading_line(r, i + 1, readings.len()));
@@ -83,15 +76,6 @@ pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
     Ok(())
 }
 
-/// The book's own chapter list, read out of the epub on every run.
-///
-/// **Three answers, not two**, and the middle one is why this command exists in
-/// the shape it does: no file we can read, a file that carries no navigable TOC,
-/// and the list. bookmole never prints a dead end, and "nothing here" printed
-/// for both of the first two would make a book that carries no navigable TOC
-/// look identical to a book with no file at all, with no move to offer for
-/// either. (Until 2026-11-12 that was every EPUB3 book with only a `nav`
-/// document, which the old `epub =2.1.4` crate could not read.)
 pub async fn toc(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("a stored book has an id");
@@ -99,14 +83,10 @@ pub async fn toc(engine: &Engine, selector: &str) -> Result<()> {
 
     let Some(toc) = engine.table_of_contents(id).await? else {
         println!("{title}: no epub here to read a chapter list from.");
-        // Naming the command rather than "import one first": the move is a
-        // file, and `rb epub` is what takes one.
         println!("    bookmole epub <path>");
         return Ok(());
     };
     if toc.entries.is_empty() {
-        // Not an error and not a gap in the library — plenty of files carry no
-        // `toc.ncx` at all. Saying which file was read makes it checkable.
         println!("{title}: this epub carries no table of contents.");
         println!("    read from {}", short_sha(&toc.sha256));
         return Ok(());
@@ -114,16 +94,12 @@ pub async fn toc(engine: &Engine, selector: &str) -> Result<()> {
 
     println!("{title} — {} chapters", toc.entries.len());
     for e in &toc.entries {
-        // Depth is a column rather than a tree, so the indent is arithmetic.
-        // Two spaces per level on top of the two every detail line carries.
         println!("  {}{}", "  ".repeat(e.depth), e.label);
     }
     println!("    read from {}", short_sha(&toc.sha256));
     Ok(())
 }
 
-/// Enough of a content address to check one against another, and not the
-/// sixty-four characters that would wrap in every pane.
 fn short_sha(sha256: &str) -> String {
     sha256.chars().take(12).collect()
 }
@@ -160,9 +136,6 @@ pub async fn progress(
         .await?;
 
     println!("{}", render::book_line(&updated));
-    // Name the reading that was touched, not just the book: with rereads a book
-    // carries several, and "progress → p.30" against the wrong one is a silent
-    // mistake.
     let readings = engine.list_readings(id).await?;
     let touched = engine.active_reading(id).await?;
     let touched = touched.as_ref().or(readings.last());
@@ -176,15 +149,11 @@ pub async fn progress(
             "\n🎉 finished {}! congratulations.",
             updated.display_title()
         );
-        // Not a task to complete — a place to go. The reflection may well
-        // already be open and half-written; `reflect` reopens it either way.
         println!("your reflection is here when you want it:  bookmole reflect {id}");
     }
     Ok(())
 }
 
-/// Fold one book into another. The duplicate the ISBN-less pull path
-/// guarantees will eventually happen is what this is for.
 pub async fn merge(
     engine: &Engine,
     src_selector: &str,
@@ -240,10 +209,6 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
     }
     println!("{} — {} highlights\n", book.display_title(), hs.len());
 
-    // Rereads are first-class, so the list is grouped by the read each
-    // highlight was captured during — but only when there is more than one read
-    // to tell apart. One reading is the ordinary case, and a header over the
-    // whole list would be noise that says nothing.
     let readings = engine.list_readings(id).await?;
     if readings.len() < 2 {
         for h in &hs {
@@ -255,9 +220,6 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
     for (i, r) in readings.iter().enumerate() {
         println!("  {}", render::reading_line(r, i + 1, readings.len()));
         let mine: Vec<_> = hs.iter().filter(|h| h.reading_id == Some(r.id)).collect();
-        // Printed even when empty, and that is the informative case: a read
-        // that genuinely marked nothing is a different fact from a read this
-        // list forgot to mention.
         if mine.is_empty() {
             println!("    (none)");
         }
@@ -267,10 +229,7 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
         println!();
     }
 
-    // `reading_id` is NULL where no reading's window held the capture date.
-    // KOReader's sidecar is per-file and a reread appends to it, so the device
-    // cannot supply this — these are ordinary highlights, not a failure and not
-    // a queue of work, so they are listed plainly and last.
+    // `reading_id` is NULL when no reading's window holds the capture date; those are listed last.
     let unplaced: Vec<_> = hs.iter().filter(|h| h.reading_id.is_none()).collect();
     if !unplaced.is_empty() {
         println!("  not placed in a reading ({})", unplaced.len());

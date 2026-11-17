@@ -17,9 +17,6 @@ pub struct NoteOpts<'a> {
 
 pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
     let kind: NoteKind = opts.kind.parse()?;
-    // A reflection and a review anchor to a *reading*, and there is one of each
-    // per reading — which is an index, and which this path knows nothing about.
-    // Naming the command that does is the whole of the redirect.
     if kind.is_anchored() {
         let sel = opts.book_selector.unwrap_or("<book>");
         anyhow::bail!(
@@ -33,9 +30,6 @@ pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
         None => None,
     };
 
-    // Auto-anchor to where the reader is: when a book is named and no explicit
-    // --page is given (and the user hasn't opted out), fall back to its current
-    // reading page. Explicit --page always wins.
     let page = match (opts.page, opts.no_page) {
         (Some(p), _) => Some(p),
         (None, true) => None,
@@ -80,10 +74,6 @@ pub async fn list_or_search(
     book_selector: Option<&str>,
     query: Option<&str>,
 ) -> Result<()> {
-    // `notes --search` is a **narrowing of `find`**, not a second search. It
-    // goes through the same engine method with `SearchSource::Note` and the
-    // same printing, so the two doors cannot come to hold different opinions
-    // about what matches, how it is ordered, or how absence reads.
     if let Some(q) = query {
         return super::find::find(
             engine,
@@ -122,17 +112,8 @@ pub async fn list_or_search(
     Ok(())
 }
 
-/// What one note links to, and what links back to it.
-///
-/// Both directions in one view, because a backlink is only interesting beside
-/// the link that made it — and dangling targets are printed as the text they
-/// are rather than dropped. A `[[wikilink]]` naming a note nobody has written
-/// yet is an ordinary forward reference; hiding it would turn "the note I
-/// haven't written" into a dead end, which is the one thing this app is not
-/// allowed to be.
+/// What a note links to and what links back; dangling targets print as text, not dropped.
 pub async fn links(engine: &Engine, selector: &str) -> Result<()> {
-    // The graph is written from the file too — a `[[wikilink]]` added in
-    // Obsidian is an edge that only exists once somebody has re-read the note.
     super::catch_up(engine).await;
     let note = resolve_note(engine, selector).await?;
     println!("#{} “{}”  ({})", note.id, note.title, note.file_path);
@@ -145,8 +126,6 @@ pub async fn links(engine: &Engine, selector: &str) -> Result<()> {
     for link in outgoing {
         match link.to {
             Some(t) => println!("  → #{:<4} “{}”", t.id, t.title),
-            // Text, not an error: it resolves itself the moment that note is
-            // written, and until then it is a note worth writing.
             None => println!(
                 "  → “{}”  (text — no note by that title yet)",
                 link.target_title
@@ -165,7 +144,6 @@ pub async fn links(engine: &Engine, selector: &str) -> Result<()> {
     Ok(())
 }
 
-/// Compact anchor tag for a note line: page, location, and/or highlight.
 fn anchor(n: &bookmole::NoteRecord) -> String {
     let mut parts = Vec::new();
     if let Some(p) = n.page {

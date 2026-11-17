@@ -1,28 +1,12 @@
-//! The stable error taxonomy.
-//!
-//! [`EngineError`] cannot cross a transport and should not try: it wraps
-//! `sqlx::Error`, `reqwest::Error` and `io::Error`, none of which is
-//! `Serialize`, and two of which are not even `Clone`. It is also not a
-//! contract — a variant may be split or renamed whenever the engine finds a
-//! reason to, and a client pinned to its shape would break on a refactor that
-//! changed no behaviour.
-//!
-//! So [`ApiError`] is a **code plus a message**, and the code is the promise.
-//! The pattern is the engine's `Diagnostic`'s: a typed, `Copy`, cloneable
-//! classification beside a human string, with no source error
-//! inside it. The difference is only which way the operation went — a
-//! `Diagnostic` rides along on a partial success, an `ApiError` is a failure.
+//! The stable error taxonomy: [`ApiError`] is a code plus a message, and the code is the promise.
+//! `EngineError` is neither serializable nor a contract, so it never crosses the seam.
 
 use serde::{Deserialize, Serialize};
 
 use bookmole::{EngineError, ErrorClass};
 
-/// What went wrong, coarsely enough to branch on and stably enough to promise.
-///
-/// **Codes are appended, never renamed or repurposed.** A client that does not
-/// know a code must treat it as [`ErrorCode::Internal`] — which is what
-/// `#[serde(other)]` on that variant makes happen for free rather than by
-/// asking every client to remember.
+/// What went wrong, coarsely. Codes are appended, never renamed; an unknown code reads as
+/// `Internal`.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -31,55 +15,29 @@ use bookmole::{EngineError, ErrorClass};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
-    /// Nothing by that id, isbn, path or selector.
     NotFound,
-    /// The caller asked for something the data cannot represent.
     InvalidInput,
-    /// The ISBN failed its checksum, or is not ten or thirteen digits.
     InvalidIsbn,
-    /// A review's rating has no entry in the Goodreads lookup table. Its own
-    /// code because every caller branches on it: the fix is to add a mapping,
-    /// and rounding is exactly what the table exists to refuse.
+    /// A review's rating has no entry in the Goodreads lookup table; the fix is a mapping, no rounding.
     UnmappedRating,
-    /// Calibre, or the half of it this feature needs, is not installed. **Not a
-    /// failure to report as one**: calibre is feature-detected, never a hard
-    /// dependency, so a client shows "that feature is not here" and never
-    /// tells the user to install anything.
+    /// Calibre, or the half this feature needs, is not installed. Not a failure: show the feature as
+    /// unavailable.
     CalibreMissing,
-    /// A calibre tool ran and failed.
     CalibreFailed,
-    /// A metadata provider refused or failed.
     Provider,
-    /// A provider took too long.
     Timeout,
-    /// A provider refused us for quota reasons. Distinct from `Provider` for
-    /// the reason [`ErrorClass::RateLimited`] is: it is the one class with its
-    /// own sensible UI text.
+    /// A provider refused us for quota reasons; the one class with its own UI text.
     RateLimited,
-    /// The network was the problem.
     Network,
-    /// A file could not be read or written.
     Io,
-    /// An epub or a KOReader sidecar would not parse.
     Parse,
-    /// A response would not decode.
     Decode,
-    /// The database refused.
     Database,
     /// The platform has no filesystem-notification service to offer.
     Watch,
-    /// bookmole declined to write to a mounted reader.
-    ///
-    /// **A decision, not a fault**, and its own code for `CalibreMissing`'s
-    /// reason: a client shows what the reader is in and what the next move is —
-    /// a file the user edited, a newer plugin, a volume that is not a reader —
-    /// and never an error dialog with a stack of prose in it.
+    /// bookmole declined to write to a mounted reader. A decision, not a fault: show the reader's
+    /// state and the next move.
     PluginRefused,
-    /// The wireless listener refused. `PluginRefused`'s sibling and
-    /// its own code for the same reason: a client shows *what the reader is in
-    /// and what the next move is* — nothing is listening, that reader is not
-    /// ours, that credential did not verify — and every one of those is a
-    /// different sentence with a different button under it.
     WirelessRefused,
     /// The request itself was malformed — bad JSON, or a method this build does
     /// not have. Produced by the transport, never by the engine.
@@ -89,7 +47,6 @@ pub enum ErrorCode {
     Internal,
 }
 
-/// A failure, as it crosses the seam.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -98,9 +55,7 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
     pub code: ErrorCode,
-    /// The engine's own `Display`, which is what a frontend already prints.
-    /// Always already scrubbed of API keys — every provider error path goes
-    /// through `googlebooks::scrub_key` before it becomes an `EngineError`.
+    /// The engine's own `Display`, already scrubbed of API keys.
     pub message: String,
 }
 
@@ -134,9 +89,6 @@ impl From<EngineError> for ApiError {
     }
 }
 
-/// Classify. The network-ish half defers to [`ErrorClass`] rather than
-/// re-deciding what a 429 is — one definition of "rate limited", shared with
-/// every `Diagnostic` the engine emits.
 fn code_for(e: &EngineError) -> ErrorCode {
     match e {
         EngineError::NotFound(_) => ErrorCode::NotFound,
@@ -200,9 +152,6 @@ mod tests {
         assert_eq!(ApiError::from(e).message, want);
     }
 
-    /// A rate-limited provider must not read as a plain network failure: it is
-    /// the one class with its own next move ("add an API key"), which is why
-    /// `ErrorClass` keeps it separate and why this defers to it.
     #[test]
     fn rate_limiting_survives_the_translation() {
         let e = EngineError::Provider {
@@ -212,9 +161,6 @@ mod tests {
         assert_eq!(ApiError::from(e).code, ErrorCode::RateLimited);
     }
 
-    /// The forward-compatibility promise, as a test rather than a comment: a
-    /// client built before a code existed must degrade to `Internal`, not fail
-    /// to parse the reply and lose the error entirely.
     #[test]
     fn an_unknown_code_degrades_instead_of_failing_to_parse() {
         let raw = r#"{"code":"invented_in_a_later_version","message":"boom"}"#;
@@ -225,9 +171,7 @@ mod tests {
 
     #[test]
     fn a_key_never_survives_into_an_api_error() {
-        // The scrubbing happens upstream, in the provider. What this pins is
-        // that translating an error does not undo it by reaching for some
-        // rawer form of the message.
+        // Pins that translating an error does not undo the provider's key scrubbing.
         let e = EngineError::Provider {
             provider: bookmole::ProviderId::GoogleBooks,
             message: bookmole::providers::googlebooks::scrub_key(

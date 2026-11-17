@@ -1,18 +1,10 @@
-//! Notes as a list and a graph: rows, periods, threads, the links you made,
-//! the graph, parts, mentions, a typed passage, the link preview and
-//! headings.
-//!
-//! In-memory storage, a tempdir vault. Every assertion is on values; nothing
-//! prints a body, an excerpt or a paragraph.
-
 mod common;
 
 use bookmole::{Engine, EngineConfig, GraphScope, NewNoteInput, NoteKind, NoteRowQuery, NoteScope};
 use common::seed_book;
 
-/// `common::engine`, on a **file** database — `Storage::pool` is crate-private,
-/// so a test that sets a note's moment by hand opens its own connection to the
-/// same file rather than growing a facade method for a fixture.
+/// A file database: `Storage::pool` is crate-private, so a test sets a note's moment through its
+/// own connection to the same file.
 async fn engine() -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(tmp.path().join("database")).unwrap();
@@ -51,8 +43,6 @@ async fn note(engine: &Engine, book_id: Option<i64>, title: Option<&str>, body: 
         .id
 }
 
-/// Put a note at a known moment, so the list's order is the column's and not
-/// the clock's.
 async fn backdate(engine: &Engine, id: i64, at: i64) {
     sqlx::query("UPDATE notes SET created_at = ?1, latest_part_at = ?1 WHERE id = ?2")
         .bind(at)
@@ -68,8 +58,6 @@ fn all(limit: i64) -> NoteRowQuery {
         ..Default::default()
     }
 }
-
-// ---- headings, excerpts, the order -----------------------------------------
 
 #[tokio::test]
 async fn a_heading_names_the_note_and_leaves_the_excerpt() {
@@ -159,7 +147,6 @@ async fn rows_order_by_the_latest_part_and_every_narrowing_is_a_predicate() {
         vec![new, mid, old]
     );
 
-    // A continued note moves up; editing it does not move it again.
     engine
         .continue_note(old, "a second sitting", Some(40))
         .await
@@ -239,9 +226,6 @@ async fn periods_are_the_months_latest_parts_fall_in_newest_first() {
     );
 }
 
-/// The reader's zone moves a month's edge: 23:59:59 UTC on 31 October is
-/// November at UTC+1 and still October at UTC−8; 00:00 UTC on 1 January is
-/// the previous December at UTC−8.
 #[tokio::test]
 async fn periods_in_a_zone_file_each_note_under_the_reader_s_month() {
     let (_tmp, engine) = engine().await;
@@ -272,10 +256,6 @@ async fn periods_in_a_zone_file_each_note_under_the_reader_s_month() {
     assert!(engine.note_periods_in(-(18 * 60 + 1)).await.is_err());
 }
 
-// ---- threads, links, the graph ---------------------------------------------
-
-/// Two clusters: `hub ← a, hub ← b, b → c` and `x ↔ y`, plus a lone note and a
-/// forward reference.
 async fn two_threads(engine: &Engine) -> [i64; 7] {
     let middlemarch = seed_book(engine, "Middlemarch").await;
     let borders = seed_book(engine, "Borders").await;
@@ -447,8 +427,6 @@ async fn the_graph_draws_each_scope() {
     );
 }
 
-// ---- parts --------------------------------------------------------------------
-
 #[tokio::test]
 async fn a_note_continues_in_parts_and_an_outside_edit_can_unpart_it() {
     let (_tmp, engine) = engine().await;
@@ -482,7 +460,6 @@ async fn a_note_continues_in_parts_and_an_outside_edit_can_unpart_it() {
     assert_eq!(parts[1].page, Some(251), "the marker is untouched");
     assert_eq!(parts[2].body, "Third.");
 
-    // Refusals.
     assert!(engine.continue_note(id, "   ", None).await.is_err());
     assert!(
         engine
@@ -506,7 +483,6 @@ async fn a_note_continues_in_parts_and_an_outside_edit_can_unpart_it() {
     };
     assert_eq!(count(&engine).await, 3);
 
-    // An outside edit drops every marker: the next reindex un-parts the note.
     let path = engine.note_path(&rec);
     let content = std::fs::read_to_string(&path).unwrap();
     let kept: String = content
@@ -520,9 +496,6 @@ async fn a_note_continues_in_parts_and_an_outside_edit_can_unpart_it() {
     assert_eq!(engine.note_parts(id).await.unwrap().len(), 1);
 }
 
-/// A search hit names the note; `matched_parts` names the part, and agrees
-/// with the search that found it: every note `search_marks` returns for a
-/// query has at least one matched part, unless the title alone matched.
 #[tokio::test]
 async fn the_matched_parts_are_the_ones_the_search_found() {
     let (_tmp, engine) = engine().await;
@@ -574,8 +547,6 @@ async fn the_matched_parts_are_the_ones_the_search_found() {
         );
     }
 }
-
-// ---- mentions -----------------------------------------------------------------
 
 #[tokio::test]
 async fn an_unlinked_mention_is_offered_and_linking_it_closes_the_offer() {
@@ -660,8 +631,6 @@ async fn an_unlinked_mention_is_offered_and_linking_it_closes_the_offer() {
     assert!(engine.link_mention(target, target).await.is_err());
 }
 
-// ---- a typed passage ----------------------------------------------------------
-
 #[tokio::test]
 async fn a_typed_passage_is_the_users_and_two_identical_are_two() {
     let (_tmp, engine) = engine().await;
@@ -700,8 +669,6 @@ async fn a_typed_passage_is_the_users_and_two_identical_are_two() {
     );
     assert_eq!(engine.list_highlights(book).await.unwrap().len(), 2);
 }
-
-// ---- links while typing -------------------------------------------------------
 
 #[tokio::test]
 async fn a_preview_resolves_out_and_finds_the_links_waiting_for_it() {

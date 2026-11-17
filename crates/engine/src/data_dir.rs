@@ -1,64 +1,26 @@
-//! Where the library lives when nobody says.
-//!
-//! Every frontend used to resolve its data root as `--data-dir`, then
-//! `BOOKMOLE_DATA_DIR`, then **the current directory** — so every
-//! directory a binary was launched from was a separate library, and a macOS
-//! `.app` started from Finder (whose cwd is `/`) could not open one at all.
-//! This module is the one answer every frontend shares:
-//!
-//! 1. an explicit path (the `--data-dir` flag),
-//! 2. `BOOKMOLE_DATA_DIR`, when it is set and not empty,
-//! 3. the platform's per-user data directory joined with
-//!    [`LIBRARY_FOLDER_NAME`]: `$HOME/Library/Application Support/<name>` on
-//!    macOS; `$XDG_DATA_HOME/<name>` on Linux and other Unix when that is set,
-//!    absolute and not empty, else `$HOME/.local/share/<name>`;
-//!    `%APPDATA%\<name>` on Windows.
-//!
-//! There is **no fourth step**. When no home can be found the answer is
-//! [`DataDirError::NoHome`], never a quiet fall back to the cwd — that fall
-//! back is the bug this module exists to remove.
-//!
-//! The result is always absolute. A relative flag or variable is made absolute
-//! against the cwd at the moment it is resolved, because `cover_path` is stored
-//! as `images_dir.join(name)`: a relative root yields relative cover paths, and
-//! a webview-based frontend has no working directory to resolve one against.
-//!
-//! [`resolve_from`] is the whole rule as a pure function — the environment, the
-//! platform and the absolutizer are all arguments — so the tests cover macOS,
-//! Linux and Windows on any host without touching the real environment or the
-//! real home. [`resolve`] is the thin wrapper a `main` calls.
-//!
-//! Creating the directory is not this module's job: [`crate::Engine::open`]
-//! already `create_dir_all`s everything under the root, which creates the root.
+//! Default library location: `--data-dir`, then `BOOKMOLE_DATA_DIR`, then the platform data
+//! directory. No cwd fallback; the result is always absolute, since a relative root yields
+//! relative cover paths.
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The folder the library lives in under the platform data directory.
-///
-/// The same name on every platform, so every frontend opens one folder and a
-/// terminal user types it without quoting. Once people have
-/// libraries here, renaming it means moving them, so it is one constant: no
-/// code may spell the folder name out, and the files that do (the README and
-/// `install.sh`) are the list to update with it.
+/// One constant: renaming it means moving users' libraries, and the README and `install.sh` spell
+/// it too.
 pub const LIBRARY_FOLDER_NAME: &str = "bookmole";
 
-/// The environment variable that overrides the default location.
 pub const DATA_DIR_ENV: &str = "BOOKMOLE_DATA_DIR";
 
-/// Which platform's convention the default follows. A value, not a `cfg!`, so
-/// a test on one host can ask for another host's answer.
+/// A value, not a `cfg!`, so a test can ask for another host's answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     MacOs,
-    /// Linux and every other Unix: the XDG base-directory convention.
     Unix,
     Windows,
 }
 
 impl Platform {
-    /// The platform this binary was built for.
     pub fn current() -> Platform {
         if cfg!(target_os = "macos") {
             Platform::MacOs
@@ -70,7 +32,6 @@ impl Platform {
     }
 }
 
-/// Why there is no library location.
 #[derive(Debug, thiserror::Error)]
 pub enum DataDirError {
     /// The platform default needs a home and the environment names none.
@@ -89,9 +50,6 @@ pub enum DataDirError {
     },
 }
 
-/// The library location for this process: the real environment, the real
-/// platform, the real cwd. `explicit` is the `--data-dir` flag, if the
-/// frontend has one.
 pub fn resolve(explicit: Option<&Path>) -> Result<PathBuf, DataDirError> {
     resolve_from(
         explicit,
@@ -101,16 +59,8 @@ pub fn resolve(explicit: Option<&Path>) -> Result<PathBuf, DataDirError> {
     )
 }
 
-/// The rule itself, with everything it reads passed in.
-///
-/// - `env` looks up an environment variable (`None` when unset).
-/// - `platform` picks the default's convention.
-/// - `absolute` makes a relative **user-given** path absolute — the real
-///   wrapper passes [`std::path::absolute`]. The platform default is not run
-///   through it: it is built from variables that are absolute on their own
-///   platform by construction (`HOME` and `XDG_DATA_HOME` are checked for a
-///   leading `/`), and a Windows default asked for on a Unix host would
-///   otherwise be glued onto a Unix cwd.
+/// Pure: `absolute` makes a user-given relative path absolute. The platform default is not run
+/// through it, or a Windows default asked for on a Unix host would be glued onto a Unix cwd.
 pub fn resolve_from(
     explicit: Option<&Path>,
     env: impl Fn(&str) -> Option<OsString>,
@@ -130,7 +80,6 @@ pub fn resolve_from(
     platform_default(&env, platform)
 }
 
-/// Step 3 alone: the per-user data directory joined with the folder name.
 fn platform_default(
     env: &impl Fn(&str) -> Option<OsString>,
     platform: Platform,
@@ -144,8 +93,7 @@ fn platform_default(
                 .join(LIBRARY_FOLDER_NAME))
         }
         Platform::Unix => {
-            // The XDG spec: a relative value is invalid and must be ignored,
-            // and an empty one counts as unset.
+            // XDG: a relative value is invalid and ignored; empty counts as unset.
             if let Some(xdg) = non_empty(env("XDG_DATA_HOME")).filter(starts_with_slash) {
                 return Ok(PathBuf::from(xdg).join(LIBRARY_FOLDER_NAME));
             }
@@ -155,9 +103,8 @@ fn platform_default(
         Platform::Windows => {
             let appdata =
                 non_empty(env("APPDATA")).ok_or(DataDirError::NoHome { var: "APPDATA" })?;
-            // Joined as text with `\`: `Path::join` uses the *host's*
-            // separator, and this branch must give the Windows answer on any
-            // host. On Windows itself the two are the same path.
+            // Joined as text with `\`: `Path::join` uses the host's separator, but this branch must give the
+            // Windows answer anywhere.
             let mut s = appdata;
             if !s.to_string_lossy().ends_with(['\\', '/']) {
                 s.push("\\");
@@ -168,9 +115,7 @@ fn platform_default(
     }
 }
 
-/// `$HOME`, when it is set, not empty and absolute. A relative `HOME` would
-/// make the default relative to the cwd — the old bug by another door — so it
-/// counts as no home at all.
+/// A relative `HOME` would make the default cwd-relative, so it counts as no home.
 fn unix_home(env: &impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, DataDirError> {
     non_empty(env("HOME"))
         .filter(starts_with_slash)
@@ -182,8 +127,6 @@ fn non_empty(v: Option<OsString>) -> Option<OsString> {
     v.filter(|s| !s.is_empty())
 }
 
-/// Absolute in the Unix sense, judged on the text so the answer does not
-/// depend on the host the test runs on.
 fn starts_with_slash(v: &OsString) -> bool {
     v.to_string_lossy().starts_with('/')
 }
@@ -203,8 +146,6 @@ mod tests {
         move |name| map.get(name).cloned()
     }
 
-    /// The real absolutizer's behaviour against a fixed cwd, so no test reads
-    /// the process's own.
     fn fake_abs(p: &Path) -> io::Result<PathBuf> {
         Ok(Path::new(CWD).join(p))
     }
@@ -366,7 +307,6 @@ mod tests {
 
     #[test]
     fn the_real_wrapper_gives_an_absolute_path_for_an_explicit_one() {
-        // Explicit, so neither the real environment nor the real home is read.
         let got = resolve(Some(Path::new("some/relative/lib"))).unwrap();
         assert!(got.is_absolute(), "{}", got.display());
         assert!(got.ends_with("some/relative/lib"));
@@ -389,8 +329,6 @@ mod tests {
             ]
         }
 
-        /// Values an environment variable might hold, empty and relative
-        /// included.
         fn value() -> impl Strategy<Value = Option<String>> {
             proptest::option::of(prop_oneof![
                 Just(String::new()),
@@ -426,7 +364,6 @@ mod tests {
         }
 
         proptest! {
-            /// A non-empty `--data-dir` wins whatever the environment holds.
             #[test]
             fn an_explicit_path_always_wins(
                 flag in "/?[a-z]{1,8}(/[a-z]{1,8}){0,2}",
@@ -438,9 +375,6 @@ mod tests {
                 prop_assert_eq!(got, fake_abs(Path::new(&flag)).unwrap());
             }
 
-            /// On macOS and Unix, whatever the environment, the answer is an
-            /// absolute path or the typed error — never something relative to
-            /// wherever the binary was started.
             #[test]
             fn a_unix_answer_is_absolute_or_an_error(
                 data in value(), home in value(), xdg in value(),

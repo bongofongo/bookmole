@@ -1,45 +1,23 @@
-//! The book as a single ray-traced cuboid.
-//!
-//! One box means no rasterizer, no z-buffer and no clipping: for every
-//! subpixel we build a camera ray, pull it into the book's local space with
-//! the transposed rotation, and run a slab intersection. The axis that wins
-//! the slab test names the face, and the two remaining local coordinates are
-//! the UV — exact perspective, for free.
+//! The book as one cuboid: a slab intersection in local space gives the face and an exact-perspective UV.
 
 use crate::math::{Mat3, Vec3, vec3};
 use crate::texture::Cover;
 
-/// Every book is 1.5 units tall; width and thickness come from the edition
-/// (see [`crate::Model`]), which is what keeps covers from being stretched.
 pub const HALF_HEIGHT: f32 = 0.75;
 
-/// Reference proportions for the tests: a 6x9in trade paperback.
-///
-/// Public, and no longer `#[cfg(test)]`, since the move into this crate: the
-/// TUI's own tests compare its `Book` → scene conversion against it, and a
-/// dependency's `cfg(test)` items do not exist for a dependent's tests.
+/// A 6x9in trade paperback; public, not `#[cfg(test)]`, because dependents' tests use it.
 pub const DEFAULT_HALF_EXTENTS: Vec3 = vec3(0.50, HALF_HEIGHT, 0.09);
 
-/// Vertical field of view, radians.
+/// Field of view across the shorter screen axis, radians.
 const FOV: f32 = 0.45;
-/// How much of the frame the book fills, by the height of the region in cells.
-///
-/// A small pane has no room to spare, but on a full-size terminal a book scaled
-/// to the frame is simply too big — the object is the centrepiece, not the
-/// whole pane. So the fraction slides down as the region grows, which caps the
-/// object's absolute size instead of letting it track the window.
+/// Fraction of the frame the book fills; shrinks as `rows` grows, capping its absolute size.
 pub fn fill_for(rows: u16) -> f32 {
     const SMALL: f32 = 18.0;
     const LARGE: f32 = 44.0;
     let t = ((rows as f32 - SMALL) / (LARGE - SMALL)).clamp(0.0, 1.0);
-    // Scaled 20% down from the old 0.88→0.60: on a full terminal the book was
-    // still reading as too large for a centrepiece object.
     0.70 + t * (0.48 - 0.70)
 }
 
-/// Two-point rig plus ambient. Without the fill, faces turned away from the
-/// key go black — which is what the back cover does every time the book spins
-/// past halfway.
 const AMBIENT: f32 = 0.42;
 const KEY: f32 = 0.45;
 const FILL_LIGHT: f32 = 0.22;
@@ -85,14 +63,8 @@ pub struct Pose {
 }
 
 impl Default for Pose {
-    /// A three-quarter view with the book tipped back so its cover faces
-    /// upward — spine and bottom page edges visible, cover still square enough
-    /// to the camera to read.
-    ///
-    /// Positive yaw turns the spine toward the camera. Pitch sign decides which
-    /// way the cover looks: positive tips the top edge forward so the cover
-    /// faces *down*, negative tips it back so the cover faces *up*. Past about
-    /// -1.2 the book goes flat and the cover foreshortens into nothing.
+    /// Positive yaw turns the spine toward the camera; negative pitch tips the cover to face up.
+    /// Below about -1.2 pitch the cover foreshortens to nothing.
     fn default() -> Self {
         Pose {
             yaw: 0.44,
@@ -107,14 +79,12 @@ impl Pose {
     }
 }
 
-/// Half-angle tangents for the two screen axes. The field of view applies to
-/// the *shorter* axis, so a tall narrow pane never clips the book sideways.
+/// The field of view applies to the shorter axis, so a narrow pane never clips the book.
 fn half_angles(aspect: f32) -> (f32, f32) {
     let t = (FOV * 0.5).tan();
     (t * aspect.max(1.0), t * (1.0 / aspect).max(1.0))
 }
 
-/// The eight corners of the box.
 fn corners(h: Vec3) -> impl Iterator<Item = Vec3> {
     [-1.0f32, 1.0].into_iter().flat_map(move |sx| {
         [-1.0f32, 1.0].into_iter().flat_map(move |sy| {
@@ -125,12 +95,7 @@ fn corners(h: Vec3) -> impl Iterator<Item = Vec3> {
     })
 }
 
-/// Distance that fits the book to the frame.
-///
-/// Each corner imposes `dist >= q.z + |q.x| / (tx * fill)` (and the same for
-/// y) — an exact perspective fit, not a bounding-sphere guess. The fit runs
-/// over a full yaw sweep rather than the current angle, so a spinning book
-/// holds a constant scale instead of breathing in and out.
+/// Fits every corner over a full yaw sweep, so a spinning book keeps a constant scale.
 pub fn camera_distance(aspect: f32, pitch: f32, h: Vec3, fill: f32) -> f32 {
     const STEPS: u32 = 32;
     let (tx, ty) = half_angles(aspect);
@@ -148,13 +113,7 @@ pub fn camera_distance(aspect: f32, pitch: f32, h: Vec3, fill: f32) -> f32 {
     dist
 }
 
-/// Where the camera sits for a trace covering `rows` cell rows.
-///
-/// Extracted so the glyph and pixel rasters set the camera up through the same
-/// arithmetic: [`fill_for`] stays the single authority on the object's absolute
-/// size, so a rich frame and a glyph frame put the book at the same size for the
-/// same `rows`. The pixel path must never grow the book just by having more
-/// pixels — that regression has been fixed twice already.
+/// Shared by the glyph and pixel rasters; size comes only from [`fill_for`], never from pixel count.
 pub fn camera_origin(aspect: f32, pitch: f32, half: Vec3, rows: u16) -> Vec3 {
     vec3(
         0.0,
@@ -163,9 +122,7 @@ pub fn camera_origin(aspect: f32, pitch: f32, half: Vec3, rows: u16) -> Vec3 {
     )
 }
 
-/// Ray direction through the point `(u, v)` of the image, both in 0..1 with v
-/// running downward. `aspect` is the image's *physical* width/height — not the
-/// sample grid's, since terminal subpixels aren't square.
+/// `u`, `v` in 0..1 with `v` downward; `aspect` is the physical width/height, not the sample grid's.
 pub fn primary_ray(u: f32, v: f32, aspect: f32) -> Vec3 {
     let (tx, ty) = half_angles(aspect);
     let x = (2.0 * u - 1.0) * tx;
@@ -173,16 +130,9 @@ pub fn primary_ray(u: f32, v: f32, aspect: f32) -> Vec3 {
     vec3(x, y, -1.0).normalize()
 }
 
-/// Slab intersection against the axis-aligned box `±half` in local space.
-///
-/// Each axis contributes a slab — the space between its two planes — and the
-/// ray `ro + t·rd` is inside that slab for one interval of `t` (`t1..t2`,
-/// ordered into `lo..hi`). The ray is inside the box where all three intervals
-/// overlap: from the *latest* entry (`tmin`) to the *earliest* exit (`tmax`).
-/// An empty overlap is a miss, and so is an overlap entirely behind the eye.
+/// Ray against the axis-aligned box `±half`, in local space.
 pub fn intersect_box(ro: Vec3, rd: Vec3, half: Vec3) -> Option<Hit> {
-    // Division by a zero component yields ±inf, which the min/max below
-    // handle correctly for axis-parallel rays.
+    // Zero components give ±inf, which the min/max below handle for axis-parallel rays.
     let inv = Vec3::splat(1.0) / rd;
     let t1 = (-half - ro) * inv;
     let t2 = (half - ro) * inv;
@@ -193,8 +143,7 @@ pub fn intersect_box(ro: Vec3, rd: Vec3, half: Vec3) -> Option<Hit> {
     if tmin.is_nan() || tmax.is_nan() || tmin > tmax || tmax <= 0.0 {
         return None;
     }
-    // Entering the box; if the camera were inside we would want tmax instead,
-    // but the camera is always outside.
+    // Assumes the camera is outside the box; from inside, the hit would be `tmax`.
     let t = tmin;
     let axis = if lo.x >= lo.y && lo.x >= lo.z {
         0
@@ -203,9 +152,7 @@ pub fn intersect_box(ro: Vec3, rd: Vec3, half: Vec3) -> Option<Hit> {
     } else {
         2
     };
-    // The axis whose entry came last is the plane the ray actually crossed to
-    // get in, so it names the face. A ray travelling toward −axis enters
-    // through the +axis plane, hence the sign test on the direction.
+    // The last-entered axis names the face; a ray moving toward -axis enters through +axis.
     let point = ro + rd * t;
     let positive = rd.axis(axis) < 0.0;
     let face = match (axis, positive) {
@@ -220,8 +167,7 @@ pub fn intersect_box(ro: Vec3, rd: Vec3, half: Vec3) -> Option<Hit> {
     Some(Hit { face, point, u, v })
 }
 
-/// Map a local hit point to the face's UV, oriented so the cover reads the
-/// right way round: u left→right with the spine at u=0, v top→bottom.
+/// `u` left to right with the spine at 0, `v` top to bottom, so the cover reads the right way round.
 fn face_uv(face: Face, p: Vec3, half: Vec3) -> (f32, f32) {
     let nx = (p.x + half.x) / (2.0 * half.x);
     let ny = (half.y - p.y) / (2.0 * half.y);
@@ -236,7 +182,6 @@ fn face_uv(face: Face, p: Vec3, half: Vec3) -> (f32, f32) {
     }
 }
 
-/// Unlit color of a face at a hit point.
 fn albedo(hit: &Hit, half: Vec3, cover: &Cover) -> Vec3 {
     match hit.face {
         Face::Front => cover.texture.sample(hit.u, hit.v),
@@ -246,40 +191,29 @@ fn albedo(hit: &Hit, half: Vec3, cover: &Cover) -> Vec3 {
     }
 }
 
-/// The back board: the accent color, darkened, with an inset panel so it reads
-/// as the back of a jacket rather than a blank slab when the book turns round.
 fn back_board(hit: &Hit, cover: &Cover) -> Vec3 {
     let inset = (0.10..0.90).contains(&hit.u) && (0.08..0.72).contains(&hit.v);
-    // The additive floor keeps a black jacket from turning into a hole in the
-    // pane when the spin brings the back round.
+    // The additive floor keeps a black jacket visible against a dark pane.
     let base = cover.accent * 0.80 + Vec3::splat(0.07);
     base * if inset { 0.84 } else { 1.0 }
 }
 
-/// Page edges: cream with fine ruling. Pages stack along local Z, so the
-/// stripes are a function of the hit point's Z and stay parallel to the spine
-/// on the top and bottom faces.
 fn page_edge(hit: &Hit, half: Vec3) -> Vec3 {
     let stripe = (hit.point.z * 190.0).sin() * 0.5 + 0.5;
     let shade = 1.0 - 0.13 * stripe;
-    // Slight dip toward the covers so the block reads as a stack, not a slab.
     let edge = (hit.point.z.abs() / half.z).powi(6);
     CREAM * shade * (1.0 - 0.18 * edge)
 }
 
-/// Shade one ray. Returns None when the ray misses the book.
 pub fn shade(ro: Vec3, rd: Vec3, rot: Mat3, half: Vec3, cover: &Cover) -> Option<Vec3> {
     let inv = rot.transpose();
     let hit = intersect_box(inv * ro, inv * rd, half)?;
     let base = albedo(&hit, half, cover);
     let normal = rot * hit.face.normal();
-    // Key up and to the left but well forward: a cover shaded into mud is a
-    // cover you can't read at 40 columns. Fill comes from behind and below.
     let key = vec3(-0.38, 0.58, 1.0).normalize();
     let fill = vec3(0.55, -0.30, -0.85).normalize();
     let level = AMBIENT + KEY * normal.dot(key).max(0.0) + FILL_LIGHT * normal.dot(fill).max(0.0);
     let lit = base * level;
-    // A touch of rim light so the silhouette separates from a dark pane.
     let rim = (1.0 - normal.dot(-rd).abs()).powi(3) * 0.09;
     Some(lit + Vec3::splat(rim))
 }
@@ -334,7 +268,6 @@ mod tests {
         assert_eq!(hit.face, Face::Top);
     }
 
-    /// Every face the book presents to the camera across a full frame.
     fn visible_faces(pose: Pose) -> std::collections::HashSet<Face> {
         let rot = pose.rotation();
         let inv = rot.transpose();
@@ -363,7 +296,6 @@ mod tests {
     fn the_fill_fraction_shrinks_as_the_pane_grows() {
         assert!(fill_for(10) > fill_for(30));
         assert!(fill_for(30) > fill_for(60));
-        // Clamped at both ends, so it never inverts or runs away.
         assert_eq!(fill_for(4), fill_for(18));
         assert_eq!(fill_for(60), fill_for(200));
     }
@@ -404,7 +336,6 @@ mod tests {
         let faces = visible_faces(Pose::default());
         assert!(faces.contains(&Face::Front), "{faces:?}");
         assert!(faces.contains(&Face::Spine), "{faces:?}");
-        // Tipped back, so the bottom edge shows and the top does not.
         assert!(faces.contains(&Face::Bottom), "{faces:?}");
         assert!(!faces.contains(&Face::Top), "{faces:?}");
     }

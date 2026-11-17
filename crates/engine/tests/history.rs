@@ -1,11 +1,5 @@
-//! Reading history: the timeline, the summary figures, the records, a
-//! chart's series, what was kept, the CSV export, and the settings store.
-//!
-//! A file database (so a test can stamp an instant by hand through its own
-//! connection) seeded with a small year of reading that covers each case:
-//! three finished reads, one put down, one open, a book never started, and a
-//! read from the year before. Every assertion is on values; nothing prints a
-//! passage or a note.
+//! Reading history, figures, records, CSV export and the settings store, over a seeded year
+//! of reading in a file database.
 
 mod common;
 
@@ -44,7 +38,6 @@ async fn raw(engine: &Engine, sql: &str, a: i64, b: i64) {
         .unwrap();
 }
 
-/// Unix seconds at noon UTC on a `YYYY-MM-DD`.
 fn at(day: &str) -> i64 {
     bookmole::history::midnight(bookmole::history::parse_day(day).unwrap()) + 12 * 3600
 }
@@ -82,7 +75,6 @@ async fn read(engine: &Engine, book: i64, start: &str, end: Option<&str>) -> i64
         .unwrap()
 }
 
-/// A rated review, written on `day` (the day the read ended).
 async fn rate(engine: &Engine, book: i64, reading: i64, value: f64, day: &str) {
     let review = engine.open_review(book, Some(reading)).await.unwrap();
     engine.set_rating(review.id, value).await.unwrap();
@@ -273,7 +265,6 @@ async fn reading_now_is_the_open_reads_whatever_the_period() {
     assert!(now.iter().all(|r| r.ended_at.is_none()));
     assert_eq!(now[1].passages, 1, "this read's passages ride along");
 
-    // It is the timeline's open reads, with the same counts.
     let all = engine
         .history_timeline(&HistorySpan::default())
         .await
@@ -310,7 +301,6 @@ async fn the_overview_figures_count_the_span_and_never_a_current_run() {
         Some(4.0 / 3.0),
         "three finished reads holding four passages between them"
     );
-    // Two ordinary notes and three reviews.
     assert_eq!((f.notes, f.reviews, f.reflections), (5, 3, 0));
 
     let y25 = engine.history_figures(&year(2025)).await.unwrap();

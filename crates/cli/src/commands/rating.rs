@@ -1,10 +1,5 @@
-//! The user's rating scale, and what its values mean on Goodreads.
-//!
-//! Numeric scales only (min, max, step), and the Goodreads mapping is an
-//! explicit lookup the user edits — never a formula, because formulas are always
-//! wrong at the ends, and never a silent round. Goodreads' `My Rating` is 0–5
-//! in quarters since it took quarter ratings (migration `0026`), and the seeded
-//! scale maps onto it one-to-one.
+//! The rating scale and its Goodreads mapping. Numeric scales only; the mapping is an explicit
+//! user-edited lookup, never a formula or a silent round.
 
 use anyhow::{Result, bail};
 use bookmole::{Engine, RatingScale};
@@ -51,8 +46,6 @@ pub async fn show(engine: &Engine, name: Option<&str>) -> Result<()> {
         for p in s.points() {
             match map.iter().find(|(v, _)| *v == p) {
                 Some((_, g)) => println!("  {p:>6}  → goodreads {g}"),
-                // An unmapped point is a fact worth showing: it is what a review
-                // on that value will report instead of a number.
                 None => println!("  {p:>6}  → (unmapped)"),
             }
         }

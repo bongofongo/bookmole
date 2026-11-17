@@ -1,38 +1,13 @@
-//! A Goodreads export, generated.
-//!
-//! It sits beside the hand-authored files in
-//! `crates/engine/tests/fixtures/goodreads/recorded/` and answers a different
-//! question. Those pin the *shapes* only a real export has — Excel armour, an
-//! embedded newline, CRLF — because a Goodreads CSV is a recorded artifact of
-//! another system and generating one from our own understanding of the format
-//! would prove only that we agree with ourselves.
-//!
-//! This one covers *volume and variety*: every shelf, the whole rating range,
-//! rereads, multi-shelf rows, missing ISBNs, at a size nobody would hand-write.
-//! It is what makes "import the library, import it again, nothing moved" a
-//! statement about forty books rather than five.
-//!
-//! Determinism is the same rule as the rest of the crate: ChaCha8 from a fixed
-//! seed (never `StdRng`, whose algorithm may change between `rand` versions), a
-//! fixed date epoch, never `now()`. A diff in the output file is a change in
-//! this generator and nothing else.
-//!
-//! And, as everywhere in `crates/corpus`: **no dependency on `bookmole`**.
-//! The ISBN check digits below are computed here, from the spec, rather than
-//! borrowed from `book.rs` — a generator that reused the engine's own
-//! normalization would bless a bug in it into every fixture.
+//! A generated Goodreads export for volume and variety: shelves, ratings, rereads, missing ISBNs.
+//! No dependency on `bookmole`: ISBN check digits are computed here from the spec.
 
 use std::path::{Path, PathBuf};
 
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 
-/// Bumped when the shape of the output changes, so a stale committed file is
-/// visibly stale rather than subtly wrong.
 pub const GENERATOR_VERSION: u32 = 1;
 
-/// 2016-01-01, as days since the unix epoch. Fixed, because `now()` in a
-/// fixture generator means the fixture changes every day it is regenerated.
 const EPOCH_DAY: i64 = 16_801;
 
 const HEADER: [&str; 24] = [
@@ -85,8 +60,7 @@ const NOUNS: [&str; 14] = [
     "Border",
     "Weather",
 ];
-/// Leading spaces are part of the data: `, Volume Two` and `: A Memoir` attach
-/// directly to the noun and the rest do not.
+/// Leading spaces are data: some qualifiers attach directly to the noun, others do not.
 const QUALIFIERS: [&str; 8] = [
     " of the Long Night",
     " in Translation",
@@ -131,9 +105,7 @@ pub fn generate(out: &Path, opts: &Options) -> std::io::Result<usize> {
     std::fs::create_dir_all(out)?;
     let mut rng = ChaCha8Rng::seed_from_u64(opts.seed);
     let mut w = csv::WriterBuilder::new()
-        // Goodreads writes CRLF, so this does too — a fixture that quietly
-        // normalized line endings would stop exercising the one thing a
-        // line-oriented reader gets wrong.
+        // Goodreads writes CRLF; normalizing it would stop exercising what line-oriented readers miss.
         .terminator(csv::Terminator::CRLF)
         .from_writer(Vec::new());
     w.write_record(HEADER)?;
@@ -143,11 +115,7 @@ pub fn generate(out: &Path, opts: &Options) -> std::io::Result<usize> {
         w.write_record(&record)?;
     }
     let bytes = w.into_inner().expect("in-memory writer");
-    // The armour is written *around* the csv writer, for the same reason the
-    // engine strips it outside the csv reader: `="123"` is a bare field with
-    // quotes in the middle of it, which is not valid CSV and is exactly what
-    // Goodreads emits. Writing it through `write_record` would quote it and
-    // the fixture would stop being a recording of their dialect.
+    // Armour is written around the csv writer: `="123"` is not valid CSV and would be quoted.
     let text = String::from_utf8(bytes)
         .expect("utf-8")
         .replace("\"=\"\"", "=\"")
@@ -162,8 +130,6 @@ fn book(rng: &mut ChaCha8Rng, i: usize) -> Vec<String> {
     let author = format!("{} {}", pick(rng, &FIRST), pick(rng, &LAST));
     let (first, last) = author.split_once(' ').expect("first last");
 
-    // A tenth of the rows carry no ISBN at all, which is what a Goodreads
-    // library of ebooks and self-published titles really looks like.
     let has_isbn = below(rng, 10) != 0;
     let isbn13 = has_isbn.then(|| isbn13(rng));
     let isbn10 = isbn13.as_deref().and_then(isbn13_to_10);
@@ -175,11 +141,11 @@ fn book(rng: &mut ChaCha8Rng, i: usize) -> Vec<String> {
         _ => "read",
     };
     let read_count = match shelf {
-        "read" => 1 + below(rng, 4) as i64 / 3, // mostly 1, sometimes 2
+        "read" => 1 + below(rng, 4) as i64 / 3,
         _ => 0,
     };
     let rating = match shelf {
-        "read" => below(rng, 6) as u8, // 0 (unrated) through 5
+        "read" => below(rng, 6) as u8,
         _ => 0,
     };
     let added = EPOCH_DAY + below(rng, 2_500) as i64;
@@ -253,11 +219,6 @@ fn title(rng: &mut ChaCha8Rng) -> String {
     }
 }
 
-/// Days since the unix epoch as `YYYY/MM/DD`, by civil-calendar arithmetic.
-///
-/// Hand-rolled rather than pulled from `time`, because this crate deliberately
-/// keeps its dependency list to what the fixtures genuinely need — and because
-/// the algorithm (Howard Hinnant's `civil_from_days`) is exact and short.
 fn date(days: i64) -> String {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -272,8 +233,6 @@ fn date(days: i64) -> String {
     format!("{y:04}/{m:02}/{d:02}")
 }
 
-/// A syntactically valid ISBN-13 with a real check digit, computed here from
-/// the spec rather than borrowed from the engine.
 fn isbn13(rng: &mut ChaCha8Rng) -> String {
     let mut digits: Vec<u32> = "978".chars().map(|c| c.to_digit(10).unwrap()).collect();
     for _ in 0..9 {
@@ -291,8 +250,6 @@ fn isbn13(rng: &mut ChaCha8Rng) -> String {
         .collect()
 }
 
-/// The 978- form's ISBN-10 sibling. `None` for a 979- prefix, which has none —
-/// not reachable from [`isbn13`] today, and left honest anyway.
 fn isbn13_to_10(isbn13: &str) -> Option<String> {
     let body = isbn13.strip_prefix("978")?;
     let body = &body[..9];
@@ -358,7 +315,6 @@ mod tests {
     fn the_calendar_agrees_with_known_days() {
         assert_eq!(date(0), "1970/01/01");
         assert_eq!(date(EPOCH_DAY), "2016/01/01");
-        // A leap day, which is where hand-rolled calendars go wrong.
         assert_eq!(date(18_321), "2020/02/29");
     }
 }

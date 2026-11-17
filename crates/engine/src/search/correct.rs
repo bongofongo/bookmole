@@ -1,34 +1,5 @@
-//! Correction: what a misspelt query most likely meant.
-//!
-//! Typos are the app's to fix rather than the providers': Open Library, for
-//! one, answers nothing at all for `dnue herbrt`, fuzzy query syntax included.
-//! A corrected search is searched instead of the literal one, and says so, with
-//! the literal query one press away.
-//!
-//! Pure. Given a [`ParsedQuery`] and the works it might have meant — from the
-//! offline index, the library, and kept provider records — [`correct`] says
-//! one of three things:
-//!
-//! - **[`Verdict::Exact`]**: some work's title (and author) is exactly what
-//!   was typed. Then **nothing is corrected**, whatever else is near: a real
-//!   title is never "corrected" to another (`props` asserts it).
-//! - **[`Verdict::Fix`]**: every word typed is one of a work's words or a
-//!   near miss of one, at least one is a miss, and the work's title is all
-//!   there. The fix keeps the words that were right and replaces the misses,
-//!   so `dnue herbrt` is shown as `dune herbert`.
-//! - **[`Verdict::Nothing`]**.
-//!
-//! Whether a fix is then **used** is the session's call (`session.rs`): only
-//! when what was found for the typed text is not already a good answer.
-//!
-//! # What counts as a near miss
-//!
-//! One edit (a letter added, dropped, changed, or two swapped) for a word of
-//! three to seven letters, two for a longer one; a two-letter word only by
-//! growing into a three-letter one that starts with it (`ry` → *rye*). The
-//! first letter must stay, or swap with the second — people misspell the
-//! middles of words, and a changed first letter is usually another word.
-//! Digits are never near anything but themselves.
+//! Corrects a misspelt query to the work it most likely meant; pure over the query and candidates.
+//! Near miss: one edit (two past seven letters); the first letter stays or swaps with the second.
 
 use std::collections::HashSet;
 
@@ -36,29 +7,21 @@ use strsim::osa_distance;
 
 use super::query::{ParsedQuery, ReadingKind, fold, is_filler, title_key};
 
-/// One work a query might have meant, under one of its titles.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Target {
     pub title: String,
     pub author: Option<String>,
-    /// Open Library work ids, bare (`OL893414W`).
     pub ol_works: Vec<String>,
-    /// The offline index's notability, for an index work.
     pub notability: Option<u32>,
 }
 
-/// What a query is corrected to.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Fix {
-    /// The typed words, each miss replaced by the word it missed: what the
-    /// snapshot says was searched instead.
     pub searched: String,
-    /// The work's title and author, which is what is asked of the providers.
     pub title: String,
     pub author: Option<String>,
     pub ol_works: Vec<String>,
     pub notability: Option<u32>,
-    /// How many words were misses, and their edits summed.
     pub typos: usize,
     pub distance: usize,
 }
@@ -66,20 +29,15 @@ pub(crate) struct Fix {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Verdict {
     Nothing,
-    /// A work is exactly what was typed: correct nothing.
     Exact,
     Fix(Fix),
 }
 
-/// The most words a query may have and still be corrected: a sentence pasted
-/// into the box is not a misspelt title.
+/// A sentence pasted into the box is not a misspelt title.
 const MAX_WORDS: usize = 12;
-/// The most misses one fix may hold.
 const MAX_TYPOS: usize = 3;
 
-/// What `q` most likely meant among `targets` (module doc).
 pub(crate) fn correct(q: &ParsedQuery, targets: &[Target]) -> Verdict {
-    // An ISBN is identity, and a fielded query says exactly what it means.
     let fielded = q.readings.iter().any(|r| r.kind == ReadingKind::Fielded);
     if q.isbn.is_some() || fielded || q.words.is_empty() || q.words.len() > MAX_WORDS {
         return Verdict::Nothing;
@@ -121,7 +79,6 @@ enum Fit {
     Near(Fix),
 }
 
-/// One target against the typed words.
 fn fit(words: &[String], t: &Target) -> Fit {
     let title_folded = fold(&t.title);
     let title: Vec<&str> = title_folded.split_whitespace().collect();
@@ -130,7 +87,6 @@ fn fit(words: &[String], t: &Target) -> Fit {
     if title.is_empty() {
         return Fit::None;
     }
-    // Target words: the title's, then the author's, each usable once.
     let targets: Vec<(&str, bool)> = title
         .iter()
         .map(|w| (*w, true))
@@ -158,12 +114,9 @@ fn fit(words: &[String], t: &Target) -> Fit {
             matched[i] = Some((j, d));
         }
     }
-    // Every word typed is explained, fillers too: `the god of the woods` is
-    // not *God* by Woody Allen with three words to spare.
     if matched.iter().any(Option::is_none) {
         return Fit::None;
     }
-    // And the title is all there: a fix names a work, not a fragment of one.
     let key = title_key(&title_folded);
     let skip_article = title.len() > key.split_whitespace().count();
     let content: Vec<usize> = (0..title.len())
@@ -209,7 +162,6 @@ fn fit(words: &[String], t: &Target) -> Fit {
     })
 }
 
-/// How far `typed` is from `word`, when it is a near miss of it (module doc).
 pub(crate) fn near(typed: &str, word: &str) -> Option<usize> {
     if typed == word {
         return Some(0);
@@ -223,7 +175,7 @@ pub(crate) fn near(typed: &str, word: &str) -> Option<usize> {
         return None;
     }
     if a.len() <= 2 {
-        // `ry` → `rye`: grown by one letter at the end, nothing else.
+        // `ry` -> `rye`: grown by one letter at the end only.
         return (b.len() == a.len() + 1 && b.starts_with(&a)).then_some(1);
     }
     let first_kept = a[0] == b[0] || (a.len() > 1 && b.len() > 1 && a[0] == b[1] && a[1] == b[0]);
@@ -235,11 +187,7 @@ pub(crate) fn near(typed: &str, word: &str) -> Option<usize> {
     (d <= budget).then_some(d)
 }
 
-/// Whether a result with these titles and authors is the fix's work: one of
-/// its titles folded the same with an author not contradicting it — or, for a
-/// result with no title at all, one of its Open Library ids. The id alone is
-/// not trusted beside a title: Wikidata's `P648` is not always one id for one
-/// work (*Dune* lists *Dune Messiah*'s).
+/// A result with no title matches by Open Library id, which is not trusted beside a title.
 pub(crate) fn is_fixed_work(
     fix: &Fix,
     ol_key: Option<&str>,
@@ -331,13 +279,9 @@ mod tests {
             correct(&parse("dune", &KnowsNothing), &shelf()),
             Verdict::Exact
         );
-        // A fragment of a title is not a misspelling of it.
         assert_eq!(fix_of("hitchhikers guide"), None);
-        // An author is not a title.
         assert_eq!(fix_of("ursula le guin"), None);
-        // A series place is not a typo.
         assert_eq!(fix_of("dune 2"), None);
-        // Nor is a title that holds a near miss of an author's name.
         let q = parse("the god of the woods", &KnowsNothing);
         assert_eq!(
             correct(&q, &[t("God", "Woody Allen", 40)]),
@@ -404,8 +348,6 @@ mod props {
     }
 
     proptest! {
-        /// A title that is in the index, typed as it is, is never corrected to
-        /// another — whatever else is near it.
         #[test]
         fn an_exact_title_is_never_corrected(
             typed in title(),
@@ -420,8 +362,6 @@ mod props {
             prop_assert!(!matches!(correct(&q, &targets), Verdict::Fix(_)));
         }
 
-        /// A fix only ever replaces words: as many words out as in, and every
-        /// word it keeps is the one typed.
         #[test]
         fn a_fix_replaces_words_and_keeps_the_rest(
             typed in title(),

@@ -1,19 +1,9 @@
-//! Log subscriber for the CLI.
-//!
-//! The engine only *emits* tracing events; deciding where they go is a frontend
-//! job, which is what keeps the engine free of terminal I/O.
-
 use std::io::IsTerminal;
 
 use tracing_subscriber::EnvFilter;
 
-/// Translate `-v` count and `-q` into a filter directive.
-///
-/// The default is `error`, not `warn`, and that is deliberate: at `warn` the
-/// engine's own event at each degradation site would print *and* the command
-/// would print its `warning: {diagnostic}` line for the same failure. Defaulting
-/// to `error` keeps output byte-identical to before logging existed, and `-v`
-/// turns the stream on.
+/// Default is `error`, not `warn`: at `warn` each degradation would print twice, once as an event
+/// and once as the command's own `warning:` line.
 fn directive(verbose: u8, quiet: bool) -> String {
     if quiet {
         return "off".to_string();
@@ -26,9 +16,8 @@ fn directive(verbose: u8, quiet: bool) -> String {
     }
 }
 
-/// Install the subscriber. Writes to **stderr**, so stdout stays pipeable.
+/// Installs the subscriber on stderr so stdout stays pipeable.
 pub fn init(verbose: u8, quiet: bool) {
-    // RUST_LOG always wins over the flags.
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(directive(verbose, quiet)));
 
@@ -37,8 +26,6 @@ pub fn init(verbose: u8, quiet: bool) {
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal());
 
-    // At -v the log is a human reading along, so keep it terse; past that it is
-    // someone debugging, who wants the target and the timestamp.
     if verbose <= 1 {
         builder.without_time().with_target(false).init();
     } else {
@@ -55,9 +42,6 @@ mod tests {
         assert_eq!(directive(3, true), "off");
     }
 
-    /// The default must stay `error`: anything louder double-reports every
-    /// degradation, once from the engine's event and once from the command's
-    /// own `warning:` line.
     #[test]
     fn default_is_quiet_enough_not_to_double_report() {
         assert_eq!(directive(0, false), "bookmole=error");

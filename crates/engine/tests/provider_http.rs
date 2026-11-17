@@ -1,10 +1,4 @@
-//! Provider behaviour that only real HTTP can exercise.
-//!
-//! Deliberately narrow. URL construction and response mapping are pure and are
-//! tested directly (faster, and they pin the exact query string); the fan-out's
-//! degradation is covered by a mock `MetadataProvider` with no sockets at all.
-//! What is left — and what genuinely needs a server — is how the provider
-//! reacts to status codes and malformed bodies.
+//! Provider behaviour that only real HTTP can exercise: status codes and malformed bodies.
 
 use bookmole::providers::MetadataProvider;
 use bookmole::providers::googlebooks::GoogleBooksProvider;
@@ -54,8 +48,6 @@ async fn by_isbn_returns_none_rather_than_erroring_on_no_match() {
     assert!(p.by_isbn("9780441013593").await.unwrap().is_none());
 }
 
-/// The keyless Google Books path hits quota routinely, so this is the failure
-/// users will actually see.
 #[tokio::test]
 async fn a_429_is_an_error_and_never_echoes_the_key() {
     let server = MockServer::start().await;
@@ -71,8 +63,7 @@ async fn a_429_is_an_error_and_never_echoes_the_key() {
     let err = p.search(&req()).await.unwrap_err();
     let rendered = err.to_string();
 
-    // reqwest embeds the full request URL — key and all — in its error text.
-    // scrub_key is the only thing between that and a log file.
+    // reqwest embeds the full request URL, key included, in its error text; scrub_key must remove it.
     assert!(!rendered.contains(KEY), "the API key leaked: {rendered}");
     assert!(
         !rendered.contains("AIzaSy"),
@@ -80,7 +71,6 @@ async fn a_429_is_an_error_and_never_echoes_the_key() {
     );
     assert!(rendered.contains("429"), "status was lost: {rendered}");
 
-    // And it survives into a Diagnostic as a recognisable rate limit.
     let diag = bookmole::Diagnostic::provider_failed(ProviderId::GoogleBooks, &err);
     assert!(diag.is_rate_limited(), "{diag:?}");
     assert!(!diag.detail.contains(KEY));
@@ -96,8 +86,6 @@ async fn a_500_is_an_error_not_an_empty_result() {
 
     let p = provider_against(&server, None).await;
     let err = p.search(&req()).await.unwrap_err();
-    // Silently returning zero results here would look identical to "no matches",
-    // which is exactly the confusion the diagnostics work is meant to end.
     assert!(err.to_string().contains("500"), "{err}");
 }
 
@@ -121,8 +109,7 @@ async fn a_truncated_body_is_a_decode_error() {
     );
 }
 
-/// A key must be sent when configured and absent when not — the keyless path is
-/// a supported mode, not a degraded one.
+/// The keyless path is a supported mode, so no key must be sent when none is configured.
 #[tokio::test]
 async fn the_key_is_sent_only_when_configured() {
     for key in [Some(KEY), None] {

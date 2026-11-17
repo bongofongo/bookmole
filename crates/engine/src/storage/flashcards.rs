@@ -6,19 +6,7 @@ use crate::error::Result;
 #[derive(Debug, Clone)]
 pub struct FlashcardRow {
     pub id: i64,
-    /// The book this card was captured from.
-    ///
-    /// On the table since `0001_init.sql` and selected by nothing until item
-    /// 45. Without it a card knows only its book's *title*, which is not a
-    /// handle — two editions of one book share it, and a frontend holding a
-    /// list of cards had no way back to the shelf.
     pub book_id: i64,
-    /// The passage the word was taken from, where there is one.
-    ///
-    /// `None` for a card minted without a highlight; `Some` for one the
-    /// KOReader import auto-captured off a single-word highlight, which is
-    /// most of them. This is what lets a card be shown *beside* its passage
-    /// rather than beside its book's name.
     pub highlight_id: Option<i64>,
     pub word: String,
     pub context: Option<String>,
@@ -26,12 +14,6 @@ pub struct FlashcardRow {
     pub exported: bool,
 }
 
-/// The columns both list queries read, written once.
-///
-/// Two hand-written column lists that agree today disagree the first time a
-/// field is added to one of them — which is exactly what happened here: adding
-/// `book_id` and `highlight_id` meant touching two `SELECT`s and two row
-/// mappers, in a module whose whole SQL surface is four statements.
 const FLASHCARD_COLUMNS: &str =
     "f.id, f.book_id, f.highlight_id, f.word, f.context, f.exported, b.title AS book_title";
 
@@ -48,14 +30,8 @@ fn row_to_flashcard(r: &sqlx::sqlite::SqliteRow) -> FlashcardRow {
 }
 
 impl Storage {
-    /// Returns true if newly inserted (UNIQUE(book_id, word) dedupes).
-    ///
-    /// **`DO NOTHING`, so a second attempt at the same word is not a rewrite.**
-    /// The first card's `context` and `highlight_id` are what the reader
-    /// actually captured; a `DO UPDATE` would let a later capture of the same
-    /// word — a different chapter, a different passage — silently repoint the
-    /// card at it, and the bool this returns would stop distinguishing
-    /// *created* from *already there*.
+    /// Returns true if newly inserted. `DO NOTHING`: a repeat of the same word must not repoint the
+    /// first card.
     pub async fn insert_flashcard(
         &self,
         book_id: i64,
@@ -93,8 +69,6 @@ impl Storage {
         Ok(rows.iter().map(row_to_flashcard).collect())
     }
 
-    /// All flashcards for one book (both pending and exported), for the
-    /// per-book Cards tab.
     pub async fn list_flashcards_for_book(&self, book_id: i64) -> Result<Vec<FlashcardRow>> {
         let sql = format!(
             r#"SELECT {FLASHCARD_COLUMNS}
@@ -155,8 +129,6 @@ mod tests {
         }
     }
 
-    /// A card can be shown beside the passage it came from, which needs both
-    /// handles to survive the round trip.
     #[tokio::test]
     async fn a_card_carries_its_book_and_its_passage() {
         let s = mem().await;
@@ -185,9 +157,6 @@ mod tests {
         }
     }
 
-    /// `ON CONFLICT DO NOTHING` is load-bearing, not incidental: the second
-    /// attempt must report *not new* **and** leave the first card exactly as it
-    /// was. A `DO UPDATE` would satisfy neither.
     #[tokio::test]
     async fn a_second_card_for_the_same_word_neither_counts_nor_rewrites() {
         let s = mem().await;
@@ -214,17 +183,6 @@ mod tests {
         assert_eq!(cards[0].context.as_deref(), Some("first"));
         assert_eq!(cards[0].highlight_id, Some(h));
     }
-    /// What `Engine::create_flashcard`'s re-read is actually buying, pinned at
-    /// the layer below it: `flashcards.highlight_id` is a foreign key, so an
-    /// unchecked write against a stale id does **not** quietly succeed — it
-    /// comes back as a raw `FOREIGN KEY constraint failed`, which crosses the
-    /// API seam as `internal`. `link_foreign_record` records the same finding
-    /// about `external_ids`, and takes the same medicine.
-    ///
-    /// So the validation converts a wrong error into a typed one as well as
-    /// closing the mismatched-book hole. If this ever stops being an error,
-    /// the facade check has become the only thing standing between a card and
-    /// an anchor pointing at nothing.
     #[tokio::test]
     async fn an_unchecked_anchor_is_a_raw_constraint_error() {
         let s = mem().await;

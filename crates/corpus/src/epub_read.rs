@@ -1,32 +1,5 @@
-//! The generator's own EPUB reader: the spine in order, and a manifest item's
-//! bytes. Nothing else — no metadata, no cover, no table of contents.
-//!
-//! **Deliberately not `epubkit` and not the engine.** The generator is an
-//! independent oracle: a reader shared with the app
-//! would bake the app's reader bugs straight into the goldens it is tested
-//! against. So this is written afresh, to the observable rules of the reader
-//! the tier-2 corpus was first generated with (`epub` 2.1.4), because the
-//! committed `corpus/generated` and `corpus.lock.json` are a function of them:
-//!
-//! - `META-INF/container.xml` → the first `rootfile` element's `full-path`;
-//!   the package document's directory is that path's parent, and an empty
-//!   `full-path` (which has none) is an error.
-//! - The first `manifest` and `spine` elements found depth-first under the
-//!   package root; either missing is an error, and so is a missing `metadata`.
-//! - A manifest child needs `id`, `href` and `media-type`, or it is skipped;
-//!   a repeated `id` is overwritten by the later one.
-//! - A spine child without `idref` is skipped; the rest keep document order.
-//! - A resource's path is the package directory joined with its `href`, with
-//!   no `..` folding and no other normalisation. It is looked up by exact
-//!   entry name, then percent-decoded; a resource not found either way is
-//!   `None`, which the caller skips.
-//! - Element and attribute names compare by local part; the text is UTF-8
-//!   (a UTF-8 BOM is dropped) or UTF-16 with a BOM; besides XML's five, the
-//!   entities `nbsp`, `copy` and `reg` resolve (`nbsp` to a plain space, as
-//!   before); a document that breaks off keeps the elements read up to there.
-//!
-//! The inputs are sha256-pinned Gutenberg books, so there are no hostile-input
-//! caps here — but nothing panics: every failure is an `Err(String)` or `None`.
+//! A minimal EPUB reader for the generator: spine order and manifest item bytes only.
+//! Independent of `epubkit` and the engine on purpose; its parsing rules are pinned to the corpus.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -38,7 +11,6 @@ use quick_xml::events::{BytesStart, Event};
 
 pub struct Epub<R> {
     zip: zip::ZipArchive<R>,
-    /// Manifest id → entry path (package directory joined with the `href`).
     manifest: HashMap<String, String>,
     spine: Vec<String>,
 }
@@ -96,20 +68,16 @@ impl<R: Read + Seek> Epub<R> {
         })
     }
 
-    /// The spine's idrefs, in the order the package document lists them.
     pub fn spine(&self) -> &[String] {
         &self.spine
     }
 
-    /// The bytes of the manifest item `id`, or `None` when the manifest does
-    /// not name it or the archive does not hold it.
     pub fn resource(&mut self, id: &str) -> Option<Vec<u8>> {
         let path = self.manifest.get(id)?.clone();
         entry(&mut self.zip, &path)
     }
 }
 
-/// An entry by exact name, then by its percent-decoded name.
 fn entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     match zip.by_name(name) {
@@ -121,8 +89,6 @@ fn entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Option<Vec
     f.read_to_end(&mut out).ok().map(|_| out)
 }
 
-/// `%XX` with two hex digits becomes that byte; any other `%` stays as it is.
-/// The result must be UTF-8, or there is no decoded name.
 fn percent_decode(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -145,8 +111,6 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// One element: its local name, its attributes by local name (first wins,
-/// `xmlns` declarations excluded), and its child elements.
 #[derive(Default)]
 struct El {
     name: String,
@@ -162,7 +126,6 @@ impl El {
             .map(|(_, v)| v.as_str())
     }
 
-    /// The first descendant (not `self`) named `name`, depth-first.
     fn find(&self, name: &str) -> Option<&El> {
         self.children.iter().find_map(|c| {
             if c.name == name {
@@ -174,7 +137,6 @@ impl El {
     }
 }
 
-/// Decode to text: drop a UTF-8 BOM, decode UTF-16 by its BOM, else UTF-8.
 fn decode(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() < 4 {
         return Err("an XML document under four bytes".into());
@@ -233,15 +195,12 @@ fn element(e: &BytesStart<'_>) -> Option<El> {
     })
 }
 
-/// The document's root element. A document that breaks off keeps the
-/// elements read before the break; one with no element at all is an error.
 fn parse(bytes: &[u8]) -> Result<El, String> {
     let text = decode(bytes)?;
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut stack: Vec<El> = Vec::new();
     let mut root: Option<El> = None;
 
-    // Attach a finished element to its parent, or make it the root.
     let close = |el: El, stack: &mut Vec<El>, root: &mut Option<El>| match stack.last_mut() {
         Some(parent) => parent.children.push(el),
         None => {
@@ -268,7 +227,6 @@ fn parse(bytes: &[u8]) -> Result<El, String> {
             Ok(_) => {}
         }
     }
-    // Close whatever a broken document left open, innermost first.
     while let Some(el) = stack.pop() {
         close(el, &mut stack, &mut root);
     }
@@ -323,15 +281,11 @@ mod tests {
             &[("OEBPS/a.xhtml", b"A"), ("OEBPS/text/b c.xhtml", b"B")],
         )
         .unwrap();
-        // The idref-less itemref is skipped; a prefixed `idref` still counts.
         assert_eq!(e.spine(), ["b", "a", "gone"]);
         assert_eq!(e.resource("a").as_deref(), Some(&b"A"[..]));
-        // Exact name missed, the percent-decoded one found.
         assert_eq!(e.resource("b").as_deref(), Some(&b"B"[..]));
-        // In the manifest, not in the archive; not in the manifest at all.
         assert_eq!(e.resource("gone"), None);
         assert_eq!(e.resource("nomime"), None);
-        // The later of two items with one id wins.
         assert_eq!(e.resource("dup").as_deref(), Some(&b"B"[..]));
     }
 
@@ -381,7 +335,6 @@ mod tests {
         ]);
         let mut e = Epub::from_reader(z).unwrap();
         assert_eq!(e.spine(), ["b", "a", "gone"]);
-        // A package document at the archive root: paths are the bare href.
         assert_eq!(e.resource("a").as_deref(), Some(&b"A"[..]));
     }
 

@@ -1,13 +1,5 @@
-//! The one place it is worth asserting on log *output*.
-//!
-//! Everything else about degradation is now assertable on the returned
-//! `Diagnostic`, which is stronger and does not couple tests to log text. But
-//! "an API key never reaches a log" is a property of the emission itself, and
-//! nothing else can check it.
-//!
-//! Deliberately hand-rolled rather than using `tracing-test`, which installs a
-//! *global* default subscriber and thereby makes tests order-dependent and
-//! hostile to parallel execution.
+//! Asserts on log output for the one property only emission can show: an API key never reaches
+//! a log. Hand-rolled capture, since `tracing-test` installs a global default subscriber.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +10,6 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::Registry;
 
-/// Every field value rendered by any event, plus every event message.
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<String>>>);
 
@@ -55,17 +46,12 @@ impl<S: tracing::Subscriber> Layer<S> for Captured {
 
 const KEY: &str = "AIzaSyTOTALLY_SECRET_KEY_VALUE";
 
-/// `scrub_key` is the only thing standing between a reqwest error (which
-/// embeds the full request URL) and a key in a log file the user might paste
-/// into a bug report.
 #[test]
 fn an_api_key_never_reaches_a_tracing_field() {
     let captured = Captured::default();
     let subscriber = Registry::default().with(captured.clone());
 
     with_default(subscriber, || {
-        // The shape a reqwest failure actually takes: the whole URL, key and
-        // all, inside the error text.
         let leaked = format!(
             "error sending request for url (https://www.googleapis.com/books/v1/volumes?q=dune&key={KEY})"
         );
@@ -75,7 +61,6 @@ fn an_api_key_never_reaches_a_tracing_field() {
         };
         let diag = bookmole::Diagnostic::provider_failed(bookmole::ProviderId::GoogleBooks, &err);
 
-        // Exactly how search.rs logs a degradation.
         tracing::warn!(provider = "googlebooks", detail = %diag.detail, "provider degraded");
         tracing::error!(error = %err, "provider error");
     });
@@ -92,20 +77,15 @@ fn an_api_key_never_reaches_a_tracing_field() {
             "a Google key prefix reached a tracing field: {line}"
         );
     }
-    // And the redaction marker is present, so this is not passing merely
-    // because nothing was logged.
     assert!(
         lines.iter().any(|l| l.contains("key=REDACTED")),
         "expected a redacted key marker, got: {lines:?}"
     );
 }
 
-/// The engine must never install a subscriber of its own — that is a frontend
-/// decision, and a library that grabs the global default breaks every embedder.
+/// A library that installs the global default subscriber breaks every embedder.
 #[test]
 fn the_engine_installs_no_global_subscriber() {
-    // If the engine had installed one, this would be a no-op and the layer
-    // below would capture nothing.
     let captured = Captured::default();
     with_default(Registry::default().with(captured.clone()), || {
         tracing::warn!(marker = "probe", "test event");
@@ -116,20 +96,8 @@ fn the_engine_installs_no_global_subscriber() {
     );
 }
 
-/// A **note body and its file path** must never reach a log above `trace!`.
-///
-/// The engine's tracing rule names highlight text, note bodies and search
-/// queries as the user's private reading, never logged above `trace!`. The
-/// vault path is the subtle half and
-/// is why this test exists at all: a note's filename is its slugified *title*,
-/// and a derived title is the first six words of the body — so
-/// `20260805-dorothea-s-dignity-under-casaubon-s.md` **is** the note's opening
-/// words, and a watcher that logged the path it was working on would be logging
-/// prose. The mount watcher logs its volume paths at `info!` quite correctly; a
-/// vault path is not the same kind of path.
-///
-/// Filtered to `DEBUG` and above deliberately, so this asserts the *rule* —
-/// `trace!` may carry it — rather than asserting that nothing is ever logged.
+/// A note's filename is its slugified title, derived from the body's first words, so a vault
+/// path is prose and must stay at `trace!`. Filtered to `DEBUG` to assert that rule.
 #[tokio::test]
 async fn a_note_body_never_reaches_a_log_above_trace() {
     use bookmole::{Engine, EngineConfig, NewNoteInput, VaultStir, VaultWatcher};
@@ -147,8 +115,6 @@ async fn a_note_body_never_reaches_a_log_above_trace() {
         })
         .await
         .unwrap();
-    // Every word of the body ends up in the filename, since the title is
-    // derived from it — which is the whole point of this test.
     assert!(
         created.file.to_string_lossy().contains("dignity"),
         "the fixture no longer puts the body's words in the path, so this \
@@ -162,9 +128,8 @@ async fn a_note_body_never_reaches_a_log_above_trace() {
     let vault = engine.vault_dir().to_path_buf();
     let path = created.file.clone();
 
-    // `with_default` is not held across an await — the subscriber guard is not
-    // `Send` — so the watcher is driven inside a `block_in_place`-free local
-    // runtime instead: one current-thread runtime, entirely inside the scope.
+    // `with_default` is not held across an await (the guard is not `Send`), so the watcher runs on
+    // a current-thread runtime entirely inside the scope.
     std::thread::scope(|s| {
         s.spawn(|| {
             tracing::subscriber::with_default(subscriber, || {
@@ -173,8 +138,6 @@ async fn a_note_body_never_reaches_a_log_above_trace() {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    // An edit made outside, then the file removed — both of the
-                    // watcher's outcomes, plus the sweep.
                     let raw = std::fs::read_to_string(&path).unwrap();
                     std::fs::write(&path, raw.replace(SECRET, "rewritten outside")).unwrap();
 
@@ -208,14 +171,7 @@ async fn a_note_body_never_reaches_a_log_above_trace() {
     }
 }
 
-/// A **search query** is the user's private reading too, and a new query path is
-/// exactly where a helpful `info!("searching for {q}")` gets added.
-///
-/// The sibling of the test above, and it covers the two things a search touches
-/// that the watcher does not: the words the reader typed, and the text of the
-/// highlight that came back. Filtered to `DEBUG` for the same reason — this
-/// asserts the *rule* (`trace!` may carry it), not that nothing is logged. The
-/// count of hits is fine at `debug!`: a number is not the query.
+/// Search queries and returned highlight text stay at `trace!`; a hit count may be `debug!`.
 #[test]
 fn a_search_query_never_reaches_a_log_above_trace() {
     use bookmole::{Engine, EngineConfig, NewHighlight, NewNoteInput};
@@ -282,7 +238,6 @@ fn a_search_query_never_reaches_a_log_above_trace() {
                         "the fixture has to actually match, or this passes for \
                          the wrong reason"
                     );
-                    // A query that matches nothing goes down the same path.
                     assert!(
                         engine
                             .search_marks("thermodynamics", None, None, 10)
@@ -305,21 +260,8 @@ fn a_search_query_never_reaches_a_log_above_trace() {
     }
 }
 
-/// **The pairing token is never logged, at any level** — not even `trace!`.
-///
-/// Migration `0019` says so and is stricter than the engine's rule about
-/// highlight text and search queries, which permits `trace!`. Wireless contact
-/// is where a debug line would be reached for: the listener verifies a MAC and
-/// refuses, and *"expected a38b… got 26ae…"* is the first thing anybody writes
-/// when a credential will not verify on a device they cannot attach a debugger
-/// to. It is also the line that puts a reproducible forgery in a log file.
-///
-/// So the capture is unfiltered — every level, including `TRACE` — and it
-/// drives the whole rendezvous: a probe from a paired reader (which makes the
-/// listener compute a MAC under the real token), a connection that proves
-/// itself, and a connection that fails to. The refusal path matters most: the
-/// success path has no reason to mention the secret and the failure path has an
-/// excuse.
+/// The pairing token is never logged at any level, `trace!` included, so the capture is
+/// unfiltered.
 #[tokio::test]
 async fn the_pairing_token_never_reaches_a_log_at_any_level() {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -329,8 +271,6 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
     use bookmole::{Engine, EngineConfig};
     use tokio::io::AsyncWriteExt;
 
-    /// A beacon that replays one probe and records nothing. No packet leaves
-    /// the machine; see `tests/wireless.rs` for the same seam in full.
     #[derive(Debug)]
     struct OneProbe(tokio::sync::Mutex<Option<Vec<u8>>>);
 
@@ -339,7 +279,6 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
         async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
             match self.0.lock().await.take() {
                 Some(b) => Some((b, "192.0.2.9:61862".parse().unwrap())),
-                // Park rather than end: a real socket waits between datagrams.
                 None => std::future::pending().await,
             }
         }
@@ -372,7 +311,7 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
     assert_eq!(token.len(), 64, "the fixture stopped being a real token");
 
     let captured = Captured::default();
-    // **No level filter at all.** This is the one secret `trace!` may not carry.
+    // No level filter: the pairing token may not appear even at `trace!`.
     let subscriber = Registry::default().with(captured.clone());
     #[allow(clippy::disallowed_methods)]
     let guard = tracing::subscriber::set_default(subscriber);
@@ -395,7 +334,6 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
         .unwrap();
     let port = listener.status(0).await.tcp_port.unwrap();
 
-    // A connection that proves itself, and one that does not.
     for (nonce, key) in [("good", token.as_str()), ("bad", "not-the-token")] {
         let mut s = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
             .await
@@ -418,9 +356,8 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
             !line.contains(&token),
             "the pairing token reached a log: {line}"
         );
-        // A MAC computed under the real token is not the token, but publishing
-        // one beside its challenge is a gift to anybody replaying it — and it
-        // is what a "why did this not verify" line would print.
+        // A MAC under the real token is not the token, but logging one beside its challenge hands a
+        // replayer a forgery.
         assert!(
             !line.contains(&mac(&token, &open_challenge("good"))),
             "a MAC computed under the pairing token reached a log: {line}"
@@ -432,20 +369,7 @@ async fn the_pairing_token_never_reaches_a_log_at_any_level() {
     );
 }
 
-/// **Book search, end to end: no query, no typed ISBN and no key above
-/// `trace!`.** What a reader searched for is as private as what they read.
-///
-/// Every path a search now takes, against loopback servers and then against
-/// ports nothing listens on: the parsed free-text search, the session started
-/// and polled, a repeat answered from what was kept, the concurrent ISBN
-/// lookup, an ISBN typed into the search box, the offline stand-in, and the
-/// books index: the books the app already holds (`yours`), *you have this*
-/// against a library holding the very book, and a search of the library
-/// itself. The library and the
-/// providers answer with the query's own words in their titles, so a line that
-/// logged a result's title would trip this as surely as one that logged the
-/// query. Filtered to `DEBUG`, as the two tests above are: `trace!` may carry
-/// a query, and nothing else may.
+/// No query, typed ISBN or key above `trace!` on any search path, online or offline.
 #[test]
 fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
     use bookmole::providers::googlebooks::GoogleBooksProvider;
@@ -531,10 +455,6 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                         ]
                     };
                     engine.replace_providers(providers(ol.uri(), gb.uri()));
-                    // A one-work offline index holding the book, so suggestions,
-                    // correction and the index's names are on the path too.
-                    // Built in code: this test never opens the
-                    // embedded file.
                     engine.use_wellknown(bookmole::search::wellknown::Loader::Works(
                         std::sync::Arc::new(vec![bookmole::WellKnownWork {
                             wikidata: 1,
@@ -551,8 +471,6 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                             ..Default::default()
                         }]),
                     ));
-                    // A book of the app's own that every search finds: the
-                    // `yours` results and *you have this* both have it to say.
                     engine
                         .save_book(&bookmole::Book {
                             title: Some("Brookevarnish Chronicle".into()),
@@ -568,11 +486,9 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                         ..Default::default()
                     };
 
-                    // Parsed, then repeated from what was kept.
                     let first = engine.search(&text(TYPED)).await.unwrap();
                     assert!(!first.results.is_empty(), "the fixture has to answer");
                     engine.search(&text(TYPED)).await.unwrap();
-                    // A session, started and polled to its end.
                     let mut snap = engine
                         .start_search(TYPED, SearchScope::Everything, 20)
                         .await
@@ -589,8 +505,6 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                         "the held path was not taken"
                     );
                     engine.end_search(&snap.session);
-                    // As you type, and a misspelling corrected: the
-                    // fix is the user's query too.
                     let suggested = engine.suggest_works("Brookev", 5).await.unwrap();
                     assert!(!suggested.suggestions.is_empty(), "no suggestion path");
                     let mut fixed = engine
@@ -603,23 +517,18 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
                             .await
                             .unwrap();
                     }
-                    // The fix's own work is the first answer here, so it is
-                    // weighed and not used; the marker below proves the weighing.
                     assert!(fixed.correction.is_none());
                     engine
                         .start_search_as_typed("Brookevarnsh chronicel", SearchScope::Everything, 20)
                         .await
                         .unwrap();
-                    // The library's own search, by words, by a typo and by ISBN.
                     for q in [TYPED, "Brookevarnsh", ISBN_TYPED] {
                         engine.search_library(q, 20).await.unwrap();
                     }
-                    // The concurrent ISBN lookup, and an ISBN typed as text.
                     let found = engine.lookup_isbn_reported(ISBN_TYPED).await.unwrap();
                     assert!(found.book.is_some());
                     engine.search(&text(ISBN_TYPED)).await.unwrap();
 
-                    // Offline: kept answers stand in for unreachable hosts.
                     engine.storage().age_kept_searches(3 * 86_400).await.unwrap();
                     let dead = || {
                         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -655,8 +564,6 @@ fn a_book_search_never_logs_the_query_the_isbn_or_the_key_above_trace() {
     });
 
     let lines = captured.contents();
-    // The paths were taken and logged: the session's start and the offline
-    // degradation, at least.
     for marker in [
         "search started",
         "provider degraded",

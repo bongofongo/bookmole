@@ -1,84 +1,12 @@
-//! Whether the library's database sits inside a cloud-synced folder.
-//!
-//! A live SQLite library in a synced folder gets damaged: the sync client
-//! copies `app.db` and its `-wal`/`-shm` siblings at different moments, so the
-//! copy on the other side (and, after a round trip, the copy here) is three
-//! files from three instants. Every frontend says so once per launch and opens
-//! the library anyway; nothing here refuses anything.
-//!
-//! **This module is the fact, never the sentence.** [`cloud_folder_from`]
-//! answers *which kind of synced location, rooted where*, as a [`CloudFolder`];
-//! the wording is each frontend's. Derived facts live in the engine so every
-//! frontend agrees on them; phrasing does not, so each can say it its own way.
-//!
-//! ## What is judged: the database's folder, not the vault
-//!
-//! The vault is plain markdown and is safe in a synced folder — it may stay
-//! there. What is at risk is the folder holding `app.db` and its siblings, so
-//! [`LibraryLocation::of`] judges the parent of the file named by
-//! `EngineConfig::db_url`. A config whose vault lives in iCloud Drive and whose
-//! database does not produces nothing, and that case is tested by name.
-//!
-//! ## The roots, and how sure each one is
-//!
-//! Each root below is marked **certain** (the client's documented or
-//! long-standing fixed location, or a variable the client itself sets) or
-//! **conventional** (the client's default folder, which a user may move; a
-//! moved folder is simply not recognised, which is the quiet failure).
-//!
-//! macOS (`$HOME`):
-//! - `~/Library/Mobile Documents` — iCloud Drive, `com~apple~CloudDocs` and
-//!   every app's iCloud container under it. **Certain.**
-//! - `~/Library/CloudStorage/<X>` — the File Provider location every modern
-//!   sync client uses (Dropbox, Google Drive, OneDrive, Proton Drive, Box and
-//!   others). **Certain** that anything under it is synced; which client is
-//!   read off `<X>`'s prefix (`Dropbox`, `GoogleDrive-…`, `OneDrive-…`,
-//!   `ProtonDrive-…`, `Box-…`), which is **conventional**, and an unknown
-//!   prefix is [`CloudService::CloudStorage`] rather than no answer.
-//! - `~/Dropbox`, `~/Google Drive`, `~/OneDrive` — the clients' folders from
-//!   before File Provider. **Conventional.**
-//! - `/Volumes/GoogleDrive`, `/Volumes/GoogleDrive-<id>` — Google Drive File
-//!   Stream's old mount. **Conventional.**
-//! - **Not covered: `~/Desktop` and `~/Documents`.** iCloud's "Desktop &
-//!   Documents Folders" syncs both, and the path alone cannot say whether it is
-//!   on. The signals that could (Finder's preference keys, a File Provider
-//!   extended attribute) are undocumented and would need a plist reader or a
-//!   subprocess; a guess either way is wrong for somebody, and warning on every
-//!   `~/Documents` library would be a warning nobody believes. Left out.
-//!
-//! Windows (`%USERPROFILE%`):
-//! - `%OneDrive%`, `%OneDriveConsumer%`, `%OneDriveCommercial%` — set by the
-//!   OneDrive client to its own folders. **Certain** when set.
-//! - `\Dropbox`, `\OneDrive`, `\iCloudDrive` — the clients' default folders.
-//!   **Conventional.**
-//! - `\Google Drive` (Backup and Sync's old folder) and `\Proton Drive`.
-//!   **Conventional.**
-//! - `<drive>:\My Drive` and `<drive>:\Shared drives` — Google Drive for
-//!   desktop's virtual drive. **Conventional**: a folder by that exact name at
-//!   a drive's root is not something else in practice.
-//!
-//! Linux and other Unix (`$HOME`): `~/Dropbox` (Dropbox's own client,
-//! **certain** default) and `~/OneDrive` (the `onedrive` client's default,
-//! **conventional**). Nothing else: Google Drive and Proton Drive ship no
-//! Linux client whose folder is a fixed path, and GNOME's online-accounts
-//! mounts are not a place anybody puts a library.
-//!
-//! ## How a path is compared
-//!
-//! On components, after both sides are absolute, lexically (`.` dropped, `..`
-//! popped), and case-insensitively on macOS and Windows, whose default file
-//! systems are. A sibling whose name merely *starts with* a root's name
-//! (`~/Dropbox2`) is not under it. The pure function touches no file system;
-//! [`cloud_folder`], the thin wrapper, additionally canonicalizes both the path
-//! and the home so a symlinked data dir is seen through, and tolerates either
-//! canonicalization failing.
+//! Detects a cloud-synced database folder, which can corrupt a live SQLite library. Returns the
+//! fact only; wording is the frontend's. Judges the folder of `app.db`, not the vault;
+//! `~/Desktop` and `~/Documents` are not covered.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::data_dir::Platform;
 
-/// Which kind of synced location matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CloudService {
     ICloudDrive,
@@ -87,35 +15,23 @@ pub enum CloudService {
     OneDrive,
     ProtonDrive,
     Box,
-    /// Under macOS's `~/Library/CloudStorage` with a folder prefix this module
-    /// does not name: some File Provider client, synced all the same.
     CloudStorage,
 }
 
-/// The fact: the path is inside `root`, which `service` syncs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudFolder {
     pub service: CloudService,
-    /// The synced root the path is inside, spelled as the *path* spells it.
     pub root: PathBuf,
 }
 
-/// Where the library's database is, and whether that is inside a synced
-/// folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryLocation {
-    /// The folder holding the database file and its `-wal`/`-shm` siblings.
-    /// `None` for an in-memory database, which is in no folder at all.
+    /// `None` for an in-memory database, which is in no folder.
     pub database_dir: Option<PathBuf>,
     pub cloud_folder: Option<CloudFolder>,
 }
 
 impl LibraryLocation {
-    /// Judge the folder of the database `db_url` names with `detect`.
-    ///
-    /// [`crate::Engine::library_location`] passes [`cloud_folder`]; a test
-    /// passes [`cloud_folder_from`] with its own environment, so the
-    /// composition the engine runs is the one the tests run.
     pub fn of(db_url: &str, detect: impl Fn(&Path) -> Option<CloudFolder>) -> LibraryLocation {
         let database_dir = database_dir(db_url);
         let cloud_folder = database_dir.as_deref().and_then(detect);
@@ -126,8 +42,6 @@ impl LibraryLocation {
     }
 }
 
-/// The folder holding the database a sqlx SQLite URL names, or `None` for an
-/// in-memory one. Relative stays relative; the caller makes it absolute.
 pub fn database_dir(db_url: &str) -> Option<PathBuf> {
     let rest = db_url
         .strip_prefix("sqlite://")
@@ -143,10 +57,8 @@ pub fn database_dir(db_url: &str) -> Option<PathBuf> {
     }
 }
 
-/// [`cloud_folder_from`] with the real environment and platform, and a second
-/// look through symlinks: if the path as given matches nothing, the canonical
-/// path is judged against the canonical home. Either canonicalization failing
-/// just means that look is skipped.
+/// Also judges the canonical path against the canonical home, so a symlinked data dir is seen
+/// through.
 pub fn cloud_folder(path: &Path) -> Option<CloudFolder> {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     cloud_folder_through(
@@ -157,8 +69,6 @@ pub fn cloud_folder(path: &Path) -> Option<CloudFolder> {
     )
 }
 
-/// The wrapper's two looks, with the canonicalizer passed in so a test can run
-/// it against a temp tree and its own home.
 fn cloud_folder_through(
     path: &Path,
     env: impl Fn(&str) -> Option<OsString>,
@@ -183,11 +93,8 @@ fn cloud_folder_through(
     )
 }
 
-/// The rule itself, with everything it reads passed in.
-///
-/// `path` must be absolute for `platform` (a relative one is no answer);
-/// `env` looks up `HOME` (macOS, Unix) or `USERPROFILE` and the OneDrive
-/// variables (Windows). Pure: no file system, no process state.
+/// Pure: `path` must be absolute for the platform, and everything it reads from the environment
+/// is passed in.
 pub fn cloud_folder_from(
     path: &Path,
     env: impl Fn(&str) -> Option<OsString>,
@@ -218,9 +125,7 @@ pub fn cloud_folder_from(
             ] {
                 roots.extend(under_home(tail).map(|r| (service, r)));
             }
-            // `~/Library/CloudStorage/<X>`: the provider folder is the root,
-            // so the container itself is not a match and anything below a
-            // provider is.
+            // The provider folder under `CloudStorage` is the root: the container itself is not a match.
             if let Some(container) = under_home(&["Library", "CloudStorage"])
                 && let Some(provider) = comps.get(container.len())
                 && starts_with(&comps, &container, fold)
@@ -229,7 +134,6 @@ pub fn cloud_folder_from(
                 r.push(provider.clone());
                 roots.push((provider_service(provider), r));
             }
-            // Google Drive File Stream's old mount, `/Volumes/GoogleDrive[-id]`.
             if comps.len() >= 2
                 && same(&comps[0], "Volumes", fold)
                 && has_prefix_name(&comps[1], "GoogleDrive")
@@ -263,7 +167,6 @@ pub fn cloud_folder_from(
             ] {
                 roots.extend(under_home(&[tail]).map(|r| (service, r)));
             }
-            // Google Drive for desktop's virtual drive: `G:\My Drive\…`.
             if comps.len() >= 2
                 && is_drive(&comps[0])
                 && (same(&comps[1], "My Drive", fold) || same(&comps[1], "Shared drives", fold))
@@ -275,8 +178,8 @@ pub fn cloud_folder_from(
 
     roots
         .into_iter()
-        // A root of one component would be a whole drive or `/`; nothing
-        // above syncs that, and a bad variable must not make everything match.
+        // A one-component root would be a whole drive or `/`; a bad variable must not make everything
+        // match.
         .filter(|(_, r)| r.len() >= 2)
         .find(|(_, r)| starts_with(&comps, r, fold))
         .map(|(service, r)| CloudFolder {
@@ -285,7 +188,6 @@ pub fn cloud_folder_from(
         })
 }
 
-/// The variable a platform's home is read from.
 fn home_var(platform: Platform) -> &'static str {
     match platform {
         Platform::Windows => "USERPROFILE",
@@ -293,8 +195,6 @@ fn home_var(platform: Platform) -> &'static str {
     }
 }
 
-/// Which client a `~/Library/CloudStorage` folder belongs to, by the prefix
-/// each client names its folder with.
 fn provider_service(name: &str) -> CloudService {
     for (prefix, service) in [
         ("Dropbox", CloudService::Dropbox),
@@ -333,14 +233,8 @@ fn is_drive(c: &str) -> bool {
     b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
-/// An absolute path's components, lexically normalized, or `None` when the
-/// text is not absolute on `platform`. Judged on the text, so the answer does
-/// not depend on the host the test runs on.
-///
-/// Unix and macOS: the components after the leading `/`. Windows: a drive
-/// (`C:`) or a UNC head (`\\server`) first, then the rest, split on either
-/// slash; a verbatim `\\?\` prefix (what `canonicalize` returns there) is
-/// dropped first.
+/// Lexically normalized components, or `None` when the text is not absolute on `platform`; judged
+/// on the text so tests do not depend on the host. A verbatim `\\?\` prefix is dropped.
 fn components(text: &str, platform: Platform) -> Option<Vec<String>> {
     if platform != Platform::Windows {
         return normalize(Vec::new(), text.strip_prefix('/')?, platform);
@@ -381,7 +275,6 @@ fn normalize(mut out: Vec<String>, rest: &str, platform: Platform) -> Option<Vec
     Some(out)
 }
 
-/// Components back into a path, in the platform's own spelling.
 fn spell(comps: &[String], platform: Platform) -> PathBuf {
     match platform {
         Platform::MacOs | Platform::Unix => PathBuf::from(format!("/{}", comps.join("/"))),
@@ -480,13 +373,10 @@ mod tests {
                 "/Volumes/GoogleDrive-1234/My Drive/rb",
                 found(GoogleDrive, "/Volumes/GoogleDrive-1234"),
             ),
-            // The default, and the folders that cannot be told from a path.
             ("/Users/u/Library/Application Support/bookmole", None),
             ("/Users/u/Documents/bookmole", None),
             ("/Users/u/Desktop/bookmole", None),
-            // The container itself is not a provider's folder.
             ("/Users/u/Library/CloudStorage", None),
-            // Someone else's home.
             ("/Users/v/Dropbox/rb", None),
             ("/Volumes/External/rb", None),
         ];
@@ -593,7 +483,6 @@ mod tests {
                 r"G:\Shared drives\Team\rb",
                 found(GoogleDrive, r"G:\Shared drives"),
             ),
-            // What `canonicalize` hands back on Windows.
             (
                 r"\\?\C:\Users\u\Dropbox\rb",
                 found(Dropbox, r"C:\Users\u\Dropbox"),
@@ -606,7 +495,6 @@ mod tests {
             (r"C:\Users\u\Documents\bookmole", None),
             (r"D:\Work\rb", None),
             (r"G:\Other\rb", None),
-            // Not absolute on Windows.
             (r"Users\u\Dropbox\rb", None),
             ("/Users/u/Dropbox/rb", None),
         ];
@@ -652,7 +540,6 @@ mod tests {
 
     #[test]
     fn a_bad_variable_cannot_make_everything_match() {
-        // A OneDrive variable pointing at a whole drive, and a home of `/`.
         assert_eq!(
             on(r"C:\anything", &[("OneDrive", r"C:\")], Platform::Windows),
             None
@@ -739,10 +626,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_wrapper_sees_through_a_symlink_into_a_synced_folder() {
-        // A temp home whose iCloud folder holds the library, and a link to it
-        // from outside the home. The link's own path is nothing; its target
-        // is inside iCloud Drive. The real home is never read: `HOME` is this
-        // test's own.
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let lib = home.join("Library/Mobile Documents/com~apple~CloudDocs/rb");
@@ -757,8 +640,6 @@ mod tests {
         let got = cloud_folder_through(&link, &env, Platform::MacOs, canon);
         assert_eq!(got.map(|f| f.service), Some(CloudService::ICloudDrive));
 
-        // A plain folder stays nothing through both looks, and a path that
-        // cannot be canonicalized is the first look's answer, not an error.
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(
@@ -781,7 +662,6 @@ mod tests {
             })
         }
 
-        /// (platform, env, a root that platform syncs, the service it is).
         fn rooted()
         -> impl Strategy<Value = (Platform, Vec<(&'static str, String)>, String, CloudService)>
         {
@@ -842,8 +722,6 @@ mod tests {
         }
 
         proptest! {
-            /// Any path at or under a synced root is inside it, with that
-            /// root and that service.
             #[test]
             fn anything_under_a_root_matches(
                 (platform, env, root, service) in rooted(),
@@ -858,16 +736,14 @@ mod tests {
                 prop_assert_eq!(got, Some(CloudFolder { service, root: PathBuf::from(&root) }));
             }
 
-            /// A sibling whose last component merely starts with the root's
-            /// last component is never inside it.
             #[test]
             fn a_longer_sibling_name_never_matches(
                 (platform, env, root, service) in rooted(),
                 suffix in "[A-Za-z0-9 ._]{1,6}",
                 tail in proptest::collection::vec(name(), 0..3),
             ) {
-                // Under `~/Library/CloudStorage` *every* folder is a client's,
-                // so a longer name there is another synced folder, correctly.
+                // Under `~/Library/CloudStorage` every folder is a client's, so a longer name there is another
+                // synced folder.
                 prop_assume!(!root.contains("CloudStorage"));
                 let _ = service;
                 let mut path = format!("{root}{suffix}");

@@ -1,73 +1,6 @@
-//! A paired reader reaching its paired computer over the LAN.
-//!
-//! This is the second of the two ways annotations come off a reader, and it is
-//! deliberately built as a **transport for the import we already have** rather
-//! than as a second import. The bytes that cross are the sidecar bytes the
-//! reader is already holding; they land in
-//! [`crate::koreader::import_book_from_sidecar_src`], which is the same parser,
-//! the same idempotency rule and the same goldens the cable path uses. A second
-//! wire format would be a second parser for the same information, tested by
-//! nobody, and its first divergence would appear as highlights importing
-//! differently depending on which cable they came down.
-//!
-//! # The rendezvous, and why it is one protocol used twice
-//!
-//! Each verb has a side that is **open** and a side that **seeks**, and push
-//! and pull swap them. So there is one rule rather than two designs:
-//!
-//! > **Whoever is open answers probes. Whoever seeks probes and listens.**
-//!
-//! ```text
-//! seeker → broadcast   HELLO  {device_id, nonce}
-//! opener → unicast     HERE   {name, tcp_port, mac(token, nonce, port)}
-//! seeker → tcp connect        (verify the mac before sending one byte)
-//! ```
-//!
-//! The consequence that makes the desktop's toggle a feature rather than a
-//! limitation: **discovery only works while the other side is open.** With the
-//! listener off there is no service to find, nothing to fingerprint and nothing
-//! to leak, and the reader's failure message writes itself — *no bookmole
-//! answered; is it listening?* That is the plugin's **fails closed** rule
-//! (when anything is missing it does nothing, and never blocks or slows the
-//! reader's UI) at the transport layer.
-//!
-//! # The token never crosses the wire
-//!
-//! Pairing over USB mints a 32-byte token and writes it into `pairing.lua`
-//! (a wifi pairing derives the same kind of token on both sides; see *linking
-//! over wifi* below). It is a
-//! **challenge-response credential**: both sides prove possession and neither
-//! transmits it. That buys the property that matters more than confidentiality
-//! here — **the reader verifies identity, not address** — so a rogue responder
-//! on a café LAN that answers a broadcast first cannot make a reader send it a
-//! single highlight.
-//!
-//! Two details are load-bearing and were both measured rather than assumed.
-//!
-//! **The key is the token's 64 hex characters, not the 32 bytes they encode.**
-//! koreader-base's `ffi/sha2.lua` computes correct HMAC-SHA256 either way, and
-//! the two answers are completely different with neither side looking wrong —
-//! `our_hmac_agrees_with_the_device_and_uses_the_hex_as_the_key` pins both
-//! vectors. The hex is
-//! chosen because it is the string `pairing.lua` literally holds, so the device
-//! needs no `hex_to_bin` and cannot get a decode wrong somewhere nobody can
-//! attach a debugger.
-//!
-//! **Every MAC is domain-separated by a prefix.** `here:`, `open:` and `body:`
-//! cannot be replayed as one another, which is what stops a captured discovery
-//! reply from being presented as an authorisation to push.
-//!
-//! # What is tested, and what cannot be
-//!
-//! `watch.rs`'s split, applied exactly: [`UdpBeacon`] is the adapter that
-//! cannot run in CI, and everything else here can. The rendezvous transport is
-//! behind the [`Beacon`] trait and injected — a discovery path that can only be
-//! driven by plugging in real hardware is a discovery path with no tests, which
-//! is the same sentence that file writes about `notify`. **No test in this
-//! module emits a broadcast packet.** The TCP half runs on loopback, which is
-//! already ordinary here (`tests/provider_http.rs` binds a real local port via
-//! `wiremock`), because "no network in tests, ever" means nothing leaves the
-//! machine.
+//! A paired reader reaching its paired computer over the LAN, feeding the cable path's import.
+//! The pairing token never crosses the wire: both sides prove possession by HMAC, and every MAC
+//! is domain-separated (`here:`, `open:`, `body:`) so one cannot be replayed as another.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
@@ -84,65 +17,30 @@ use crate::error::Result;
 use crate::koreader::{PullReport, import_book_from_sidecar_src_for_device};
 use crate::storage::{PairedDevice, Storage, now_unix};
 
-/// The one fixed port in the protocol.
-///
-/// A `const` and **not a config knob**, for `MOUNT_QUIET`'s reason: a knob
-/// means the tested value and the shipped value can differ, and a rendezvous
-/// that works in the test suite and not on the user's LAN is the worst possible
-/// place for that. The TCP port deliberately is *not* fixed — it is announced
-/// in the reply, so a busy port is a runtime fact rather than a support
-/// conversation.
-///
-/// **61862 was checked, not picked.** The IANA service-name registry has
-/// **zero** assignments at or above 61000 (the whole 49152–65535 range is
-/// Dynamic/Private and unregistered), and Linux's default ephemeral range tops
-/// out at 60999 — so a fixed port above 61000 collides with neither a
-/// registered service nor a kernel-allocated one.
+/// Fixed, not configurable: the tested value must be the shipped value. The TCP port is
+/// announced in the reply.
 pub const RENDEZVOUS_PORT: u16 = 61862;
 
-/// Bumped when a message changes shape. Both sides refuse a version they do not
-/// know rather than guessing at a field.
+/// Bumped when a message changes shape; both sides refuse a version they do not know.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// How long *Listen now* stays open when the caller names no number.
 const DEFAULT_WINDOW_MINUTES: u32 = 5;
 
-/// The largest sidecar the listener will read from one entry.
-///
-/// Not tuning, and the same argument as the daemon's `MAX_LINE`: without it
-/// anything that can open a TCP connection can declare a length and make us
-/// allocate for it. A `metadata.epub.lua` for a heavily annotated book is tens
-/// of kilobytes; four megabytes is far above any real one and far below a
-/// problem.
+/// Bounds what one entry may declare, so a TCP peer cannot make us allocate arbitrarily.
 const MAX_SIDECAR_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The longest header line. A push frame is a small JSON object; anything
-/// larger is not one.
 const MAX_HEADER_BYTES: u64 = 64 * 1024;
 
-// ---- the listener's three states -------------------------------------------
-
-/// Whether the desktop is reachable, and until when.
-///
-/// The **UDP responder lives and dies with the TCP listener** — one state, not
-/// two. An announcer that outlives the thing it announces is a device telling
-/// the user to try again against a closed port, and here that invariant is
-/// structural rather than remembered: both tasks are owned by one [`Running`],
+/// The UDP responder and the TCP listener share one lifetime: both are owned by one `Running`,
 /// whose `Drop` aborts both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListenerMode {
-    /// Nothing is bound. **The default**, and the state that makes the whole
-    /// design fail closed.
     Off,
-    /// Bound until `until` (unix seconds), or until a push completes.
     Window { until: i64 },
-    /// Bound for as long as the host runs. For the desktop that lives on the
-    /// LAN; the daemon's `--listen` is how it is asked for.
     Always,
 }
 
 impl ListenerMode {
-    /// Is anything bound, as of `now`?
     pub fn is_open(&self, now: i64) -> bool {
         match self {
             ListenerMode::Off => false,
@@ -152,92 +50,45 @@ impl ListenerMode {
     }
 }
 
-/// What the listener is doing, for a frontend to draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerStatus {
     pub mode: ListenerMode,
-    /// The port a reader would connect to, announced in every `HERE`. `None`
-    /// when nothing is bound.
     pub tcp_port: Option<u16>,
-    /// Completed pushes since this host started. **Not a count of anything
-    /// outstanding** — bookmole never shows a count of things waiting for
-    /// the user (no task-completion framing), and this is a number of things
-    /// done.
+    /// Completed pushes since start; never a count of anything outstanding.
     pub pushes: u64,
     pub last_push_at: Option<i64>,
 }
 
-/// Why the listener refused.
-///
-/// An enum rather than an `EngineError::Other(String)` for [`PluginRefusal`]'s
-/// reason: a refusal is a decision, and every arm is something a caller might
-/// reasonably branch on — a frontend distinguishes *nothing is listening* from
-/// *that reader is not ours*, and only one of them is worth a button.
-///
-/// [`PluginRefusal`]: crate::plugin::PluginRefusal
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WirelessRefusal {
-    /// Nothing is bound. The state everything degrades to.
     #[error("bookmole is not listening")]
     NotListening,
-    /// A `device_id` we have no pairing row for. **Answered with silence over
-    /// UDP**: a probe from a stranger gets no reply at all, so an unpaired
-    /// scanner cannot even learn that something is here.
+    /// Answered with silence over UDP, so a stranger's probe learns nothing.
     #[error("no reader is paired with this bookmole under that id")]
     UnknownDevice,
-    /// The MAC did not verify. Deliberately carries no detail — which byte
-    /// differed is exactly what an attacker would like to know.
+    /// Deliberately carries no detail about which byte differed.
     #[error("that reader could not prove it holds the pairing token")]
     BadCredential,
-    /// A nonce this listener has already honoured.
     #[error("that request was already used")]
     ReplayedNonce,
-    /// The protocol version is not one we speak.
     #[error("this reader speaks wireless protocol v{theirs}; this bookmole speaks v{ours}")]
     UnsupportedVersion { theirs: u32, ours: u32 },
-    /// Nobody answered, or nobody who could prove the token did.
-    ///
-    /// The reader's window is shut, it is on another subnet, or the AP dropped
-    /// the broadcast — and a client must not guess between them: *no reader
-    /// answered; is its window open?* is the only honest sentence, and it is
-    /// the mirror of the push side's *is the door open on your computer?*
     #[error("no paired reader answered; is its window open?")]
     ReaderNotFound,
-    /// What was typed is not a pairing code at all — the wrong length, or a
-    /// character the reader never shows. Refused before anything is sent, so a
-    /// typo costs no wait.
     #[error(
         "that is not a pairing code: it is {PAIRING_CODE_LEN} letters and digits, as the reader shows them"
     )]
     NotAPairingCode,
-    /// Nobody answered the code.
-    ///
-    /// A wrong code and an absent reader are **one answer**, and that is the
-    /// reader's doing rather than ours: it is silent to anything that is not a
-    /// correctly signed request, so that a stranger probing the LAN learns
-    /// nothing. The sentence therefore has to name every cause the user can
-    /// act on, because we cannot tell them apart.
     #[error(
         "no reader answered that code; check it against the reader's screen, that the code is still showing, and that both are on the same wifi"
     )]
     PairingNotAnswered,
-    /// A reader answered a pairing as one we already know, and could not prove
-    /// it holds that reader's current token.
-    ///
-    /// The code proves somebody is holding *a* device; it does not prove which.
-    /// Re-keying a row on the code alone would let anything that is shown a
-    /// code answer with another reader's id — ids are broadcast, they are not
-    /// secrets — and be handed that reader's name, its history and its place,
-    /// while the real one found its token dead. So the old token is asked for,
-    /// and without it the row is left exactly as it was.
-    ///
-    /// The honest way here is a reader and a computer that have fallen out of
-    /// step, and the sentence says how to get back.
+    /// Re-keying on the code alone would let any reader claim another's id; the old token must be
+    /// proven.
     #[error(
         "that reader answered as one this computer already knows, but could not prove it; on the reader, unlink this computer under Linked computers, then link again"
     )]
     RekeyNotProven,
-    /// The address typed for the reader does not resolve.
     #[error("{host} is not an address this computer can find")]
     AddressNotFound { host: String },
     #[error("malformed wireless message: {0}")]
@@ -246,14 +97,8 @@ pub enum WirelessRefusal {
     TooLarge { len: u64, max: u64 },
 }
 
-// ---- the credential --------------------------------------------------------
-
-/// HMAC-SHA256 of `message` under `token`, lowercase hex.
-///
-/// **`token` is used as its own bytes** — the 64 hex characters, not the 32 they
-/// encode. See the module header: both are valid HMAC and the device's own
-/// library will compute either without complaint, so the choice has to be
-/// written down in one place and this is it.
+/// HMAC-SHA256 of `message` under `token`, lowercase hex. `token` is used as its own 64 hex
+/// characters, not the 32 bytes they encode.
 pub fn mac(token: &str, message: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -268,11 +113,6 @@ pub fn mac(token: &str, message: &str) -> String {
     })
 }
 
-/// Whether `presented` is the MAC of `message` under `token`.
-///
-/// Constant-time in the comparison, via the `hmac` crate's own verifier rather
-/// than `==` on two strings: a byte-at-a-time comparison of a credential is the
-/// textbook timing leak, and it costs nothing to not write one.
 pub fn verify(token: &str, message: &str, presented: &str) -> bool {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -295,79 +135,30 @@ fn hex_to_bytes(s: &str) -> std::result::Result<Vec<u8>, ()> {
         .collect()
 }
 
-/// The message a `HERE` reply signs. Binds the announced **port**, so a rogue
-/// cannot capture a reply and re-advertise it pointing somewhere else.
+/// Binds the announced port, so a captured reply cannot be re-advertised elsewhere.
 pub fn here_challenge(nonce: &str, tcp_port: u16) -> String {
     format!("here:{PROTOCOL_VERSION}:{nonce}:{tcp_port}")
 }
 
-/// The message a push's opening frame signs.
 pub fn open_challenge(nonce: &str) -> String {
     format!("open:{PROTOCOL_VERSION}:{nonce}")
 }
 
-/// The message one pushed sidecar signs.
-///
-/// It covers the **body's hash**, not just the nonce, so the credential is
-/// bound to the payload: a session's opening handshake alone would authorise
-/// any bytes at all to follow, and on a LAN with no TLS that is a difference
-/// worth three lines of Lua.
+/// Covers the body's hash, so the credential is bound to the payload and not just the session.
 pub fn body_challenge(nonce: &str, sha256_hex: &str) -> String {
     format!("body:{PROTOCOL_VERSION}:{nonce}:{sha256_hex}")
 }
 
-// ---- linking over wifi: the code, and what it signs -------------------------
-//
-// A reader that already carries the plugin can be paired with no cable. It
-// shows a code; the person types it here. **The code is the secret and a human
-// carries it** — it is never sent, in any form. What crosses is two datagrams,
-// each signed with it:
-//
-// ```text
-// computer → reader   PAIR    {nonce, at, name, known, mac(code, …)}
-// reader → computer   PAIRED  {nonce, device_id, reader, plugin, mac(code, …)}
-// ```
-//
-// and then both sides compute the long-lived token as an HMAC over the two
-// nonces and the id. So **the token never crosses the wire here either**: a
-// wifi pairing ends with each side holding 64 hex characters the other derived
-// independently, which is the state a cable pairing ends in.
-//
-// The code is 16 characters of a 32-symbol alphabet — 80 bits — and that
-// number is the whole defence against somebody recording the exchange and
-// guessing codes offline. It is why the *reader* shows it and the *computer*
-// types it: a keyboard makes sixteen characters cheap, where an e-ink one
-// would have argued the code down to six, which an afternoon of guessing
-// breaks.
-
-/// How many characters a pairing code has, once the hyphens are gone.
 pub const PAIRING_CODE_LEN: usize = 16;
 
-/// Crockford's base-32 alphabet: no `I`, `L`, `O` or `U`.
 const CODE_ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// How many of our own device ids a `PAIR` names.
-///
-/// The reader uses them to recognise a computer it is already linked with, so
-/// that linking again re-keys that entry instead of adding a second one. A
-/// bound, because the message is one datagram; past it the cost is a duplicate
-/// entry on a reader paired with seventeen readers' worth of history, not a
-/// failure.
+/// Bounded because the message is one datagram.
 const MAX_KNOWN_IDS: usize = 16;
 
-/// How many times a `PAIR` is sent before giving up, a second apart.
-///
-/// Not a knob, for [`RENDEZVOUS_PORT`]'s reason. Eight, because UDP on
-/// e-reader wifi drops packets and the reader answers a repeated request with
-/// the same reply — so retrying is free and is what makes a lost datagram a
-/// pause rather than a reader linked to a computer that thinks it is not.
 const PAIR_ATTEMPTS: u32 = 8;
 
-/// What somebody typed, as the code the reader is holding — or `None`.
-///
-/// Case, spaces and hyphens are the eye's and are dropped. `O` is read as `0`
-/// and `I`/`L` as `1`, which is the point of the alphabet: nothing the reader
-/// can show has two readings, so every misreading has one correction.
+/// Drops case, spaces and hyphens; reads `O` as `0` and `I`/`L` as `1`.
 pub fn normalise_code(typed: &str) -> Option<String> {
     let mut out = String::with_capacity(PAIRING_CODE_LEN);
     for c in typed.chars() {
@@ -385,8 +176,7 @@ pub fn normalise_code(typed: &str) -> Option<String> {
     (out.len() == PAIRING_CODE_LEN).then_some(out)
 }
 
-/// The message a `PAIR` signs. `name` is last because it is the one field that
-/// is not ours to constrain — a hostname may hold a colon.
+/// `name` is last because a hostname may hold a colon.
 pub fn pair_challenge(nonce: &str, at: i64, known: &[String], name: &str) -> String {
     format!(
         "pair:{PROTOCOL_VERSION}:{nonce}:{at}:{}:{name}",
@@ -394,8 +184,7 @@ pub fn pair_challenge(nonce: &str, at: i64, known: &[String], name: &str) -> Str
     )
 }
 
-/// The message a `PAIRED` signs. It covers **our** nonce, so a reply recorded
-/// from one attempt proves nothing in another.
+/// Covers our nonce, so a reply recorded from one attempt proves nothing in another.
 pub fn paired_challenge(
     pair_nonce: &str,
     reader_nonce: &str,
@@ -406,13 +195,10 @@ pub fn paired_challenge(
     format!("paired:{PROTOCOL_VERSION}:{pair_nonce}:{reader_nonce}:{device_id}:{plugin}:{reader}")
 }
 
-/// What a reader signs **with the token it already holds** when it answers as
-/// a reader we know. See [`WirelessRefusal::RekeyNotProven`].
 pub fn rekey_challenge(pair_nonce: &str, reader_nonce: &str, device_id: &str) -> String {
     format!("rekey:{PROTOCOL_VERSION}:{pair_nonce}:{reader_nonce}:{device_id}")
 }
 
-/// What the token is the HMAC of, under the code.
 pub fn token_challenge(pair_nonce: &str, reader_nonce: &str, device_id: &str) -> String {
     format!("token:{PROTOCOL_VERSION}:{pair_nonce}:{reader_nonce}:{device_id}")
 }
@@ -428,15 +214,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
         })
 }
 
-// ---- the three messages ----------------------------------------------------
-//
-// A **small closed protocol**, and it must never accept `bookmole_api::Call`.
-// A reader is not a trusted local client, and exposing sixty methods to a LAN
-// peer in order to serve two verbs is the opposite of `server.rs`'s own rule
-// that the transport names no method. These three shapes are the whole surface
-// a reader can reach.
+// These three messages are the whole surface a LAN reader reaches; never accept
+// `bookmole_api::Call` here.
 
-/// UDP, reader → broadcast. *Is my computer here?*
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Hello {
     pub v: u32,
@@ -444,7 +224,6 @@ pub struct Hello {
     pub nonce: String,
 }
 
-/// UDP, desktop → reader, unicast. *Here, on this port, and here is the proof.*
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Here {
     pub v: u32,
@@ -453,55 +232,34 @@ pub struct Here {
     pub mac: String,
 }
 
-/// UDP, desktop → broadcast. *I hold the code you are showing.*
-///
-/// It carries **no `device_id`**, which is what keeps it out of everybody
-/// else's way: a [`Hello`] needs one, so a listening desktop and a reader's
-/// pull window both fail to read this as a probe and stay silent.
+/// Carries no `device_id`, so listeners and pull windows do not mistake it for a `Hello` probe.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pair {
     pub v: u32,
-    /// Always `"pair"`.
     pub kind: String,
     pub nonce: String,
-    /// When this pairing is being made, by our clock. The reader stores it as
-    /// `paired_at`, so the two halves of the relationship carry one timestamp
-    /// — the cable install's *one install is one reading of the clock*.
     pub at: i64,
-    /// What to call this computer in the reader's menu. The hostname, which is
-    /// also what the reader's DNS rung resolves.
     pub name: String,
-    /// Device ids we already hold. See [`MAX_KNOWN_IDS`].
     pub known: Vec<String>,
     pub mac: String,
 }
 
-/// UDP, reader → desktop, unicast. *So do I, and this is who I am to you.*
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Paired {
     pub v: u32,
-    /// Always `"paired"`.
     pub kind: String,
     pub nonce: String,
-    /// One of the ids we named, if this reader already knew us; otherwise one
-    /// it has just minted.
     pub device_id: String,
-    /// What the reader calls itself — its model. A default label, no more.
     #[serde(default)]
     pub reader: String,
-    /// The plugin version it is running.
     #[serde(default)]
     pub plugin: i64,
     pub mac: String,
-    /// Present when `device_id` is one we named: an HMAC of
-    /// [`rekey_challenge`] under the token that reader **already** holds. The
-    /// one field here not signed with the code, because the code is exactly
-    /// what it must not depend on.
+    /// Not signed with the code: it proves possession of the token the reader already holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof: Option<String>,
 }
 
-/// TCP, first line. Opens a push session.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Open {
     pub v: u32,
@@ -510,14 +268,11 @@ pub struct Open {
     pub mac: String,
 }
 
-/// TCP, one per sidecar, then `Done`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PushFrame {
-    /// `len` bytes of sidecar source follow this line, verbatim.
     Entry {
-        /// What the reader calls the file. **Diagnostics only** — nothing opens
-        /// it, and it is not a handle anybody may follow.
+        /// Diagnostics only; never used as a path or handle.
         name: String,
         len: u64,
         sha256: String,
@@ -526,7 +281,6 @@ pub enum PushFrame {
     Done,
 }
 
-/// TCP, our reply to every frame.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Ack {
     pub ok: bool,
@@ -549,67 +303,43 @@ impl Ack {
     }
 }
 
-/// What one session moved.
-///
-/// **The same type in both directions**, because the same bytes move the same
-/// way: entries always flow *reader → desktop*, whether the reader connected
-/// (push) or we did (pull). "Wireless is read-only toward us" is not a policy
-/// somebody has to enforce here — it is the shape of the protocol.
+/// Entries always flow reader to desktop in both push and pull, so wireless is read-only toward
+/// us by shape.
 #[derive(Debug, Default)]
 pub struct WirelessReport {
     pub device_id: String,
-    /// One per sidecar that arrived, in the order they did.
     pub pulled: Vec<PullReport>,
     pub warnings: Vec<Diagnostic>,
 }
 
-// ---- the rendezvous transport, injected ------------------------------------
-
-/// The UDP half, behind a trait so no test emits a broadcast packet.
-///
-/// `watch.rs` injects `MountStir`s rather than driving `notify`; this injects
-/// datagrams rather than driving a socket, for the identical reason. The
-/// ladder's *ordering and fallback* — the part that actually has bugs — is then
-/// a unit test with a scripted responder.
+/// The UDP half, behind a trait so tests send no broadcast packets.
 #[async_trait::async_trait]
 pub trait Beacon: Send + Sync + std::fmt::Debug {
-    /// The next probe, and who sent it. `None` when the socket is finished.
     async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)>;
-    /// Answer one probe.
     async fn send_to(&self, bytes: &[u8], to: SocketAddr) -> std::io::Result<()>;
 }
 
-/// The real one. **The only thing in this module that cannot run in CI**, which
-/// is `watch.rs`'s `watch_mounts` in a different costume.
 #[derive(Debug)]
 pub struct UdpBeacon {
     socket: UdpSocket,
 }
 
 impl UdpBeacon {
-    /// Bind the fixed rendezvous port with broadcast enabled. The **opener's**
-    /// socket: it must be on the well-known port, because that is where probes
-    /// arrive.
+    /// Binds the fixed rendezvous port, where probes arrive, with broadcast enabled.
     pub async fn bind(addr: IpAddr) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(SocketAddr::new(addr, RENDEZVOUS_PORT)).await?;
         socket.set_broadcast(true)?;
         Ok(UdpBeacon { socket })
     }
 
-    /// Bind **any** port, with broadcast enabled. The *seeker's* socket.
-    ///
-    /// Deliberately not the fixed port: a desktop that is both listening and
-    /// pulling would otherwise be asking to bind a port it already holds, and
-    /// the seeker has no need of a well-known address — it sends first, so the
-    /// reply comes back to whatever it sent from.
+    /// Binds any port: a host both listening and pulling already holds the fixed one, and a seeker
+    /// sends first.
     pub async fn bind_ephemeral(addr: IpAddr) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(SocketAddr::new(addr, 0)).await?;
         socket.set_broadcast(true)?;
         Ok(UdpBeacon { socket })
     }
 
-    /// Stop waiting after `d`. A seeker must not block for ever on a LAN where
-    /// nothing is going to answer.
     pub fn deadline(self, d: std::time::Duration) -> TimedBeacon {
         TimedBeacon {
             inner: self,
@@ -618,8 +348,6 @@ impl UdpBeacon {
     }
 }
 
-/// A [`Beacon`] that gives up. `recv` answers `None` once the deadline passes,
-/// which is exactly the *nobody answered* the seeker turns into a refusal.
 #[derive(Debug)]
 pub struct TimedBeacon {
     inner: UdpBeacon,
@@ -642,8 +370,7 @@ impl Beacon for TimedBeacon {
 #[async_trait::async_trait]
 impl Beacon for UdpBeacon {
     async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
-        // A probe is a small JSON object; anything longer is not one, and
-        // reading into a fixed buffer means a flood costs no allocation.
+        // A fixed buffer keeps a flood from costing allocation; a probe is a small JSON object.
         let mut buf = vec![0u8; 2048];
         match self.socket.recv_from(&mut buf).await {
             Ok((n, from)) => {
@@ -662,27 +389,14 @@ impl Beacon for UdpBeacon {
     }
 }
 
-// ---- the state machine, with no I/O in it ----------------------------------
-
-/// The listener's state, separated from its sockets so it can be tested
-/// without any.
 #[derive(Debug)]
 struct State {
     mode: ListenerMode,
     tcp_port: Option<u16>,
     pushes: u64,
     last_push_at: Option<i64>,
-    /// Nonces this listener has already honoured, so a captured session cannot
-    /// be replayed at it.
-    ///
-    /// **Scoped to one open door and cleared when it shuts**, which is a
-    /// decision rather than a convenience. This is defence in depth: a body
-    /// frame's MAC covers the body's *hash*, so an attacker who replays a
-    /// captured `open` cannot follow it with bytes of their own — the only
-    /// thing they can resend is what they captured, which is the same sidecar,
-    /// which imports idempotently. Remembering nonces across a closed door
-    /// would therefore buy nothing and cost an unbounded set on a desktop left
-    /// in `Always` for weeks.
+    /// Cleared when the door shuts: a replayed `open` cannot be followed by foreign bytes (the body
+    /// MAC covers its hash), so remembering nonces longer buys nothing.
     seen: HashSet<String>,
 }
 
@@ -696,11 +410,8 @@ impl State {
         }
     }
 
-    /// A completed push closes a **window**, and leaves `Always` alone.
-    ///
-    /// At the granularity of a *session*, not a sidecar: one tap on the reader
-    /// is one session carrying every book it has, and closing after the first
-    /// file would strand the other thirty-nine.
+    /// Closes a window per session, not per sidecar, and leaves `Always` alone; one session carries
+    /// every book.
     fn completed_push(&mut self, now: i64) {
         self.pushes += 1;
         self.last_push_at = Some(now);
@@ -710,14 +421,7 @@ impl State {
     }
 }
 
-// ---- the listener ----------------------------------------------------------
-
-/// The two sockets and the tasks that serve them.
-///
-/// **`Drop` aborts both**, which is how *the UDP responder lives and dies with
-/// the TCP listener* stops being a thing somebody has to remember. Replacing or
-/// clearing the `Option<Running>` on [`Listener`] is the only way to stop, and
-/// it necessarily takes both down together.
+/// `Drop` aborts both tasks, so the UDP responder cannot outlive the TCP listener.
 #[derive(Debug)]
 struct Running {
     tcp: JoinHandle<()>,
@@ -735,34 +439,8 @@ impl Drop for Running {
     }
 }
 
-/// The desktop's half of the rendezvous.
-///
-/// # Why this is the engine's and not the daemon's
-///
-/// The daemon looks like the natural owner, on the grounds that the mode is
-/// runtime state that belongs beside the socket. That cannot work:
-/// `crates/api` depends on the engine and on serde and on **nothing else**,
-/// and a GUI client can link `bookmole-api` in-process with no daemon
-/// anywhere in the picture. A listener owned by `bookmoled` is a listener
-/// such a frontend can never turn on. So the state is here, where every host
-/// can reach it through the one boundary they all share.
-///
-/// # Why this one spawns, when `watch.rs` says the engine never does
-///
-/// That rule is real and this is a deliberate exception, argued the same way as
-/// `VaultWatcher`'s (see `watch.rs`). `MountWatcher` must not act alone because
-/// a mount's consequence is a **decision** — scan this, ignore that, ask the
-/// user — and a decision belongs to the frontend. A rendezvous responder's
-/// consequence is not a decision: it is *answer this probe with our port* and
-/// *import these sidecar bytes*, the same answer for every frontend, with
-/// nothing to ask anybody. And unlike a watcher, a listening socket has no
-/// honest pull-shaped surface across an API seam — `StartListening` travels as
-/// JSON and cannot hand back an object to poll.
-///
-/// The exception is paid for in the two places it could hurt. Nothing is bound
-/// until a caller says so, so a `rb list` that never asks spawns nothing; and
-/// every task is owned by a [`Running`] whose `Drop` aborts it, so there is no
-/// detached work outliving the handle.
+/// Lives in the engine, not the daemon: in-process API hosts have no daemon and must still listen.
+/// Nothing binds until asked; every spawned task is owned by a `Running` whose `Drop` aborts it.
 #[derive(Debug, Default)]
 pub struct Listener {
     state: Mutex<Option<State>>,
@@ -774,11 +452,7 @@ impl Listener {
         Self::default()
     }
 
-    /// What the listener is doing right now.
-    ///
-    /// Reports `Off` for a window whose time has passed even if the tasks have
-    /// not yet been reaped: the mode is the answer to *would a reader reach
-    /// us*, and a lingering task that will refuse everything is not a yes.
+    /// Reports `Off` for an expired window even if its tasks are not yet reaped.
     pub async fn status(&self, now: i64) -> ListenerStatus {
         let guard = self.state.lock().await;
         match guard.as_ref() {
@@ -797,14 +471,8 @@ impl Listener {
         }
     }
 
-    /// Bind, and start answering.
-    ///
-    /// `bind` is a parameter rather than a constant so the whole of this can be
-    /// exercised on `127.0.0.1`: the engine passes `0.0.0.0`, tests pass
-    /// loopback, and nothing leaves the machine in a test either way.
-    ///
-    /// Starting an already-running listener **replaces** it, which is how
-    /// *Listen now* pressed twice extends the window rather than erroring.
+    /// Starting an already-running listener replaces it, so pressing *Listen now* twice extends the
+    /// window.
     pub async fn start(
         self: &Arc<Self>,
         storage: Storage,
@@ -818,9 +486,6 @@ impl Listener {
         let port = tcp.local_addr()?.port();
 
         let mode = match minutes {
-            // `Some(0)` is how a caller asks for "until I say stop". A window
-            // of zero minutes is not a thing anybody wants and would otherwise
-            // be a listener that closes before the reader finishes probing.
             Some(0) => ListenerMode::Always,
             Some(m) => ListenerMode::Window {
                 until: now + i64::from(m) * 60,
@@ -830,8 +495,7 @@ impl Listener {
             },
         };
 
-        // The state is installed *before* the tasks, so a probe that arrives
-        // between the two finds an open listener rather than a closed one.
+        // State is installed before the tasks, so a probe arriving between the two finds an open listener.
         {
             let mut guard = self.state.lock().await;
             let (pushes, last_push_at) = guard
@@ -870,8 +534,6 @@ impl Listener {
             _ => None,
         };
 
-        // Assigning here drops any previous `Running`, which aborts its tasks —
-        // so a restart cannot leave an old responder announcing a dead port.
         *self.running.lock().await = Some(Running {
             tcp: tcp_task,
             udp: udp_task,
@@ -881,16 +543,8 @@ impl Listener {
         Ok(self.status(now).await)
     }
 
-    /// Close. Both sockets, and the nonce set with them.
-    ///
-    /// **The state is settled before the sockets are dropped, and the order is
-    /// load-bearing.** A window closes on a completed push, so the call that
-    /// closes it comes from *inside* the accept loop — and `Running::drop`
-    /// aborts that very task. An abort lands at the next `.await`, so anything
-    /// after the drop may simply never run: with the mutation second, a push
-    /// that closed its own window left `pushes` unincremented and the mode
-    /// still open, which is a listener reporting itself available on a socket
-    /// it has just destroyed. Found by a test that pushed twice.
+    /// Settles state before dropping the sockets: a push can close its own window from inside the
+    /// accept task, which `Running::drop` aborts at the next await.
     pub async fn stop(&self) -> ListenerStatus {
         let status = {
             let mut guard = self.state.lock().await;
@@ -906,15 +560,13 @@ impl Listener {
                 last_push_at: None,
             })
         };
-        // Taken and dropped *outside* the state lock: `Running::drop` aborts
-        // tasks that may be waiting for it, and aborting under the lock they
-        // want is how a shutdown deadlocks.
+        // Dropped outside the state lock: aborted tasks may be waiting on it, and aborting under it
+        // deadlocks.
         let taken = self.running.lock().await.take();
         drop(taken);
         status
     }
 
-    /// Answer probes for as long as the listener is open.
     async fn serve_beacon(
         &self,
         storage: Storage,
@@ -929,20 +581,13 @@ impl Listener {
                         tracing::debug!(error = %e, "could not answer a rendezvous probe");
                     }
                 }
-                // **Silence, not a refusal.** A probe from something we are not
-                // paired with gets no reply at all, so an unpaired scanner
-                // cannot learn that anything is here — which is the whole of
-                // "there is nothing to fingerprint" when the listener is the
-                // only thing that answers.
+                // Silence, not a refusal, so an unpaired scanner cannot learn anything is here.
                 Ok(None) => {}
                 Err(e) => tracing::debug!(error = %e, "unreadable rendezvous probe"),
             }
         }
     }
 
-    /// The pure half of the beacon: bytes in, an optional reply out.
-    ///
-    /// Split out so the ladder's refusals are testable without a socket at all.
     async fn answer_probe(
         &self,
         storage: &Storage,
@@ -955,8 +600,6 @@ impl Listener {
         }
         let hello: Hello = match serde_json::from_slice(bytes) {
             Ok(h) => h,
-            // Not an error worth a `Diagnostic`: the fixed port is a broadcast
-            // address and anything on the LAN may send to it.
             Err(_) => return Ok(None),
         };
         if hello.v != PROTOCOL_VERSION {
@@ -992,11 +635,6 @@ impl Listener {
         }
     }
 
-    /// One push session, start to finish.
-    ///
-    /// Public so a test can drive it over a loopback stream without racing an
-    /// accept loop — the same reason `serve` takes a `UnixListener` in the
-    /// daemon rather than a path.
     pub async fn serve_push(
         &self,
         storage: &Storage,
@@ -1054,10 +692,8 @@ impl Listener {
             receive_entries(storage, &device, &open.nonce, &mut reader, &mut write).await?;
 
         let now = now_unix();
-        // The two stamps are separate on purpose. `last_wireless_at` is *this
-        // reader reached us*, which a push always is; `last_synced_at` is
-        // *everything it had is here*, which a push of some books is not —
-        // migration `0020`'s argument, one transport over.
+        // `last_wireless_at` means this reader reached us; `last_synced_at` means everything it had is
+        // here, which a push of some books is not.
         storage
             .stamp_wireless_contact(&device.device_id, Some(&peer.ip().to_string()))
             .await?;
@@ -1068,11 +704,8 @@ impl Listener {
             }
         }
 
-        // **The reader is told before the door is shut.** A window closes on a
-        // completed session, and closing it aborts the accept loop this call is
-        // running inside — so an ack written afterwards is an ack the reader
-        // never receives, and the push looks failed on the device while having
-        // fully succeeded here.
+        // The ack is written before the door shuts: closing a window aborts this very task, so a later
+        // ack would never reach the reader.
         write.write_all(&to_line(&Ack::ok())?).await?;
         write.flush().await?;
 
@@ -1083,20 +716,8 @@ impl Listener {
     }
 }
 
-/// Read entry frames until `Done`, importing each.
-///
-/// **The whole of the transfer, shared by both verbs**, and that sharing is the
-/// point of pull's design rather than an optimisation of it. Push and pull
-/// differ in exactly one thing — who opened the connection — and after the
-/// handshake the bytes move identically, reader to desktop, because writing to
-/// a device over the wire is deliberately out of scope. Two copies of this
-/// loop would be two dialects of one protocol, and dialects drift apart
-/// silently.
-///
-/// The order of checks is load-bearing: hash, then MAC, then parse. The MAC
-/// covers the *hash*, so a body that does not match its declared hash is
-/// refused without the credential being consulted at all, and nothing reaches
-/// the Lua sandbox until both hold.
+/// Shared by push and pull. Check order is load-bearing: hash, then MAC (which covers the
+/// hash), then parse, so nothing unverified reaches the Lua sandbox.
 async fn receive_entries<R, W>(
     storage: &Storage,
     device: &PairedDevice,
@@ -1159,8 +780,6 @@ where
             return Err(r.into());
         };
 
-        // Here, and this is the point of the whole item: the bytes go into
-        // exactly the import a cable would have fed.
         match import_book_from_sidecar_src_for_device(
             storage,
             &src,
@@ -1174,9 +793,6 @@ where
                 report.pulled.push(pull);
                 write.write_all(&to_line(&Ack::ok())?).await?;
             }
-            // One bad sidecar does not end a session carrying thirty good ones
-            // — the provider rule (`degrade, never abort`) applied to a
-            // transport. The far side is told, and the next frame is read.
             Err(e) => {
                 report
                     .warnings
@@ -1193,24 +809,8 @@ where
     }
 }
 
-// ---- the seeker: pull ------------------------------------------------------
-
-/// Find a reader whose window is open, and take what it has.
-///
-/// **The rendezvous, run the other way round, with no new message in it.** The
-/// desktop broadcasts the same `HELLO`; a reader with its window open answers
-/// the same `HERE`; the desktop verifies the same MAC before connecting and
-/// sends the same `OPEN`. The only thing that swaps is who dials — and the
-/// entries still travel reader → desktop, so [`receive_entries`] is literally
-/// the same function.
-///
-/// An unsolicited **beacon** would be the obvious alternative, so a frontend
-/// could show *ready* with no probe. It is deliberately not used, and the
-/// reason is worth keeping: an announcement nobody challenged carries no fresh
-/// nonce, so it can only sign something the reader chose, which makes it
-/// **replayable** — and it would be a fourth message type serving a fifth. One
-/// datagram sent when somebody asks is not a scan, and it keeps *the seeker
-/// verifies identity before sending a byte* true in both directions.
+/// The rendezvous run the other way: same HELLO/HERE/OPEN, entries still flow reader to desktop.
+/// No unsolicited beacon: an unchallenged announcement carries no fresh nonce and is replayable.
 pub async fn pull_from(
     storage: &Storage,
     device: &PairedDevice,
@@ -1223,12 +823,8 @@ pub async fn pull_from(
         device_id: device.device_id.clone(),
         nonce: nonce.to_string(),
     };
-    // **Every broadcast address, not one.** The limited broadcast leaves by the
-    // default route, and on a machine running a VPN that is a tunnel no reader
-    // is on — so a pull from such a machine asked nobody and reported that the
-    // reader's window was shut. One target that cannot be sent to is ordinary;
-    // only all of them failing is a failure. A reader that hears the probe
-    // twice answers twice, and the second answer is simply not read.
+    // Probe every broadcast address: the limited broadcast leaves by the default route, which under
+    // a VPN is a tunnel no reader is on.
     let bytes = serde_json::to_vec(&hello)?;
     let mut sent = false;
     for target in targets {
@@ -1241,10 +837,8 @@ pub async fn pull_from(
         return Err(WirelessRefusal::ReaderNotFound.into());
     }
 
-    // More than one answer is ordinary on a broadcast — other bookmoles and
-    // other readers are entitled to be on the LAN — so this reads until one
-    // *proves the token* rather than trusting whoever replied first. That is
-    // the property the whole design is built on: identity, not address.
+    // Read until a reply proves the token rather than trusting the first replier; identity, not
+    // address.
     let (addr, here) = loop {
         let Some((bytes, from)) = beacon.recv().await else {
             return Err(WirelessRefusal::ReaderNotFound.into());
@@ -1274,22 +868,8 @@ pub async fn pull_from(
             mac: mac(&device.token, &open_challenge(nonce)),
         })?)
         .await?;
-    // **The blank line is the request terminator, and without it the reader
-    // never hears the request at all.**
-    //
-    // `SimpleTCPServer:waitEvent` is HTTP-shaped: it reads lines with a 100 ms
-    // timeout and calls `receiveCallback` *only* on an empty one, closing the
-    // connection with nothing sent if the deadline passes first. So an `open`
-    // frame ending in a single newline is a request the reader accepts, waits
-    // on, times out, and drops — which arrives here as `read_json_line`
-    // returning `None`, i.e. **"the reader said nothing"**, on a device that
-    // was working perfectly and had simply not been told the request was over.
-    //
-    // The reader's own handler already assumed this framing — it strips from
-    // the first `\r\n`, which is `waitEvent` re-joining the lines it read — so
-    // the two halves were written against different pictures of one protocol
-    // and only the half nobody could run was wrong. Found on hardware, because
-    // the loopback tests put our own listener on both ends.
+    // The blank line terminates the request: the reader's HTTP-shaped server only dispatches on an
+    // empty line and otherwise times out and drops the connection.
     write.write_all(b"\n").await?;
     write.flush().await?;
 
@@ -1305,37 +885,15 @@ pub async fn pull_from(
     }
 
     let report = receive_entries(storage, device, nonce, &mut reader, &mut write).await?;
-    // A pull is *this reader reached us* exactly as a push is — it came down
-    // the same wire and the address is as good a breadcrumb either way. It is
-    // still not a sync: what the reader had open to give is not everything it
-    // has, which is migration `0020`'s argument and does not change with the
-    // direction of the dial.
     storage
         .stamp_wireless_contact(&device.device_id, Some(&addr.ip().to_string()))
         .await?;
     Ok(report)
 }
 
-// ---- the seeker: linking over wifi ------------------------------------------
-
-/// Pair with the reader that is showing `code`.
-///
-/// The desktop seeks and the reader is open, which is pull's arrangement and
-/// uses pull's socket — and unlike a pull there is no id to ask *for*, so the
-/// request is addressed to whoever holds the code. `targets` is where to send
-/// it: the broadcast addresses, and the reader's own address when the user was
-/// given one to type.
-///
-/// **Sent until answered**, a second apart. The reader stores the pairing
-/// before it replies and repeats the same reply to the same nonce, so every
-/// retry is safe, and a reply that never arrives leaves at worst an entry on
-/// the reader for a computer that does not know it — which the reader's own
-/// menu can remove, and which pairing again replaces rather than duplicates.
-///
-/// **A reader we already know keeps its row.** We name the ids we hold; a
-/// reader that has one of them answers with it, and the row is re-keyed in
-/// place — its name and its history are the user's, and a second row for the
-/// same object on the bedside table would be two cards for one reader.
+/// Sent until answered, a second apart; the reader repeats its reply to the same nonce, so
+/// retries are safe.
+/// A reader we already know keeps its row.
 pub async fn pair_with(
     storage: &Storage,
     beacon: &dyn Beacon,
@@ -1349,12 +907,7 @@ pub async fn pair_with(
     pair_with_every(storage, beacon, targets, code, name, nonce, now, every).await
 }
 
-/// [`pair_with`] with the pause between attempts supplied.
-///
-/// Private, and for `Engine::install_plugin_at`'s reason: *a lost reply is
-/// asked for again* is a claim about what happens after a silence, and a test
-/// of it that waits real seconds is a test nobody runs. The shipped pause is
-/// the one line above; nothing else can reach this.
+/// Private so a test can supply the pause between attempts instead of waiting real seconds.
 #[allow(clippy::too_many_arguments)]
 async fn pair_with_every(
     storage: &Storage,
@@ -1389,8 +942,6 @@ async fn pair_with_every(
     'attempts: for _ in 0..PAIR_ATTEMPTS {
         let mut sent = false;
         for target in targets {
-            // One unreachable target is ordinary — a directed broadcast on a
-            // network that has none — and must not cost the others their turn.
             match beacon.send_to(&bytes, *target).await {
                 Ok(()) => sent = true,
                 Err(e) => tracing::debug!(error = %e, "could not send a pairing request"),
@@ -1402,14 +953,9 @@ async fn pair_with_every(
         let until = tokio::time::Instant::now() + every;
         loop {
             match tokio::time::timeout_at(until, beacon.recv()).await {
-                // Quiet for a second: say it again.
                 Err(_) => break,
-                // The socket is finished, or its own deadline passed.
                 Ok(None) => break 'attempts,
                 Ok(Some((reply, from))) => {
-                    // Anything may arrive on a broadcast socket — other
-                    // readers, our own request echoed back. Read on until
-                    // something proves the code.
                     if let Ok(paired) = serde_json::from_slice::<Paired>(&reply)
                         && paired.v == PROTOCOL_VERSION
                         && paired.kind == "paired"
@@ -1436,9 +982,8 @@ async fn pair_with_every(
         return Err(WirelessRefusal::PairingNotAnswered.into());
     };
 
-    // The id becomes a key in our database and a string we broadcast, so it is
-    // held to the shape we mint: hex, and not absurdly long. Signed or not —
-    // the signature says *the reader chose this*, not *this is sane*.
+    // The id becomes a database key and a broadcast string, so it must have the shape we mint (hex,
+    // bounded length) even if signed.
     if paired.device_id.len() < 16
         || paired.device_id.len() > 64
         || !paired
@@ -1448,11 +993,8 @@ async fn pair_with_every(
     {
         return Err(WirelessRefusal::Malformed("the reader named itself strangely".into()).into());
     }
-    // **An id we already hold is re-keyed only for the reader that holds its
-    // token.** The code says somebody has *a* device in their hand; it does not
-    // say which, and ids are broadcast. Without this, a device shown a code
-    // could answer as any reader we know and take its row. Checked against the
-    // stored token whether or not the id was one we offered — a row is a row.
+    // An id we already hold is re-keyed only for the reader that proves its stored token; ids are
+    // broadcast, so the code alone proves nothing.
     if let Some(existing) = storage.paired_device(&paired.device_id).await? {
         let proven = paired.proof.as_deref().is_some_and(|proof| {
             verify(
@@ -1490,9 +1032,7 @@ async fn pair_with_every(
 }
 
 fn to_line<T: serde::Serialize>(v: &T) -> Result<Vec<u8>> {
-    // `serde_json::to_string` escapes newlines inside strings, so a diagnostic
-    // full of them cannot break a frame — the daemon's guarantee, and it lives
-    // in the same function as the terminator here for the same reason.
+    // `to_string` escapes newlines inside strings, so a diagnostic cannot break a frame.
     let mut s = serde_json::to_vec(v)?;
     s.push(b'\n');
     Ok(s)
@@ -1519,16 +1059,8 @@ mod tests {
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    /// A vector computed by **koreader-base's own `ffi/sha2.lua`** under lua5.4
-    /// — not by us, and then agreed with by us. `partial_md5.rs`'s
-    /// `agrees_with_the_device` is the pattern: a checksum we compute and then
-    /// assert against our own output proves only that we are consistent.
-    ///
-    /// The value that would be wrong is not a typo, it is a *decision*: the
-    /// same library given the 32 bytes this hex encodes answers
-    /// `26ae9d25…11a599fe`, which is equally valid HMAC-SHA256 and would fail
-    /// on hardware with nothing to look at. Both are recorded so the next
-    /// reader can see that the choice was made rather than stumbled into.
+    /// Vector computed by the device's own sha2.lua; the key is the 64-char hex text, not the 32
+    /// bytes it encodes.
     #[test]
     fn our_hmac_agrees_with_the_device_and_uses_the_hex_as_the_key() {
         assert_eq!(
@@ -1547,13 +1079,11 @@ mod tests {
             "nonce-0001",
             &mac(TOKEN, "nonce-0001")
         ));
-        // Not hex, wrong length, empty: none of them may panic or pass.
         for bad in ["", "zz", "a38b2086", "not-hex-at-all"] {
             assert!(!verify(TOKEN, "nonce-0001", bad), "{bad}");
         }
     }
 
-    /// The three prefixes exist so one MAC can never be presented as another.
     #[test]
     fn a_discovery_reply_cannot_be_replayed_as_an_authorisation_to_push() {
         let here = mac(TOKEN, &here_challenge("n", 51000));
@@ -1562,34 +1092,25 @@ mod tests {
         assert_ne!(here, open);
         assert_ne!(open, body);
         assert!(!verify(TOKEN, &open_challenge("n"), &here));
-        // The port is inside the `here` challenge, so a captured reply cannot
-        // be re-advertised pointing at a different port.
         assert!(!verify(TOKEN, &here_challenge("n", 51001), &here));
     }
-
-    // ---- linking over wifi ------------------------------------------------
 
     #[test]
     fn a_code_is_read_the_way_a_person_types_it() {
         let code = "0123456789ABCDEF";
         assert_eq!(normalise_code(code).as_deref(), Some(code));
-        // Grouped as the reader shows it, in lower case, with stray spaces.
         assert_eq!(
             normalise_code(" 0123-4567 89ab-cdef ").as_deref(),
             Some(code)
         );
-        // The three letters the alphabet leaves out so that this works: an O
-        // can only be a zero, an I or an L can only be a one.
         assert_eq!(
             normalise_code("OIL0-0000-0000-000o").as_deref(),
             Some("0110000000000000")
         );
-        // Every symbol the reader can show is accepted as itself.
         assert_eq!(
             normalise_code("GHJK-MNPQ-RSTV-WXYZ").as_deref(),
             Some("GHJKMNPQRSTVWXYZ")
         );
-        // Too short, too long, and the one letter that has no reading.
         for bad in [
             "",
             "0123-4567-89AB-CDE",
@@ -1601,22 +1122,12 @@ mod tests {
         }
     }
 
-    /// A reader with a code on its screen, as a [`Beacon`].
-    ///
-    /// The plugin's `answerPair`, restated in Rust so the *computer's* half can
-    /// be driven without a device. That the real Lua agrees with the real Rust
-    /// is a different claim and has its own test, in `plugin.rs`, where the
-    /// plugin itself is run.
     #[derive(Debug)]
     struct ReaderWithCode {
         code: String,
-        /// Entries this reader already has: an id, and the token it holds for it.
         holds: Vec<(String, String)>,
-        /// Answers swallowed before one is let through — a lossy network.
         lose: std::sync::atomic::AtomicU32,
-        /// Requests heard, valid or not.
         heard: std::sync::atomic::AtomicU32,
-        /// Answer with this id whatever was asked. A reader misbehaving.
         claims: Option<String>,
         addr: SocketAddr,
         tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
@@ -1672,8 +1183,6 @@ mod tests {
                 Some((id, _)) => id.clone(),
                 None => "00112233445566778899aabbccddeeff".into(),
             });
-            // Signed with whatever token this reader holds for the id it is
-            // answering as — which, for an id it merely *claims*, is none.
             let proof = self
                 .holds
                 .iter()
@@ -1733,7 +1242,6 @@ mod tests {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
         let reader = ReaderWithCode::showing(CODE);
 
-        // Typed the way a person would, off an e-ink screen.
         let device = link(&storage, &reader, "0123-4567-89ab-cdef")
             .await
             .unwrap();
@@ -1742,8 +1250,6 @@ mod tests {
         assert_eq!(device.label.as_deref(), Some("Kindle"));
         assert_eq!(device.plugin_version, 3);
         assert_eq!(device.installed_at, NOW);
-        // The token is derived, by both sides, from what each already holds —
-        // nothing that crossed the network was it.
         assert_eq!(
             device.token,
             mac(
@@ -1752,8 +1258,6 @@ mod tests {
             )
         );
         assert_eq!(device.token.len(), 64);
-        // It reached us over the network and has never been on a cable, and the
-        // row says exactly that — migration `0021`'s distinction.
         assert!(device.last_wireless_at.is_some());
         assert_eq!(device.last_lan_addr.as_deref(), Some("192.0.2.42"));
         assert_eq!(device.last_seen_at, None);
@@ -1761,8 +1265,6 @@ mod tests {
         assert_eq!(storage.list_paired_devices().await.unwrap().len(), 1);
     }
 
-    /// A wrong code and no reader at all are one refusal, because the reader
-    /// answers neither.
     #[tokio::test]
     async fn the_wrong_code_is_met_with_silence_and_nothing_is_recorded() {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1773,19 +1275,14 @@ mod tests {
             .unwrap_err();
         assert_eq!(refusal(err), WirelessRefusal::PairingNotAnswered);
         assert!(storage.list_paired_devices().await.unwrap().is_empty());
-        // It kept asking — every attempt, at every address — before giving up.
         assert_eq!(reader.heard(), PAIR_ATTEMPTS * 2);
 
-        // Something that is not a code is refused before a packet is sent.
         let quiet = ReaderWithCode::showing(CODE);
         let err = link(&storage, &quiet, "not a code").await.unwrap_err();
         assert_eq!(refusal(err), WirelessRefusal::NotAPairingCode);
         assert_eq!(quiet.heard(), 0);
     }
 
-    /// UDP loses packets, on e-reader wifi more than most. The reader has
-    /// already stored the pairing when it answers, so the answer going missing
-    /// must not be the end of it.
     #[tokio::test]
     async fn an_answer_lost_on_the_air_is_asked_for_again() {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1797,7 +1294,6 @@ mod tests {
         assert!(reader.heard() >= 4, "it took a fourth request to be heard");
     }
 
-    /// Linking a reader we already have is a re-keying, not a second reader.
     #[tokio::test]
     async fn a_reader_we_already_know_keeps_its_row_and_its_name() {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1825,25 +1321,20 @@ mod tests {
 
         assert_eq!(device.device_id, ours);
         assert_eq!(storage.list_paired_devices().await.unwrap().len(), 1);
-        // The secret is the new one: the reader now holds nothing else.
         assert_eq!(
             device.token,
             mac(CODE, &token_challenge("desk-nonce", "reader-nonce", ours))
         );
         assert_eq!(device.plugin_version, 3);
-        // Everything that belongs to the relationship is where it was.
         assert_eq!(device.label.as_deref(), Some("Bedside"));
         assert_eq!(device.installed_at, 1_600_000_000);
         assert_eq!(device.last_seen_at, before.last_seen_at);
         assert_eq!(device.last_mount_path.as_deref(), Some("/Volumes/Kindle"));
     }
 
-    /// The reader's answer is signed, and a signature says who chose a value —
-    /// not that the value is one we should store.
     #[tokio::test]
     async fn an_id_that_is_not_the_readers_to_claim_is_refused() {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
-        // Seventeen readers, so one of them falls outside what a request names.
         let id = |i: usize| format!("{i:032x}");
         for i in 0..=MAX_KNOWN_IDS {
             storage
@@ -1864,19 +1355,11 @@ mod tests {
             .find(|i| !offered.contains(i))
             .unwrap();
 
-        // **The takeover.** A device is shown a code — legitimately; somebody
-        // is pairing it — and answers as a reader we already know. Ids are
-        // broadcast, so it can name one; what it cannot do is sign with that
-        // reader's token. Without the proof this re-keyed the row: the device
-        // took the other reader's name and history, and the real one's token
-        // went dead with nothing on either screen to say so.
+        // A device shown a code could answer as a reader we know (ids are broadcast); without a proof of
+        // that reader's token the row must not be re-keyed.
         for (claimed, held_token) in [
-            // An id we offered, and no proof at all.
             (offered[0].clone(), None),
-            // An id we offered, signed with a token that is not that row's.
             (offered[0].clone(), Some("a-guess")),
-            // An id we hold but did not offer: the same rule, since a row is a
-            // row whether or not this request happened to name it.
             (unoffered.clone(), None),
         ] {
             let mut reader = ReaderWithCode::showing(CODE);
@@ -1894,7 +1377,6 @@ mod tests {
             assert_eq!(untouched.last_wireless_at, None, "and nothing was stamped");
         }
 
-        // And an id that is not an id.
         for strange in [
             "",
             "short",
@@ -1915,8 +1397,6 @@ mod tests {
         );
     }
 
-    /// The three things a pairing signs cannot stand in for one another, or
-    /// for anything the push protocol signs.
     #[test]
     fn a_pairing_message_cannot_be_replayed_as_another() {
         let known = vec!["aa".to_string()];
@@ -1933,8 +1413,6 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
-        // The reply covers the request's nonce, so one recorded from an earlier
-        // attempt proves nothing in this one.
         let earlier = mac(CODE, &paired_challenge("earlier", "m", "dev", 3, "Kindle"));
         assert!(!verify(
             CODE,

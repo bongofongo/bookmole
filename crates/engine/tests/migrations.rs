@@ -1,11 +1,5 @@
-//! The one migration in this repo that destroys data.
-//!
-//! `0005_readings.sql` back-fills `readings` from `books` and then drops the
-//! four progress columns. Everything else in the suite connects a *fully*
-//! migrated database, which can never exercise the back-fill: by the time the
-//! first row is written the columns it reads are already gone. So these tests
-//! apply the migrations in two halves, write a pre-`0005` library in between,
-//! and assert what survived.
+//! Applies migrations in two halves around `0005_readings.sql`, which drops the progress columns,
+//! so its back-fill can be exercised against a pre-`0005` library.
 
 use sqlx::migrate::{Migrate, Migrator};
 use sqlx::sqlite::SqliteConnection;
@@ -20,7 +14,6 @@ const GOODREADS: i64 = 9;
 const SORT_KEY_INDEXES: i64 = 16;
 const MOMENTS: i64 = 17;
 
-/// A connection migrated up to (but not including) `version`.
 async fn migrated_below(version: i64) -> SqliteConnection {
     let mut conn = SqliteConnection::connect("sqlite::memory:")
         .await
@@ -48,7 +41,6 @@ async fn apply_readings(conn: &mut SqliteConnection) {
     apply(conn, READINGS).await;
 }
 
-/// Insert a pre-`0005` book straight through the old columns.
 async fn old_book(
     conn: &mut SqliteConnection,
     title: &str,
@@ -73,26 +65,9 @@ async fn old_book(
     .get("id")
 }
 
-/// Version numbers are a cross-branch resource, and this is the only thing that
-/// notices when two of them collide.
-///
-/// Threads run in parallel, each owning a migration, and each picks its number
-/// from what is on `main` when it starts. Two threads that both pick `0008` do
-/// not conflict in git — the filenames differ past the number — so the collision
-/// arrives as a second migration sharing a version, which sqlx applies in
-/// whatever order the filenames sort in and records under one version. The
-/// symptom lands much later and somewhere else.
-///
-/// Contiguity rather than mere uniqueness, because a *gap* is the same mistake
-/// caught earlier: it means a number was claimed by a branch that has not merged
-/// yet, and merging out of numeric order is what the build order forbids.
-///
-/// One caveat, and it is why this cannot be the *only* guard: `sqlx::migrate!`
-/// is a compile-time macro, and dropping a new `.sql` into the directory does
-/// not on its own invalidate this test binary — so locally the check can appear
-/// to pass until something else forces a rebuild. CI always compiles from a
-/// fresh checkout, and the `migrations` job in `ci.yml` catches the other half
-/// (an *edited* migration) straight from the diff.
+/// Versions must be contiguous from one: a duplicate is not a git conflict, and a gap means an
+/// unmerged branch holds a number. `sqlx::migrate!` is compile-time, so locally a new `.sql` may
+/// not rebuild this binary.
 #[test]
 fn migration_versions_are_contiguous_from_one() {
     let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
@@ -119,10 +94,7 @@ async fn the_backfill_round_trips_every_shape_of_progress() {
 
     let part = old_book(&mut conn, "part read", Some(120), 0, Some(1_000), None).await;
     let done = old_book(&mut conn, "finished", Some(490), 1, Some(1), Some(2)).await;
-    // Finished with no recorded end date: the back-fill leaves `finished_at`
-    // NULL, so this reading counts as *open* while its status says finished.
-    // That is deliberate — inventing a date would be worse than an open reading
-    // the user can close.
+    // A finished reading with no end date keeps `finished_at` NULL: inventing a date is worse.
     let dateless = old_book(&mut conn, "finished, undated", None, 1, None, None).await;
     let untouched = old_book(&mut conn, "never opened", None, 0, None, None).await;
 
@@ -156,8 +128,6 @@ async fn the_backfill_round_trips_every_shape_of_progress() {
     assert_eq!(rows[2].get::<Option<i64>, _>("finished_at"), None);
 }
 
-/// The columns are really gone. A migration that back-filled but left them
-/// behind would keep every stale writer silently working.
 #[tokio::test]
 async fn the_progress_columns_leave_books() {
     let mut conn = before_readings().await;
@@ -175,9 +145,6 @@ async fn the_progress_columns_leave_books() {
     }
 }
 
-/// The back-fill writes exactly one reading per book, so it cannot itself
-/// violate the "at most one open reading" index — but the index has to be
-/// *there* for anything written afterwards.
 #[tokio::test]
 async fn the_one_open_reading_index_exists_after_the_backfill() {
     let mut conn = before_readings().await;
@@ -198,9 +165,7 @@ async fn the_one_open_reading_index_exists_after_the_backfill() {
     );
 }
 
-/// `0007` rewrites the superseded `final` kind. A vault file is the note's
-/// body, so the rewrite must move the *row* and leave the path alone — a note
-/// whose `file_path` shifted would be a note whose text vanished.
+/// The `final` rewrite must move the row and leave `file_path` alone, or the note's text vanishes.
 #[tokio::test]
 async fn old_final_notes_become_reflections_and_keep_their_files() {
     let mut conn = migrated_below(REFLECTION).await;
@@ -234,10 +199,6 @@ async fn old_final_notes_become_reflections_and_keep_their_files() {
     assert_eq!(rows[2].get::<String, _>("kind"), "session");
 }
 
-/// Several old `final` notes migrate at once, and they all land with
-/// `reading_id IS NULL` — under a plain unique index that would be a violation
-/// and the whole migration would fail on a real library. SQLite treats NULLs as
-/// distinct, which is exactly what makes the partial index usable here.
 #[tokio::test]
 async fn the_rewrite_survives_a_library_full_of_final_notes() {
     let mut conn = migrated_below(REFLECTION).await;
@@ -261,10 +222,7 @@ async fn the_rewrite_survives_a_library_full_of_final_notes() {
     assert_eq!(n, 5);
 }
 
-/// The two partial indexes are the invariant "one reflection and one review per
-/// reading". Asserted here against raw SQL rather than through the engine,
-/// because it is the *index* that has to hold — the engine's accretion path
-/// looks the existing note up and never gets this far.
+/// Asserted against raw SQL: the index must hold, and the engine's accretion path never reaches it.
 #[tokio::test]
 async fn a_reading_holds_one_reflection_and_one_review() {
     let mut conn = migrated_below(REFLECTION).await;
@@ -316,7 +274,6 @@ async fn a_reading_holds_one_reflection_and_one_review() {
         );
     }
 
-    // Ordinary notes are not constrained: a reading collects as many as it likes.
     for path in ["e.md", "f.md"] {
         add(path, "note")
             .execute(&mut conn)
@@ -325,7 +282,6 @@ async fn a_reading_holds_one_reflection_and_one_review() {
     }
 }
 
-/// The plan for one of the two queries `0008` exists for.
 async fn plan(conn: &mut SqliteConnection, sql: &str) -> String {
     sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
         .fetch_all(conn)
@@ -337,19 +293,10 @@ async fn plan(conn: &mut SqliteConnection, sql: &str) -> String {
         .join("; ")
 }
 
-/// `0008` adds two indexes and changes nothing else, so the only claim it can
-/// be judged on is that the planner reaches them.
-///
-/// Not ceremony. An index carries a collation and SQLite ignores one that does
-/// not match the comparison's, so the obvious
-/// `CREATE INDEX … ON note_links(target_title)` is BINARY and the
-/// `COLLATE NOCASE` back-resolution in `write_links` scans straight past it —
-/// an index that exists, reads correctly in the schema, and does nothing. The
-/// `before` half is what makes the `after` half evidence rather than a
-/// coincidence.
+/// A plain index is BINARY and SQLite ignores it for a `COLLATE NOCASE` comparison, so the
+/// before plan is what makes the after plan evidence.
 #[tokio::test]
 async fn the_note_link_indexes_are_the_plan_the_planner_picks() {
-    // `Storage::backlinks`, and `write_links`' back-resolution.
     const BACKLINKS: &str = "SELECT from_note FROM note_links WHERE to_note = 1";
     const RESOLVE: &str = "UPDATE note_links SET to_note = 1 \
          WHERE to_note IS NULL AND target_title = 'x' COLLATE NOCASE";
@@ -377,18 +324,8 @@ async fn the_note_link_indexes_are_the_plan_the_planner_picks() {
     }
 }
 
-/// `0016`'s before-and-after, in `0008`'s shape.
-///
-/// The engine's own
-/// `storage::books::tests::the_sort_key_indexes_are_the_plan_the_planner_picks`
-/// is the stronger half — it runs the exact statement `list_books` builds, so a
-/// clause that stops matching its index fails there. What that one cannot show
-/// is what the schema looked like *before*, and "the index is used" only means
-/// something against a plan that did not use one. This is that half.
-///
-/// The `sort_author` clause is deliberately absent: the column does not exist
-/// below this migration, so a "before" for it would be a syntax error rather
-/// than a scan. Three sorts is what can honestly be compared across the line.
+/// The `sort_author` clause is absent: the column does not exist below this migration, so a
+/// "before" for it would be a syntax error rather than a scan.
 #[tokio::test]
 async fn the_sort_key_indexes_are_a_change_of_plan() {
     const BY_RECENCY: &str =
@@ -428,24 +365,14 @@ async fn the_sort_key_indexes_are_a_change_of_plan() {
     }
 }
 
-/// **The collation is part of the index**, and `0008` learned it the hard way.
-///
-/// `idx_books_sort_title` is declared `COLLATE NOCASE` because `BookSort::Title`
-/// compares that way. Written without it — or over the bare column rather than
-/// the `COALESCE` the clause names — the index exists, reads correctly in the
-/// schema, and is silently never used. This asserts that the two *near misses*
-/// really do miss, so the declaration above is doing work rather than
-/// coinciding.
+/// The index collation and `COALESCE` expression matter: near misses exist but are never used.
 #[tokio::test]
 async fn a_sort_title_index_that_nearly_matches_is_not_used() {
     let mut conn = migrated_below(SORT_KEY_INDEXES).await;
     apply(&mut conn, SORT_KEY_INDEXES).await;
 
     for near_miss in [
-        // Right expression, wrong collation.
         "SELECT id FROM books ORDER BY COALESCE(books.sort_title, books.title) ASC, books.id ASC",
-        // Right collation, wrong expression — the bare column the obvious
-        // implementation would have indexed.
         "SELECT id FROM books ORDER BY books.sort_title COLLATE NOCASE ASC, books.id ASC",
     ] {
         let detail = plan(&mut conn, near_miss).await;
@@ -457,19 +384,11 @@ async fn a_sort_title_index_that_nearly_matches_is_not_used() {
     }
 }
 
-/// The trap in the Goodreads migration (`0009`), caught at the level it is
-/// actually set: the migration.
-///
-/// `active_rating_scale()` used to be "the newest scale", so seeding a
-/// `goodreads` one would have made it the scale every unqualified rating landed
-/// on. `is_default` back-fills to **whichever scale the old ordering would have
-/// picked** — not to `default` by name — so a library where the user made their
-/// own scale keeps using theirs, and the seeded `goodreads` row takes nothing.
+/// `is_default` back-fills to whichever scale the old ordering picked, not to `default` by name,
+/// so seeding `goodreads` must not displace a user's own scale.
 #[tokio::test]
 async fn the_default_scale_survives_seeding_goodreads() {
     let mut conn = migrated_below(GOODREADS).await;
-    // A scale the user made after the seeded `default`, which is exactly what
-    // the old ordering rule meant by "active".
     sqlx::query(
         "INSERT INTO rating_scales (name, min, max, step, created_at)
          VALUES ('mine', 0.0, 10.0, 1.0, strftime('%s','now') + 10)",
@@ -493,8 +412,6 @@ async fn the_default_scale_survives_seeding_goodreads() {
             .expect("0009 seeds it");
     assert_eq!(goodreads, 0, "the newest scale is not the default any more");
 
-    // And the seeded map is the identity, so an imported `My Rating` needs no
-    // translation to be exported again.
     let mapped: Vec<(f64, i64)> = sqlx::query_as(
         "SELECT value, goodreads FROM rating_map
           WHERE scale_id = (SELECT id FROM rating_scales WHERE name = 'goodreads')
@@ -507,9 +424,6 @@ async fn the_default_scale_survives_seeding_goodreads() {
     assert!(mapped.iter().all(|(v, g)| *v as i64 == *g));
 }
 
-/// "Exactly one default" is an index, not a convention — the same shape as
-/// `idx_readings_one_open` and for the same reason: two of them is a state no
-/// code should have to defend against.
 #[tokio::test]
 async fn a_second_default_scale_is_refused() {
     let mut conn = migrated_below(GOODREADS).await;
@@ -525,15 +439,8 @@ async fn a_second_default_scale_is_refused() {
     );
 }
 
-/// The moments epoch is a **singleton written by the migration itself**, and
-/// both halves of that are load-bearing.
-///
-/// Its value is what stops the first launch after `0017` replaying an entire
-/// reading history as a ceremony, so a database where the row is missing has no
-/// answer to "is this news or is this history" — and a database with two has
-/// whichever answer a query happened to read. `CHECK (id = 1)` is the same
-/// device `idx_readings_one_open` and `idx_one_reflection` are: an invariant a
-/// table holds rather than a convention code defends.
+/// The moments epoch is a singleton the migration itself writes; a missing or second row has no
+/// answer to "news or history".
 #[tokio::test]
 async fn the_moments_epoch_is_one_row_and_the_migration_wrote_it() {
     let mut conn = migrated_below(MOMENTS).await;
@@ -563,15 +470,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Whatever a book's progress was, the back-fill reproduces it exactly:
-        /// one reading, same page, same dates, and a status that agrees with the
-        /// old `finished` flag.
-        ///
-        /// A property rather than more examples because the rule is general over
-        /// a four-field product — page present or not, finished or not, either
-        /// date present or not — and the sixteen corners include the two that
-        /// decide whether a *row is written at all*. Hand-picking three of them
-        /// picks the three that work.
         #[test]
         fn every_pre_migration_book_round_trips(
             page in proptest::option::of(0i64..2000),
@@ -616,9 +514,6 @@ mod props {
 
 const NOTE_PARTS: i64 = 23;
 
-/// `0023` back-fills `latest_part_at` from `created_at` and every existing note
-/// is one part — and the list's `ORDER BY latest_part_at DESC, id DESC` is the
-/// index's own order rather than a sort of the whole table.
 #[tokio::test]
 async fn note_parts_back_fill_and_the_list_order_is_indexed() {
     let mut conn = migrated_below(NOTE_PARTS).await;
@@ -658,10 +553,8 @@ async fn note_parts_back_fill_and_the_list_order_is_indexed() {
 
 const PUT_DOWN_AT: i64 = 25;
 
-/// `0025` is the sixth deliberate non-back-fill: a reading abandoned before it
-/// keeps `put_down_at` NULL — *not since we started recording* — rather than
-/// borrowing `last_modified`, which is only an upper bound. `0024` (settings)
-/// lands empty beside it.
+/// A reading abandoned before `0025` keeps `put_down_at` NULL rather than borrowing
+/// `last_modified`, which is only an upper bound.
 #[tokio::test]
 async fn put_down_at_is_not_back_filled_and_settings_start_empty() {
     let mut conn = migrated_below(PUT_DOWN_AT).await;
@@ -691,11 +584,8 @@ async fn put_down_at_is_not_back_filled_and_settings_start_empty() {
 
 const QUARTER_RATINGS: i64 = 26;
 
-/// `0026`: both seeded scales become 0 to 5 in quarters and map onto each
-/// other one-to-one — and the migration only *adds*. A rating given on the old
-/// half-star grid is still on the new one, the map's column comes out REAL for
-/// every row (not an INTEGER for the whole stars and a REAL for the rest), and
-/// a half star the user had mapped by hand keeps their answer.
+/// `0026` only adds: old half-star ratings and hand-made mappings survive, and the map column is
+/// REAL for every row.
 #[tokio::test]
 async fn quarter_ratings_keep_every_rating_and_every_hand_made_mapping() {
     let mut conn = migrated_below(QUARTER_RATINGS).await;
@@ -708,8 +598,6 @@ async fn quarter_ratings_keep_every_rating_and_every_hand_made_mapping() {
         "the old grid, so the migration has something to do"
     );
 
-    // A review rated 4.5 on the half-star grid, and the user's own decision
-    // about what 4.5 meant on Goodreads when Goodreads took no halves.
     sqlx::query(
         "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
          VALUES ('r.md', 'Review', 'review', 1, 1)",
@@ -775,7 +663,6 @@ async fn quarter_ratings_keep_every_rating_and_every_hand_made_mapping() {
         .unwrap();
     assert_eq!(kept, 4.5);
 
-    // Goodreads' own range is a CHECK, so the table cannot hold a sixth star.
     let err = sqlx::query(
         "INSERT INTO rating_map (scale_id, value, goodreads)
          SELECT id, 9.0, 6.0 FROM rating_scales WHERE name = 'default'",
@@ -785,9 +672,7 @@ async fn quarter_ratings_keep_every_rating_and_every_hand_made_mapping() {
     assert!(err.is_err());
 }
 
-/// A `default` the user redefined is theirs: `0026` moves only the seeded
-/// range, so a 0–10 scale keeps its step and gets no identity rows it would
-/// be wrong about.
+/// `0026` moves only the seeded range; a redefined scale keeps its step and gets no identity rows.
 #[tokio::test]
 async fn quarter_ratings_leave_a_redefined_scale_alone() {
     let mut conn = migrated_below(QUARTER_RATINGS).await;
@@ -826,7 +711,6 @@ async fn plain_book(conn: &mut SqliteConnection, title: &str) -> i64 {
     .get("id")
 }
 
-/// One back-filled copy's (form, tenure, learned_from, places as `kind:ref`).
 type CopyShape = (Option<String>, String, String, Vec<String>);
 
 async fn copy_shape(conn: &mut SqliteConnection, book_id: i64) -> CopyShape {
@@ -863,9 +747,6 @@ async fn copy_shape(conn: &mut SqliteConnection, book_id: i64) -> CopyShape {
     )
 }
 
-/// `0027`: every book ends up in the library, with a copy that says what we
-/// actually knew. Apply through `0026`, seed one book per kind of evidence
-/// (and a book with several kinds, and one with none), apply `0027`, read back.
 #[tokio::test]
 async fn copies_back_fill_puts_every_book_in_the_library() {
     let mut conn = migrated_below(COPIES).await;
@@ -890,7 +771,6 @@ async fn copies_back_fill_puts_every_book_in_the_library() {
         .await
         .unwrap();
     }
-    // A Goodreads id is not a copy.
     sqlx::query(
         "INSERT INTO external_ids (source, external_id, book_id, created_at)
          VALUES ('goodreads', '99', ?, 7)",
@@ -953,7 +833,6 @@ async fn copies_back_fill_puts_every_book_in_the_library() {
             s(&["store:sha-s"])
         )
     );
-    // One file is one copy wherever it sits: calibre's copy gathers the rest.
     assert_eq!(
         copy_shape(&mut conn, all_three).await,
         (
@@ -973,7 +852,6 @@ async fn copies_back_fill_puts_every_book_in_the_library() {
         (None, "unrecorded".into(), "migration".into(), s(&[]))
     );
 
-    // The point of the migration: nothing leaves the shelf.
     let sql = format!(
         "SELECT count(*) FROM books b WHERE {}",
         bookmole::storage::in_library_sql("b.id")
@@ -981,7 +859,6 @@ async fn copies_back_fill_puts_every_book_in_the_library() {
     let n: i64 = sqlx::query_scalar(&sql).fetch_one(&mut conn).await.unwrap();
     assert_eq!(n, 5, "every book is in the library after the back-fill");
 
-    // Place identity is (kind, ref): a second claim on one is refused.
     let dup =
         sqlx::query("INSERT INTO copy_places (copy_id, kind, ref) VALUES (1, 'calibre', 'uuid-c')")
             .execute(&mut conn)
@@ -1063,8 +940,6 @@ async fn fts_hits(conn: &mut SqliteConnection, word: &str) -> Vec<i64> {
         .unwrap()
 }
 
-/// `0030`: apply through `0029`, seed KOReader and typed highlights with notes,
-/// then apply `0030` and read back what the back-fill decided.
 #[tokio::test]
 async fn highlight_origin_back_fills_origin_copy_note_and_position() {
     let mut conn = migrated_below(HIGHLIGHT_ORIGIN).await;
@@ -1094,18 +969,14 @@ async fn highlight_origin_back_fills_origin_copy_note_and_position() {
             Some("koreader_xpointer".into())
         )
     );
-    // A typed passage is the user's; a copy is a KOReader fact, so none.
     assert_eq!(
         origin_row(&mut conn, typed).await,
         ("user".into(), None, None, None, None)
     );
     assert_eq!(origin_row(&mut conn, no_pos).await.4, None);
-    // No copy, or two candidate copies, is a guess: left NULL.
     assert_eq!(origin_row(&mut conn, orphan).await.1, None);
     assert_eq!(origin_row(&mut conn, ambiguous).await.1, None);
 
-    // The rebuilt index finds the note word, and a later edit of the new
-    // column moves it.
     assert_eq!(fts_hits(&mut conn, "zebra").await, vec![ko]);
     sqlx::query("UPDATE highlights SET origin_note = 'giraffe' WHERE id = ?")
         .bind(ko)
@@ -1115,7 +986,6 @@ async fn highlight_origin_back_fills_origin_copy_note_and_position() {
     assert!(fts_hits(&mut conn, "zebra").await.is_empty());
     assert_eq!(fts_hits(&mut conn, "giraffe").await, vec![ko]);
 
-    // Deleting a copy keeps the history.
     sqlx::query("DELETE FROM copies WHERE id = ?")
         .bind(copy)
         .execute(&mut conn)
@@ -1136,10 +1006,6 @@ async fn index_hits(conn: &mut SqliteConnection, word: &str) -> Vec<i64> {
     .unwrap()
 }
 
-/// `0032`: a library from before it gains four empty tables and loses nothing;
-/// nothing is seeded into `provider_settings` (an absent row is the default);
-/// the trigram index follows its table through insert, update and delete; and
-/// `field_provenance.source` was never constrained, so nothing widened it.
 #[tokio::test]
 async fn the_search_cache_arrives_empty_and_its_index_follows_its_table() {
     let mut conn = migrated_below(SEARCH_CACHE).await;
@@ -1193,8 +1059,6 @@ async fn the_search_cache_arrives_empty_and_its_index_follows_its_table() {
         .unwrap();
     assert!(index_hits(&mut conn, "cafe").await.is_empty());
 
-    // The vocabularies are checked where they are closed and not where they
-    // grow.
     for bad in [
         "INSERT INTO provider_records (provider, key, kind, form, body, fetched_at, expires_at)
          VALUES ('openlibrary', 'k', 'author', 'doc', '{}', 0, 1)",
@@ -1235,9 +1099,6 @@ async fn books_index_is_true(conn: &mut SqliteConnection) {
         .expect("books_search agrees with books");
 }
 
-/// `0033`: the books written before it are indexed by its `'rebuild'`, and the
-/// triggers follow the table from then on — an insert, an edit to an indexed
-/// column, an edit to one that is not, and a delete.
 #[tokio::test]
 async fn the_books_index_back_fills_and_follows_its_table() {
     let mut conn = migrated_below(BOOKS_SEARCH_INDEX).await;

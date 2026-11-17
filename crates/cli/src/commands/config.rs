@@ -29,8 +29,6 @@ pub enum ConfigCmd {
     Path,
 }
 
-/// `cli_key` is the already-resolved --google-api-key flag / env value, used
-/// by `get` to report the effective setting.
 pub async fn run(cmd: ConfigCmd, cli_key: Option<&str>) -> Result<()> {
     match cmd {
         ConfigCmd::Set {
@@ -87,7 +85,6 @@ fn get(cli_key: Option<&str>) -> Result<()> {
     let file = config_file::load()?;
     let path = config_file::config_path()?;
 
-    // Precedence: --flag / GOOGLE_BOOKS_API_KEY env (clap merges those) > config file.
     let (effective, source) = match (cli_key, file.google_api_key.as_deref()) {
         (Some(k), _) => (Some(k), "command line / environment"),
         (None, Some(k)) => (Some(k), "config file"),

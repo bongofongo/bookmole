@@ -1,21 +1,11 @@
-//! The readers we have installed the plugin onto (`paired_devices`, migration
-//! `0019`, `0020`).
-//!
-//! Our half of a pairing; the device's half is `pairing.lua` inside
-//! `bookmole.koplugin/`. Identity is `device_id` — see the migration for
-//! why `last_mount_path` is a breadcrumb and never a key.
+//! Paired readers the plugin is installed on. Identity is `device_id`; `last_mount_path` is a
+//! breadcrumb, never a key.
 
 use super::{Storage, now_unix};
 use crate::error::Result;
 use sqlx::Row;
 
-/// One paired reader.
-///
-/// `Debug` is hand-written for one reason: `token` must never reach a log, an
-/// error message or a `Diagnostic`, and a derived `Debug` is how it would —
-/// `tracing::debug!(?device)` is one keystroke and there would be nothing to
-/// see. The rest of the struct is worth printing, so redacting the field beats
-/// suppressing the impl.
+/// `Debug` is hand-written so `token` never reaches a log.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PairedDevice {
     pub device_id: String,
@@ -25,24 +15,12 @@ pub struct PairedDevice {
     pub installed_at: i64,
     pub last_mount_path: Option<String>,
     pub last_seen_at: Option<i64>,
-    /// When *everything* this reader had was last brought across (migration
-    /// `0020`).
-    ///
-    /// `None` is ordinary and is **not** *never synced*: the column arrived
-    /// with no back-fill because nothing recorded which device a past
-    /// `sync_device` read from. Phrase it as *not since we started recording*.
+    /// `None` means not since recording began, not never synced.
     pub last_synced_at: Option<i64>,
-    /// When this reader last reached us **over the network** (migration
-    /// `0021`).
-    ///
-    /// The fourth timestamp here and a next-door question to the other three:
-    /// `last_seen_at` is a cable, this is a LAN. Folding them would tell
-    /// somebody whose reader pushed from the next room that it had been plugged
-    /// in. `None` carries `0020`'s phrasing — *not since we started recording*.
+    /// Last network contact, distinct from `last_seen_at` (cable); `None` means not since recording
+    /// began.
     pub last_wireless_at: Option<i64>,
-    /// Where it reached us from. A breadcrumb, exactly like `last_mount_path`,
-    /// and **nothing may join on it**: a lease moves and the reader is the
-    /// same reader at a different number.
+    /// A breadcrumb: nothing may join on it, since a lease moves.
     pub last_lan_addr: Option<String>,
 }
 
@@ -83,29 +61,8 @@ fn row_to_device(row: &sqlx::sqlite::SqliteRow) -> Result<PairedDevice> {
 }
 
 impl Storage {
-    /// Record a pairing, or refresh one that already exists.
-    ///
-    /// **An upgrade does not rotate the token and does not move
-    /// `installed_at`.** Reinstalling a newer plugin onto a reader that is
-    /// already paired is an upgrade, not a re-pairing: the relationship is the
-    /// same one, and rotating the secret would mean every plugin upgrade
-    /// silently invalidated the wireless link built on top of it. What does
-    /// refresh is the version we put there and where we last saw it.
-    ///
-    /// **An existing label wins over the mount's name.** This was the other way
-    /// round — `COALESCE(excluded.label, paired_devices.label)` — which was
-    /// harmless while the only writer of a label was this function, and became a
-    /// bug the moment a reader could be renamed: every plugin upgrade
-    /// would have quietly restored `KOBOeReader` over whatever the user called
-    /// it. The mount's directory name is a *default*, so it fills an empty
-    /// label and never replaces one.
-    ///
-    /// **`paired_at` is the caller's, and deliberately not read from the clock
-    /// here.** The installer writes the same instant into the device's own
-    /// `pairing.lua`, and a second `now_unix()` in this function made one event
-    /// carry two timestamps — a real Kindle came back holding
-    /// `paired_at = …446` against an `installed_at` of `…447`. It reaches only
-    /// a *new* row; the conflict arm leaves `installed_at` where it was.
+    /// An upgrade keeps the token and `installed_at`; an existing label wins over the mount name;
+    /// `paired_at` comes from the caller so the device file and the row share one instant.
     pub async fn record_pairing(
         &self,
         device_id: &str,
@@ -139,20 +96,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Record a pairing made **over wifi**, or re-key one we already hold.
-    ///
-    /// [`Storage::record_pairing`]'s sibling and not a flag on it, because the
-    /// two disagree about almost every column. A cable install *saw* the
-    /// reader, so it stamps `last_seen_at` and a mount path; this one never had
-    /// it in hand, and stamping either would report a cable that did not happen
-    /// — migration `0021`'s argument. And a cable reinstall **keeps** the
-    /// token, because an upgrade is not a re-pairing, where this *is* a
-    /// re-pairing: the user asked the reader for a new code and typed it, so
-    /// the secret derived from that code is the only one the reader now holds.
-    ///
-    /// What the conflict arm leaves alone is what belongs to the relationship
-    /// rather than to this exchange: the label the user may have chosen, when
-    /// the pairing began, and every record of when the reader was last here.
+    /// Wireless pairing stamps neither `last_seen_at` nor a mount path, and re-keys the token because
+    /// it is a real re-pairing.
     pub async fn record_wireless_pairing(
         &self,
         device_id: &str,
@@ -189,11 +134,6 @@ impl Storage {
         row.as_ref().map(row_to_device).transpose()
     }
 
-    /// Every paired reader, most recently seen first.
-    ///
-    /// This is what the table is *for*: a reader in a bag is still paired, and
-    /// a frontend that could only answer by walking a mount would have no way
-    /// to say so.
     pub async fn list_paired_devices(&self) -> Result<Vec<PairedDevice>> {
         let sql = format!(
             "SELECT {COLUMNS} FROM paired_devices
@@ -203,21 +143,8 @@ impl Storage {
         rows.iter().map(row_to_device).collect()
     }
 
-    /// Record that this reader was in our hands just now.
-    ///
-    /// **The write behind `Engine::plugin_status`**, and the reason it is a
-    /// method rather than a line in one caller: *when did I last have this
-    /// device* is asked by three frontends, and a stamp each of them had to
-    /// remember to make would be a column that meant something different
-    /// depending on which one you had been using.
-    ///
-    /// `mount_path` is refreshed at the same time because the two facts are one
-    /// observation — *seen, there*. It stays advisory (see the migration): a
-    /// reader that has moved ports is the same reader.
-    ///
-    /// Returns whether there was a row. `false` is ordinary: a `pairing.lua`
-    /// naming a device we have never heard of is a reader paired with some
-    /// other copy of bookmole, and stamping nothing is the correct answer.
+    /// Returns whether a row existed; `false` is ordinary (a reader paired with another copy of
+    /// bookmole).
     pub async fn touch_device_seen(
         &self,
         device_id: &str,
@@ -237,15 +164,7 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Record that *everything* this reader had was brought across.
-    ///
-    /// Separate from [`Storage::touch_device_seen`] on purpose — see migration
-    /// `0020`. Plugging a reader in to charge it is not a sync, and one column
-    /// doing both jobs would tell that user their highlights had come across.
-    ///
-    /// Only `Engine::sync_mount` calls it. A one-book pull leaves the question
-    /// this column answers unchanged, and `sync_device` cannot name a device
-    /// anyway.
+    /// Separate from `touch_device_seen`: plugging a reader in to charge is not a sync.
     pub async fn stamp_device_sync(&self, device_id: &str) -> Result<bool> {
         let done = sqlx::query("UPDATE paired_devices SET last_synced_at = ? WHERE device_id = ?")
             .bind(now_unix())
@@ -255,31 +174,8 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Record that this reader reached us **over the network** (migration
-    /// `0021`).
-    ///
-    /// [`Storage::touch_device_seen`]'s sibling, and separate from it for
-    /// exactly the reason that one is separate from
-    /// [`Storage::stamp_device_sync`]: before the wireless link, *we saw this
-    /// reader* and *this reader was plugged in* were one event, and they are
-    /// now two. A
-    /// reader that pushed from the next room was never in anybody's hand, so
-    /// stamping `last_seen_at` here would report a cable that did not happen.
-    ///
-    /// It stamps **no sync**. What arrived over the wire is whatever the reader
-    /// chose to send, and `0020`'s argument is unchanged one transport over: a
-    /// push of one book leaves *is this reader's reading here* exactly where it
-    /// was. Whoever brings *everything* across calls `stamp_device_sync` beside
-    /// this, the way `sync_mount` already does over a cable.
-    ///
-    /// `addr` refreshes with the time because the two are one observation —
-    /// *reached, from there* — and it stays advisory: see the migration, and
-    /// `last_mount_path` before it. `None` leaves the previous hint alone, so a
-    /// contact whose source address we could not name does not erase the one
-    /// that worked.
-    ///
-    /// Returns whether there was a row. `false` is ordinary and is the answer
-    /// for a reader paired with some other copy of bookmole.
+    /// Stamps no sync and not `last_seen_at`; `addr` of `None` keeps the previous hint. Returns
+    /// whether a row existed.
     pub async fn stamp_wireless_contact(
         &self,
         device_id: &str,
@@ -299,16 +195,7 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Give a reader a name.
-    ///
-    /// The label is the only field here the user owns, and it exists because
-    /// the default is the mount's directory name — `Kindle`, `KOBOeReader` —
-    /// which is a fact about a filesystem and not about a thing you carry. An
-    /// empty or whitespace-only name **clears** it rather than storing a blank:
-    /// a device with no name falls back to something a frontend can draw, and a
-    /// row holding `"   "` would not.
-    ///
-    /// Returns whether there was a row to rename.
+    /// An empty or whitespace-only label clears it rather than storing a blank.
     pub async fn set_device_label(&self, device_id: &str, label: &str) -> Result<bool> {
         let trimmed = label.trim();
         let value = (!trimmed.is_empty()).then_some(trimmed);
@@ -320,7 +207,6 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Forget a pairing. Returns whether there was one.
     pub async fn forget_pairing(&self, device_id: &str) -> Result<bool> {
         let done = sqlx::query("DELETE FROM paired_devices WHERE device_id = ?")
             .bind(device_id)
@@ -373,7 +259,6 @@ mod tests {
         .unwrap();
         let first = s.paired_device("dev-1").await.unwrap().unwrap();
 
-        // A second install, a version later, from a different mount point.
         s.record_pairing(
             "dev-1",
             None,
@@ -413,8 +298,6 @@ mod tests {
                 .unwrap()
         );
 
-        // The upgrade offers the mount's directory name, exactly as
-        // `install_plugin_at` does. It must lose.
         s.record_pairing(
             "dev-1",
             Some("KOBOeReader"),
@@ -444,7 +327,6 @@ mod tests {
         assert!(s.set_device_label("dev-1", "   ").await.unwrap());
         assert_eq!(s.paired_device("dev-1").await.unwrap().unwrap().label, None);
 
-        // And a cleared label is an *empty* one, so the next install fills it.
         s.record_pairing("dev-1", Some("Kindle"), "tok", 1, None, 1_700_000_000)
             .await
             .unwrap();
@@ -465,8 +347,6 @@ mod tests {
         s.record_pairing("dev-1", None, "tok", 1, Some("/mnt/k"), 1_700_000_000)
             .await
             .unwrap();
-        // `installed_at` is the caller's; `last_seen_at` was stamped from the
-        // clock at insert, so it is already set. `last_synced_at` is not.
         assert_eq!(
             s.paired_device("dev-1")
                 .await
@@ -503,9 +383,6 @@ mod tests {
         );
     }
 
-    /// The fourth timestamp, and the pair of confusions migration `0021` exists
-    /// to prevent: a reader that reached us over the LAN was **not in anybody's
-    /// hand**, and what it sent is **not everything it had**.
     #[tokio::test]
     async fn reaching_us_over_the_network_is_neither_a_cable_nor_a_sync() {
         let s = store().await;
@@ -538,9 +415,6 @@ mod tests {
             "and nothing over the wire says where a cable last was"
         );
 
-        // A contact whose source address we could not name keeps the hint that
-        // did work — `touch_device_seen`'s rule for `last_mount_path`, one
-        // column over.
         assert!(s.stamp_wireless_contact("dev-1", None).await.unwrap());
         assert_eq!(
             s.paired_device("dev-1")
@@ -556,8 +430,6 @@ mod tests {
     #[tokio::test]
     async fn a_device_we_never_paired_with_stamps_nothing() {
         let s = store().await;
-        // A `pairing.lua` naming somebody else's copy of bookmole. Every
-        // writer here answers `false` rather than inventing a row.
         assert!(!s.touch_device_seen("dev-x", Some("/mnt/k")).await.unwrap());
         assert!(!s.stamp_device_sync("dev-x").await.unwrap());
         assert!(!s.set_device_label("dev-x", "nope").await.unwrap());

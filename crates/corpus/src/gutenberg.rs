@@ -1,32 +1,5 @@
-//! Tier 2: sidecars derived from real Project Gutenberg epubs — the
-//! `koreader-modern`, `koreader-legacy` and `koreader-stats` layers of the
-//! testing corpus.
-//!
-//! Output must be a pure function of `(seed, GENERATOR_VERSION, epub bytes,
-//! hostile.json)`. Everything here exists to keep that true: a pinned PRNG
-//! algorithm, a fixed calendar epoch, sorted iteration, and a lock file
-//! recording what produced what.
-//!
-//! # What a book's sidecar now carries (v3)
-//!
-//! * **One reader's calendar**, so the data is believable as one person's. Books are opened in manifest order,
-//!   a few days apart, so one to three are open at once; each reading lasts
-//!   5–40 days, with a holiday burst and two long gaps. Status is drawn
-//!   `reading`/`complete`/`abandoned` at roughly 60/30/10.
-//! * **Evening sessions.** Highlights are dated inside the reading window,
-//!   clustered into a handful of evenings, in the order they occur in the book —
-//!   and `stats/<layout>/koreader/settings/statistics.sql` records page turns on
-//!   exactly those evenings, keyed by the sidecar's `partial_md5_checksum`,
-//!   which is computed here by KOReader's rule over the real epub.
-//! * **Real sentences.** A highlight is one to three whole sentences of one
-//!   paragraph, cut at `.?!。！？` (plus closing quotes), never a character
-//!   slice; 5–10% are a single real word, which the engine turns into
-//!   flashcards.
-//! * **Notes** on 30–40% of highlights, from `prose.rs`, in the book's language
-//!   where the bank has one.
-//! * **Salted hostile values** from `hostile.json` in `title`, `author`,
-//!   `highlight`, `ko-note` and `lua-string` positions, at most one per row and
-//!   well under 5% of rows, each tagged in the layout's `manifest.json`.
+//! Tier 2: KOReader sidecars (`koreader-modern`, `-legacy`, `-stats`) from real Gutenberg epubs.
+//! Output is a pure function of (seed, GENERATOR_VERSION, epub bytes, hostile.json).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,43 +12,21 @@ use sha2::{Digest, Sha256};
 use crate::kostats::{self, CorpusStatsBook};
 use crate::prose;
 
-/// Bump deliberately when the *shape* of the output changes. That is the signal
-/// to regenerate goldens; a seed change is not.
-///
-/// 2: the two layouts moved into `modern/` and `legacy/` subtrees. Emitted side
-/// by side they were two sidecars claiming the *same* annotations of the same
-/// book with different payloads, which no device can produce and which import
-/// cannot converge on — see the comment at the write site.
-///
-/// 3: real reading state (status, percent, `doc_pages`, `summary`, `stats`,
-/// `partial_md5_checksum`), sentence-cut highlights dated in evening sessions
-/// of one calendar, prose-bank notes, hostile salting with per-layout
-/// manifests, and the `stats/` statistics layer.
 pub const GENERATOR_VERSION: u32 = 3;
 
-/// Day zero of the reader's calendar: 2025-06-02, days since the unix epoch.
-/// Never `now()` — a clock in the generator would churn every golden.
+/// 2025-06-02 as days since the unix epoch; never `now()`, which would churn every golden.
 const CALENDAR_START: i64 = 20_241;
 
-/// Characters per "page". crengine paginates from font and screen geometry,
-/// which an epub does not determine; a fixed density is the honest stand-in,
-/// and it keeps `doc_pages`, `pageno` and the statistics' `total_pages` in one
-/// coordinate system.
+/// A fixed density stands in for crengine's pagination, keeping `doc_pages`, `pageno` and
+/// `total_pages` in one coordinate system.
 const CHARS_PER_PAGE: usize = 1_800;
 
-/// The hostile bank, compiled in so a generated corpus names the bank it was
-/// salted from. The file is a hand-edited declaration; this module only
-/// reads it.
 const HOSTILE: &str = include_str!("../hostile.json");
 
-/// One paragraph located within the book, in the coordinates crengine uses.
 struct Para {
-    /// 1-based index of the spine item. This is crengine's `DocFragment[N]`.
     fragment: usize,
-    /// Element path within the fragment body, e.g. `p[12]` or `div[2]/p[3]`.
     element: String,
     text: String,
-    /// Nearest preceding heading in the same fragment.
     chapter: Option<String>,
 }
 
@@ -84,7 +35,6 @@ pub struct Options {
     pub per_book: usize,
 }
 
-/// One hostile case as declared.
 struct Case {
     id: String,
     fields: Vec<String>,
@@ -115,8 +65,6 @@ fn load_bank() -> Vec<Case> {
         .collect()
 }
 
-/// Expand the bank's `{repeat:s:n}` generator template. `{self_title}` belongs
-/// to note bodies, which this layer does not write.
 fn expand_template(v: &str) -> String {
     if let Some(inner) = v.strip_prefix("{repeat:").and_then(|r| r.strip_suffix('}'))
         && let Some((body, n)) = inner.rsplit_once(':')
@@ -127,16 +75,13 @@ fn expand_template(v: &str) -> String {
     v.to_string()
 }
 
-/// Round-robin over the cases eligible for each field, so the few salt slots a
-/// layer has spread across the bank instead of repeating one case.
 struct Salter {
     by_field: BTreeMap<&'static str, Vec<usize>>,
     next: BTreeMap<&'static str, usize>,
 }
 
-/// The fields this layer salts. `lua-string` lands in a highlight's note
-/// position, written *raw* for the escape-sequence case (the bank says the
-/// parser is meant to decode it) and escaped otherwise.
+/// `lua-string` lands in a highlight's note position, written raw for the escape-sequence case,
+/// escaped otherwise.
 const SALT_FIELDS: [&str; 5] = ["title", "author", "highlight", "ko-note", "lua-string"];
 
 impl Salter {
@@ -168,21 +113,17 @@ impl Salter {
     }
 }
 
-/// A salted row, for the layout manifest.
 #[derive(Clone, serde::Serialize)]
 struct Salt {
     sidecar: String,
     field: &'static str,
     case: String,
     expect: String,
-    /// 1-based highlight index for row-level salts; absent for title/author.
     #[serde(skip_serializing_if = "Option::is_none")]
     row: Option<usize>,
-    /// The value as salted, so a test can compare without re-expanding.
     value: String,
 }
 
-/// A highlight, fully decided before either layout encodes it.
 struct Hl {
     fragment: usize,
     element: String,
@@ -191,11 +132,9 @@ struct Hl {
     text: String,
     chapter: Option<String>,
     page: i64,
-    /// `YYYY-MM-DD HH:MM:SS`, device-local (naive), inside a session.
     datetime: String,
     note: Option<String>,
-    /// Write `note` into the Lua source without escaping (the
-    /// `lua-escape-sequences` case).
+    /// Write `note` into the Lua source unescaped (the `lua-escape-sequences` case).
     note_raw: bool,
 }
 
@@ -216,12 +155,10 @@ impl Status {
     }
 }
 
-/// One book's place in the reader's calendar.
 struct Plan {
     start_day: i64,
     end_day: i64,
     status: Status,
-    /// 0.0..=1.0; exactly 1.0 when complete.
     percent: f64,
     rating: Option<i64>,
 }
@@ -230,8 +167,7 @@ fn below(rng: &mut ChaCha8Rng, n: u32) -> u32 {
     rng.next_u32() % n.max(1)
 }
 
-/// Lay out the calendar over the books in manifest order. Its own PRNG stream,
-/// so adding a book at the end of the manifest leaves every earlier plan alone.
+/// Own PRNG stream, so adding a book at the end of the manifest leaves earlier plans alone.
 fn calendar(n: usize, seed: u64) -> Vec<Plan> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0xCA1E_00DA);
     let mut cursor = CALENDAR_START;
@@ -252,7 +188,6 @@ fn calendar(n: usize, seed: u64) -> Vec<Plan> {
             Status::Reading => 0.05 + below(&mut rng, 90) as f64 / 100.0,
             Status::Abandoned => 0.08 + below(&mut rng, 35) as f64 / 100.0,
         };
-        // A reading still open is shorter on the calendar: it has not ended.
         let end_day = match status {
             Status::Complete => start_day + duration,
             _ => start_day + ((duration as f64 * percent.max(0.3)).round() as i64).max(2),
@@ -266,8 +201,6 @@ fn calendar(n: usize, seed: u64) -> Vec<Plan> {
             percent,
             rating,
         });
-        // One to three books open at once; a holiday burst (books 20–24 start a
-        // day apart); two long gaps where the reader read nothing new.
         cursor += match i {
             20..=24 => 1,
             12 | 33 => 21 + below(&mut rng, 14) as i64,
@@ -294,7 +227,6 @@ pub fn generate(
     let plans = calendar(books.len(), opts.seed);
 
     std::fs::create_dir_all(out)?;
-    // Stale v2 output must not survive into a v3 tree.
     for layout in ["modern", "legacy", "stats"] {
         let d = out.join(layout);
         if d.is_dir() {
@@ -326,11 +258,8 @@ pub fn generate(
         let epub_sha = hex(&Sha256::digest(&bytes));
         let md5 = partial_md5(&bytes);
 
-        // Project Gutenberg's own header and licence are not the book, and no
-        // reader highlights them.
-        // Some books (こころ) carry their whole text under a heading that names
-        // Gutenberg, so the heading rule yields to the text rule when it would
-        // leave nothing.
+        // Some books carry their whole text under a heading naming Gutenberg, so the heading rule
+        // yields to the text rule when it would leave nothing.
         let paras = match extract_paragraphs(&epub_path).map(|ps| {
             let text_ok: Vec<Para> = ps
                 .into_iter()
@@ -368,17 +297,13 @@ pub fn generate(
             }
         };
 
-        // Seeded per book, so adding or removing a book cannot shift what every
-        // other book generates.
+        // Seeded per book, so adding or removing a book cannot shift any other book.
         let mut rng = ChaCha8Rng::seed_from_u64(opts.seed ^ id.wrapping_mul(0x9E37_79B9));
 
-        // Prefixed with the Gutenberg id, because a slug alone is neither
-        // unique nor sufficient: every non-Latin title slugifies to nothing.
+        // Id-prefixed: every non-Latin title slugifies to nothing.
         let slug = format!("{id}-{}", slugify(real_title));
 
-        // Title and author salts: at most one per sidecar, on fixed manifest
-        // positions so the layer always carries both (a draw at this rate
-        // over fifty books can come up empty).
+        // Title and author salts sit on fixed manifest positions so the layer always carries both.
         let mut title = real_title.to_string();
         let mut author = real_author.to_string();
         match bi % 25 {
@@ -401,17 +326,14 @@ pub fn generate(
         let doc_pages = doc_chars.div_ceil(CHARS_PER_PAGE).max(1) as i64;
         let cjk = matches!(language, "ja" | "zh");
 
-        // ONE highlight set, encoded two ways. Drawing separately would give
-        // the two layouts different passages, and the whole point of emitting
-        // both is that they are the same content in two encodings — which makes
-        // the corpus a differential test of the modern and legacy parsers.
+        // ONE highlight set encoded two ways: the layouts must hold the same content so the corpus
+        // differentially tests both parsers.
         let target = ((opts.per_book as f64) * plan.percent.max(0.25))
             .round()
             .max(3.0) as usize;
         let mut hs = pick_highlights(&paras, target, plan.percent, cjk, &mut rng);
         page_and_date(&mut hs, &paras, plan, &mut rng);
 
-        // Notes: 30–40% of highlights, from the language's bank.
         let bank_notes = prose::ko_notes(language);
         for h in hs.iter_mut() {
             if below(&mut rng, 100) < 35 {
@@ -420,7 +342,6 @@ pub fn generate(
             }
         }
 
-        // Row salts: at most one per highlight, ~2% of rows.
         for (i, h) in hs.iter_mut().enumerate() {
             if below(&mut salt_rng, 50) != 0 {
                 continue;
@@ -453,13 +374,8 @@ pub fn generate(
             notes: with_note,
         };
 
-        // **The two layouts go in separate trees, and that is not tidiness.**
-        // They share `doc_props.title`, so side by side in one tree both match
-        // the same library book; and they share `datetime`/`pos0`/`text`, so
-        // their annotations share an `identity_hash`. But their payloads differ
-        // in encoding, and import would refresh every row toward whichever
-        // sidecar it read last, for ever. No device produces that, so the
-        // corpus must not either.
+        // Separate trees: the layouts share `doc_props.title` and annotation identity hashes but differ
+        // in payload, so one tree would make import refresh every row forever.
         for (layout, body) in [
             ("modern", modern_sidecar(&hs, &state)),
             ("legacy", legacy_sidecar(&hs, &state)),
@@ -510,8 +426,6 @@ pub fn generate(
         salts.len()
     );
 
-    // Per-layout manifests: which sidecar carries which case, so a failure
-    // names the case and the layer.
     for layout in ["modern", "legacy"] {
         let m = serde_json::json!({
             "layer": format!("koreader-{layout}"),
@@ -528,7 +442,6 @@ pub fn generate(
         );
     }
 
-    // The statistics layer: one device install per layout, the same sessions.
     for layout in ["modern", "legacy"] {
         let root = out.join("stats").join(layout);
         let ko = root.join("koreader");
@@ -545,9 +458,7 @@ pub fn generate(
         }
     }
 
-    // The lock is what lets a test tell "not generated yet" apart from
-    // "generated, then hand-edited" — the second is a silent corruption of the
-    // corpus that would otherwise pass unnoticed.
+    // The lock distinguishes "not generated yet" from "hand-edited after generation".
     let lockfile = serde_json::json!({
         "generator_version": GENERATOR_VERSION,
         "seed": opts.seed,
@@ -580,7 +491,6 @@ fn salt(sidecar: &str, field: &'static str, c: &Case, row: Option<usize>) -> Sal
     }
 }
 
-/// The book-level facts both layouts write.
 struct State<'a> {
     title: &'a str,
     author: &'a str,
@@ -592,14 +502,9 @@ struct State<'a> {
     notes: i64,
 }
 
-// ---- sentences --------------------------------------------------------------
-
 const TERMINATORS: [char; 6] = ['.', '?', '!', '。', '！', '？'];
 const CLOSERS: [char; 8] = ['"', '\'', '”', '’', '»', '」', '』', '›'];
 
-/// Sentence spans `(start, end)` in **chars** within `text`, each ending in a
-/// terminator or a closing quote after one. A trailing fragment with no
-/// terminator is not a sentence and is not returned.
 fn sentences(text: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
@@ -617,7 +522,6 @@ fn sentences(text: &str) -> Vec<(usize, usize)> {
             let cjk_stop = matches!(c, '。' | '！' | '？');
             let at_break = end >= chars.len() || chars[end].is_whitespace() || cjk_stop;
             if at_break && !(c == '.' && is_abbreviation(&chars[start..i])) {
-                // Trim leading whitespace and stray closers left from the last cut.
                 let mut s = start;
                 while s < end
                     && (chars[s].is_whitespace()
@@ -643,8 +547,6 @@ fn sentences(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// `Mr.`, `Mrs.`, `St.`, `M.` — a short capitalised word before a full stop
-/// is almost always an abbreviation in this corpus, not a sentence end.
 fn is_abbreviation(before: &[char]) -> bool {
     let word: String = before
         .iter()
@@ -658,14 +560,10 @@ fn is_abbreviation(before: &[char]) -> bool {
     (1..=3).contains(&n) && word.chars().next().is_some_and(char::is_uppercase)
 }
 
-/// A highlight that is one alphabetic run — the only shape `one_word` makes.
 fn is_single_word(text: &str) -> bool {
     !text.is_empty() && text.chars().all(char::is_alphabetic)
 }
 
-/// Whether a terminator-bounded span reads as a sentence a person would mark:
-/// in a spaced script, two or more words that do not open mid-sentence (so not
-/// `IAGO.`, `767.` or `said the others.`); in a space-less one, four letters.
 fn is_real_sentence(text: &str, cjk: bool) -> bool {
     let letters = text.chars().filter(|c| c.is_alphabetic()).count();
     if cjk {
@@ -682,8 +580,6 @@ fn is_real_sentence(text: &str, cjk: bool) -> bool {
     words >= 2 && letters >= 6 && !opens_lower
 }
 
-/// One real word of the paragraph, as `(start, end)` chars: alphabetic, four
-/// or more letters. For a space-less script, two or three consecutive letters.
 fn one_word(text: &str, cjk: bool, rng: &mut ChaCha8Rng) -> Option<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let mut cands = Vec::new();
@@ -720,8 +616,6 @@ fn one_word(text: &str, cjk: bool, rng: &mut ChaCha8Rng) -> Option<(usize, usize
     Some(cands[below(rng, cands.len() as u32) as usize])
 }
 
-/// Choose `n` highlights from the first `percent` of the book, sorted by
-/// position, each 1–3 whole sentences of one paragraph or a single word.
 fn pick_highlights(
     paras: &[Para],
     n: usize,
@@ -737,8 +631,6 @@ fn pick_highlights(
         let pi = below(rng, reach as u32) as usize;
         let p = &paras[pi];
         let chars: Vec<char> = p.text.chars().collect();
-        // 5% of draws: a word. Sentence draws are rejected more often (labels,
-        // numbers, mid-sentence cuts), so the realised share is ~7% (seed 42: 85/1270).
         let span = if below(rng, 100) < 5 {
             one_word(&p.text, cjk, rng)
         } else {
@@ -750,8 +642,6 @@ fn pick_highlights(
                 let count = 1 + below(rng, 3) as usize;
                 let last = (first + count - 1).min(ss.len() - 1);
                 let (s, e) = (ss[first].0, ss[last].1);
-                // A one-sentence paragraph of 2,000 characters is not a highlight,
-                // and a speaker label or a list number is not a sentence.
                 let text: String = chars[s..e].iter().collect();
                 if e - s > 600 || !is_real_sentence(&text, cjk) {
                     None
@@ -774,7 +664,7 @@ fn pick_highlights(
                 end: e,
                 text,
                 chapter: p.chapter.clone(),
-                page: pi as i64, // paragraph index for now; `page_and_date` maps it
+                page: pi as i64,
                 datetime: String::new(),
                 note: None,
                 note_raw: false,
@@ -784,11 +674,7 @@ fn pick_highlights(
     picked.into_values().collect()
 }
 
-/// Seconds since the unix epoch of a session's first page turn, per highlight;
-/// plus the page each lands on. Highlights are in book order, so the sessions
-/// move forward through the book as the evenings pass.
 fn page_and_date(hs: &mut [Hl], paras: &[Para], plan: &Plan, rng: &mut ChaCha8Rng) {
-    // Cumulative characters before each paragraph → page.
     let mut cum = Vec::with_capacity(paras.len());
     let mut acc = 0usize;
     for p in paras {
@@ -802,8 +688,6 @@ fn page_and_date(hs: &mut [Hl], paras: &[Para], plan: &Plan, rng: &mut ChaCha8Rn
     if hs.is_empty() {
         return;
     }
-    // Session days: the first and (when complete) the last day of the window,
-    // and a few evenings between.
     let span = (plan.end_day - plan.start_day).max(1);
     let want = (hs.len() / 4).clamp(1, 12).min(span as usize + 1);
     let mut days = std::collections::BTreeSet::new();
@@ -820,7 +704,6 @@ fn page_and_date(hs: &mut [Hl], paras: &[Para], plan: &Plan, rng: &mut ChaCha8Rn
     let per = hs.len().div_ceil(days.len());
     for (si, chunk) in hs.chunks_mut(per).enumerate() {
         let day = days[si.min(days.len() - 1)];
-        // An evening: 19:00–21:30 start, highlights four to nine minutes apart.
         let mut t = day * 86_400 + 19 * 3_600 + below(rng, 150) as i64 * 60 + 300;
         for h in chunk.iter_mut() {
             t += 240 + below(rng, 300) as i64;
@@ -829,9 +712,6 @@ fn page_and_date(hs: &mut [Hl], paras: &[Para], plan: &Plan, rng: &mut ChaCha8Rn
     }
 }
 
-/// `page_stat_data` rows for the sessions that produced `hs`: on each session
-/// evening, every page from just before the first highlight to the last one,
-/// in order, with times that bracket the highlights' own.
 fn stat_rows(hs: &[Hl], rng: &mut ChaCha8Rng) -> Vec<(i64, i64, i64)> {
     let mut by_day: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
     for h in hs {
@@ -849,8 +729,6 @@ fn stat_rows(hs: &[Hl], rng: &mut ChaCha8Rng) -> Vec<(i64, i64, i64)> {
         let hi = list.iter().map(|x| x.1).max().unwrap();
         let lo = (lo - 1 - below(rng, 3) as i64).max(1).max(hi - 39);
         let pages: Vec<i64> = (lo..=hi).collect();
-        // Start a little before the first highlight; spread the pages across
-        // the session so the last turn lands after the last highlight.
         let start = first_t - 120;
         let window = (last_t + 180 - start).max(pages.len() as i64 * 30);
         let step = window / pages.len() as i64;
@@ -883,7 +761,6 @@ fn parse_datetime(s: &str) -> i64 {
     days_from_civil(y, m, dd) * 86_400 + h * 3_600 + mi * 60 + se
 }
 
-/// Hinnant's days-from-civil; the inverse of `kostats::ymd`.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -894,20 +771,15 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-// ---- sidecars ---------------------------------------------------------------
-
 fn note_lua(h: &Hl) -> Option<String> {
     h.note
         .as_ref()
         .map(|n| if h.note_raw { n.clone() } else { lua_escape(n) })
 }
 
-/// The root keys every DocSettings file carries beside its annotations:
-/// `doc_pages`, `percent_finished`, `partial_md5_checksum`, `summary`, `stats`
-/// and `doc_props`.
 fn root_keys(st: &State) -> String {
     let percent = if st.plan.status == Status::Complete {
-        // A finished book is written as the bare integer `1` (koreader.rs).
+        // A finished book is written as the bare integer `1`.
         "1".to_string()
     } else {
         format!("{:.4}", st.plan.percent)
@@ -998,7 +870,6 @@ fn legacy_sidecar(hs: &[Hl], st: &State) -> String {
          -- Legacy `highlight` + `bookmarks` layout. Do not hand-edit.\n\
          return {\n    [\"highlight\"] = {\n",
     );
-    // Page-keyed, with every highlight on one page in that page's array.
     let mut by_page: BTreeMap<i64, Vec<&Hl>> = BTreeMap::new();
     for h in hs {
         by_page.entry(h.page).or_default().push(h);
@@ -1031,9 +902,7 @@ fn legacy_sidecar(hs: &[Hl], st: &State) -> String {
         s.push_str("        },\n");
     }
     s.push_str("    },\n    [\"bookmarks\"] = {\n");
-    // Every highlight has a bookmark; a note is the bookmark's `text` where it
-    // differs from `notes` (the highlighted text) — joined by datetime, the
-    // legacy format's one genuinely awkward feature.
+    // A note is the bookmark's `text` where it differs from `notes`, joined by datetime.
     for (i, h) in hs.iter().enumerate() {
         let text = note_lua(h).unwrap_or_else(|| lua_escape(&h.text));
         s.push_str(&format!(
@@ -1055,10 +924,8 @@ fn legacy_sidecar(hs: &[Hl], st: &State) -> String {
     s
 }
 
-/// Escape for a Lua double-quoted string. The corpus is full of quotation
-/// marks, backslashes and newlines straight out of nineteenth-century prose —
-/// and, since v3, salted control characters, which are written as decimal
-/// escapes so the file stays text and the parser decodes the exact bytes.
+/// Control characters are written as decimal escapes so the file stays text and the parser
+/// decodes the exact bytes.
 fn lua_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -1077,12 +944,8 @@ fn lua_escape(s: &str) -> String {
     out
 }
 
-// ---- KOReader's partialMD5 --------------------------------------------------
-
-/// KOReader's `util.partialMD5`: MD5 over twelve 1 KiB
-/// windows at 0, 1 Ki, 4 Ki, … 1 Gi, stopping at the first empty read. A short
-/// read at EOF is still hashed. Reimplemented here — the generator never calls
-/// the engine, or the engine's bug would become the fixture's truth.
+/// MD5 over twelve 1 KiB windows at 0, 1 Ki, 4 Ki, … 1 Gi, stopping at the first empty read.
+/// Reimplemented rather than borrowed from the engine, so its bugs cannot become fixture truth.
 fn partial_md5(bytes: &[u8]) -> String {
     let mut buf = Vec::new();
     for i in -1i32..=10 {
@@ -1100,8 +963,6 @@ fn partial_md5(bytes: &[u8]) -> String {
     hex(&md5(&buf))
 }
 
-/// RFC 1321 MD5. Written out (sixty lines) rather than adding a dependency to
-/// the generator; checked against the RFC's own test vectors below.
 fn md5(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
@@ -1155,17 +1016,8 @@ fn md5(input: &[u8]) -> [u8; 16] {
     out
 }
 
-// ---- extraction ---------------------------------------------------------------
-
-/// Walk the spine in order and collect every paragraph, with the crengine
-/// coordinates a KOReader xpointer is built from.
-///
-/// The mapping is mechanical: `DocFragment[N]` is the N-th spine item (1-based,
-/// in OPF spine order), and within it `p[M]` / `div[k]/p[M]` addresses the
-/// element.
 fn extract_paragraphs(path: &Path) -> Result<Vec<Para>, String> {
     let mut doc = crate::epub_read::Epub::open(path)?;
-    // The idref is the manifest key we resolve.
     let spine = doc.spine().to_vec();
     let mut out = Vec::new();
 
@@ -1179,8 +1031,6 @@ fn extract_paragraphs(path: &Path) -> Result<Vec<Para>, String> {
     Ok(out)
 }
 
-/// Pull-parse one XHTML fragment. Deliberately simple: epub content is
-/// well-formed XML, and only `<p>`, `<div>` and `<h1..h3>` matter here.
 fn paragraphs_of(xhtml: &str, fragment: usize) -> Vec<Para> {
     let mut reader = quick_xml::Reader::from_str(xhtml);
     reader.config_mut().trim_text(true);
@@ -1227,7 +1077,6 @@ fn paragraphs_of(xhtml: &str, fragment: usize) -> Vec<Para> {
                 match name.as_str() {
                     "p" => {
                         let text = squash(&current);
-                        // Very short paragraphs make poor highlights.
                         if text.chars().count() >= 40 {
                             let element = if in_div {
                                 format!("div[{div_index}]/p[{p_index}]")
@@ -1321,7 +1170,6 @@ mod tests {
     fn partial_md5_of_a_small_file_is_the_md5_of_its_first_kib() {
         let small = vec![7u8; 900];
         assert_eq!(partial_md5(&small), hex(&md5(&small)));
-        // 5 KiB: windows at 0 and 1 Ki and 4 Ki (a short one), then 16 Ki is past EOF.
         let big: Vec<u8> = (0..5 * 1024).map(|i| (i % 251) as u8).collect();
         let mut want = big[0..1024].to_vec();
         want.extend_from_slice(&big[1024..2048]);

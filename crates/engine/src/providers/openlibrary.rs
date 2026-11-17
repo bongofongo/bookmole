@@ -14,18 +14,11 @@ use super::{
 use crate::book::{Book, normalize_isbn};
 use crate::error::{EngineError, Result};
 
-/// The live host. Overridable only so tests can point at a local server — see
-/// [`OpenLibraryProvider::with_base`].
 const DEFAULT_BASE: &str = "https://openlibrary.org";
 
 pub struct OpenLibraryProvider {
     client: Client,
-    /// Scheme and host every request is built on, with no trailing slash.
     base: String,
-    /// One request a second (Open Library's published anonymous rate), shared
-    /// by every request this provider
-    /// makes, and the *closed until* a `Retry-After` set. An `Arc` so the
-    /// engine can keep one across rebuilds of the provider list.
     manners: Arc<Manners>,
 }
 
@@ -34,13 +27,6 @@ impl OpenLibraryProvider {
         Self::with_base(client, DEFAULT_BASE)
     }
 
-    /// Point every request this provider makes — the search, the edition
-    /// lookup, its author and work fetches — at a different host.
-    ///
-    /// `GoogleBooksProvider::with_base`'s twin, and for the same reason: the
-    /// search benchmark (`tests/search_bench.rs`) replays recorded responses
-    /// over loopback through the real URL building and parsing. Cover URLs are
-    /// not requests and stay on `covers.openlibrary.org`.
     pub fn with_base(client: Client, base: impl Into<String>) -> Self {
         let base = base.into().trim_end_matches('/').to_string();
         OpenLibraryProvider {
@@ -50,25 +36,13 @@ impl OpenLibraryProvider {
         }
     }
 
-    /// Share a rate limit with other instances, or lift it.
-    ///
-    /// The engine passes one `Manners` to every provider list it builds, so a
-    /// Google key change (which rebuilds the list) does not forget that Open
-    /// Library asked us to wait. The search benchmark passes
-    /// [`Manners::unlimited`], since its server is a loopback replay with no
-    /// rate to keep.
     pub fn with_manners(mut self, manners: Arc<Manners>) -> Self {
         self.manners = manners;
         self
     }
 
-    /// One GET, in turn, and refused without asking while the provider is
-    /// closed.
-    ///
-    /// **Never carries the URL in an error.** A search URL holds the query and
-    /// an edition URL the ISBN typed, both the user's private reading
-    /// (never logged above `trace!`); reqwest puts the whole URL in its error text,
-    /// and that text becomes a `Diagnostic`'s detail and a log field.
+    /// Never carries the URL in an error: it holds the user's query or ISBN, and reqwest puts it in
+    /// the error text.
     async fn get(&self, url: &str) -> Result<reqwest::Response> {
         if self.manners.closed_for().is_some() {
             return Err(EngineError::Provider {
@@ -98,7 +72,6 @@ impl OpenLibraryProvider {
         Ok(resp)
     }
 
-    /// [`Self::get`], then the body of a success.
     async fn get_text(&self, url: &str) -> Result<String> {
         let resp = self
             .get(url)
@@ -108,16 +81,10 @@ impl OpenLibraryProvider {
         Ok(resp.text().await.map_err(reqwest::Error::without_url)?)
     }
 
-    /// The URL of a key Open Library hands back (`/authors/OL1A`,
-    /// `/works/OL1W`). The key carries its own leading slash, so joining it with
-    /// another one made `https://openlibrary.org//authors/…`, which Open
-    /// Library answered anyway.
     fn key_url(&self, key: &str) -> String {
         format!("{}/{}.json", self.base, key.trim_start_matches('/'))
     }
 }
-
-// ---- /search.json ----------------------------------------------------------
 
 #[cfg(test)]
 #[derive(Deserialize, Debug)]
@@ -138,11 +105,8 @@ struct Works {
     number_of_pages_median: Option<i64>,
     edition_count: Option<u32>,
     series_name: Option<Vec<String>>,
-    /// Strings in every response seen (`["2"]`), read as JSON values so a
-    /// number would not fail the whole page.
+    /// Strings in responses; read as JSON values so a number does not fail the whole page.
     series_position: Option<Vec<serde_json::Value>>,
-    /// The edition Open Library judged the best match for the query, nested
-    /// under its work (`fields=editions,editions.…`).
     editions: Option<NestedEditions>,
 }
 
@@ -161,20 +125,7 @@ struct NestedEdition {
 }
 
 impl Works {
-    /// `-L`, not `-M`.
-    ///
-    /// OpenLibrary publishes three sizes off one key: `-S` (~40px), `-M`
-    /// (~180px) and `-L` (whatever the scan actually is, usually 500px+). `-M`
-    /// was picked when the only consumer was a terminal drawing a book in
-    /// Unicode half-blocks, where 180px is already more than the framebuffer
-    /// can show. A cover-forward detail page on a 2× display is not that
-    /// consumer, and there is no fourth size to ask for.
-    ///
-    /// The shelf does not pay for it: `images::store_cover` writes a downscaled
-    /// tier beside anything over `THUMB_MAX` and `Book::shelf_cover_path` is
-    /// what a grid loads. Asking for the large size *without* that tier would
-    /// make every list strictly heavier than it was, which is why the two
-    /// halves of 20c are one change and not two.
+    /// `-L`, not `-M`: the shelf stays light because `store_cover` writes a downscaled tier.
     fn cover_url(&self) -> Option<String> {
         self.cover_edition_key
             .as_deref()
@@ -185,17 +136,8 @@ impl Works {
         self.editions.as_ref()?.docs.as_ref()?.first()
     }
 
-    /// The book a result row stands for: the work's title, authors and year,
-    /// with the **best matching edition's** ISBNs, language and publisher.
-    ///
-    /// The ISBNs used to be the first valid ones in the work's `isbn` list,
-    /// which is every edition's in no stated order — an arbitrary edition, and a
-    /// list long enough (hundreds, for a famous book) to be most of a response.
-    /// The nested edition is the one Open Library matched to what was typed, so
-    /// its ISBN, language and publisher at least describe one edition together.
     fn to_book(&self) -> Book {
         let edition = self.best_edition();
-        // Scan the isbn list for the first valid 10 and first valid 13.
         let mut isbn_10 = None;
         let mut isbn_13 = None;
         for raw in edition.and_then(|e| e.isbn.as_ref()).into_iter().flatten() {
@@ -253,9 +195,6 @@ impl Works {
             }?;
             n.is_finite().then_some(n)
         });
-        // Open Library's series records are sparse; a matched edition's title
-        // often says it instead (`The Well of Ascension (Mistborn, Book 2)`).
-        // Read only for ranking, never written to a book.
         if series.is_none()
             && let Some((name, position)) = edition
                 .and_then(|e| e.title.as_deref())
@@ -301,9 +240,7 @@ impl Works {
     }
 }
 
-/// `(Mistborn, Book 2)`, `(Dune Chronicles #3)`, `(Legends of Dune, Vol. 2)`
-/// at the end of an edition title: the series and the place. Anything else,
-/// `None` — `(National Book Award Finalist)` names no series.
+/// Only a trailing series and place counts: `(National Book Award Finalist)` names no series.
 fn series_in_parentheses(title: &str) -> Option<(String, f64)> {
     let inner = title.trim().strip_suffix(')')?;
     let inner = &inner[inner.rfind('(')? + 1..];
@@ -321,17 +258,12 @@ fn series_in_parentheses(title: &str) -> Option<(String, f64)> {
     None
 }
 
-/// `search.json`'s answer with each doc left as JSON, for [`work_of_doc`].
 #[derive(Deserialize, Debug)]
 struct RawSearchResp {
     docs: Option<Vec<serde_json::Value>>,
 }
 
-/// One `search.json` doc as a result, with the records it may be kept as: the
-/// work (the doc less its `editions`) and the edition Open Library matched
-/// (`editions.docs[0]`), each keyed by its own Open Library key. A doc with no
-/// work key cannot be kept — there would be nothing to find it by — and is
-/// still a result.
+/// A doc with no work key is still a result but cannot be kept.
 fn work_of_doc(doc: serde_json::Value, position: usize) -> Result<ProviderWork> {
     let works: Works = serde_json::from_value(doc.clone())?;
     let mut kept = Vec::new();
@@ -377,10 +309,7 @@ fn work_of_doc(doc: serde_json::Value, position: usize) -> Result<ProviderWork> 
     })
 }
 
-/// The inverse of [`work_of_doc`]: a kept work and its kept edition, read back
-/// into the result they were. `Err` when either body no longer reads as what
-/// Open Library sends, which is what makes a kept record *unreadable*: it is
-/// dropped and asked for again.
+/// `Err` when a kept body no longer reads as Open Library's: it is dropped and refetched.
 pub(crate) fn decode_doc(
     work: &str,
     edition: Option<&str>,
@@ -408,28 +337,16 @@ pub(crate) fn decode_doc(
     Ok(w)
 }
 
-/// What `search.json` is asked for.
-///
-/// **No `subject` facet**: it would enlarge every response of every search by
-/// the noisiest form of the field, for data only a saved book has a use for
-/// (subjects come off the work, in `by_isbn`). And **no work-level `isbn` or
-/// `publisher` lists** either: both are every edition's,
-/// unordered, and for a famous book they were most of the response. The nested
-/// best edition (`editions.*`) carries the ISBN, language and publisher of one
-/// edition instead, and `edition_count`/`series_*` feed the ranking.
+/// No `subject` facet and no work-level `isbn`/`publisher` lists: they bloat every response.
 const SEARCH_FIELDS: &str = "key,title,subtitle,author_name,language,first_sentence,\
      first_publish_year,cover_edition_key,number_of_pages_median,edition_count,series_key,\
      series_name,series_position,editions,editions.key,editions.title,editions.subtitle,\
      editions.isbn,editions.language,editions.publisher";
 
-/// Open Library refuses a `q` under this many characters with a 422 (found
-/// while recording the benchmark), so a shorter text is sent as a `title`.
+/// Open Library 422s a `q` shorter than this, so shorter text is sent as a `title`.
 const MIN_Q_CHARS: usize = 3;
 
-/// Free text made safe to put in `q`, which Open Library parses as a Solr
-/// query: a `:` would name a field (`sapiens: a brief history`), a bare `-`
-/// negates the word after it (`the road - mccarthy` found nothing), and an
-/// unbalanced quote or bracket is a syntax error. Each becomes a space.
+/// `:`, a bare `-` and unbalanced quotes or brackets are Solr syntax in `q`; each becomes a space.
 fn plain_q(text: &str) -> String {
     let spaced: String = text
         .chars()
@@ -455,8 +372,6 @@ fn build_search_url(base: &str, req: &SearchRequest) -> Result<String> {
     if let Some(q) = &req.query {
         let q = plain_q(q);
         if q.chars().count() < MIN_Q_CHARS {
-            // Never a bare `q` under three characters: *It* and `三体` go as a
-            // title, which Open Library takes at any length.
             if !q.is_empty() && req.title.is_none() {
                 short_title = Some(q);
             }
@@ -465,7 +380,7 @@ fn build_search_url(base: &str, req: &SearchRequest) -> Result<String> {
         }
     }
     if let Some(t) = &req.translator {
-        // No translator facet; contributor is the closest solr field.
+        // No translator facet; contributor is the closest Solr field.
         q_parts.push(format!("contributor:\"{t}\""));
     }
     if !q_parts.is_empty() {
@@ -495,8 +410,6 @@ fn build_search_url(base: &str, req: &SearchRequest) -> Result<String> {
     Ok(url.into())
 }
 
-// ---- /isbn/{isbn}.json (edition lookup) ------------------------------------
-
 #[derive(Deserialize, Debug)]
 struct Key {
     key: Option<String>,
@@ -521,34 +434,19 @@ struct EditionJson {
     key: Option<String>,
     languages: Option<Vec<Key>>,
     covers: Option<Vec<i64>>,
-    /// Free text, one entry per series the *edition* belongs to:
-    /// `["Dune Chronicles #2"]`, `["Penguin classics"]`. Only the first is
-    /// read — a book in two series is a shelving question and this column is a
-    /// scalar pair.
+    /// Only the first entry is read: the column holds one series.
     series: Option<Vec<String>>,
-    /// The work(s) this edition realises. Subjects live on the **work**, never
-    /// on the edition, which is why they cost a second request.
+    /// Subjects live on the work, not the edition.
     works: Option<Vec<Key>>,
 }
 
-/// The slice of `/works/{key}.json` this reads. Nothing else on a work is
-/// wanted: title, description and covers are edition-level facts here and the
-/// edition record already answered them.
 #[derive(Deserialize, Debug)]
 struct WorkJson {
     subjects: Option<Vec<String>>,
 }
 
-/// Split `"Dune Chronicles #2"` into a name and a position.
-///
-/// **Two separators and no more.** OpenLibrary's `series` is free text and
-/// carries everything from `Dune Chronicles #2` to `Penguin classics` to
-/// `Bd. 3 : Der Zauberberg`, and a parser that keeps guessing eventually reads
-/// a number that is not an index — a wrong "#2" is a claim about *which book
-/// this is*, and nothing downstream can tell it from a right one. So: a
-/// trailing `#N` or `; N`, and otherwise the whole string is the name and the
-/// index is absent. Absence is the honest answer and the pair guard means it
-/// stays absent rather than being filled from somewhere else.
+/// Splits only a trailing `#N` or `; N`; otherwise the whole string is the name and the position
+/// stays absent, since a guessed index is a false claim about which book this is.
 fn split_series(raw: &str) -> Option<(String, Option<f64>)> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -577,22 +475,7 @@ async fn author_of_key(key: &Key, ol: &OpenLibraryProvider) -> Result<Option<Str
     Ok(author.name)
 }
 
-/// Subjects, from the work this edition realises.
-///
-/// **One extra request per book looked up**, and that is the cost of this
-/// field: `by_isbn` was 1 + *authors* requests and is now 2 + *authors*.
-/// OpenLibrary's edition record does not carry subjects at all — they are a
-/// property of the *work* — so there is no cheaper form of the question. It is
-/// issued concurrently with the author lookups, so it costs a request rather
-/// than a round trip, and `search.json` deliberately does **not** ask for its
-/// `subject` facet: that would enlarge every response of every search by the
-/// noisiest form of this field for data only a saved book has any use for.
-///
-/// **A failure here is not a failure of the lookup.** The edition record has
-/// already answered the question that was asked; subjects are additive. So this
-/// degrades to none rather than propagating, which is the same rule the
-/// federated search applies one level up — and unlike the author resolution
-/// below, whose result is part of identity.
+/// Costs one extra request. A failure degrades to no subjects rather than failing the lookup.
 async fn subjects_of_work(key: &Key, ol: &OpenLibraryProvider) -> Vec<String> {
     let Some(k) = key.key.as_deref() else {
         return Vec::new();
@@ -615,8 +498,6 @@ async fn subjects_of_work(key: &Key, ol: &OpenLibraryProvider) -> Vec<String> {
 }
 
 async fn edition_to_book(edition: EditionJson, ol: &OpenLibraryProvider) -> Result<Book> {
-    // Resolve author keys to names concurrently, and ask the work about its
-    // subjects in the same flight.
     let keys = edition.authors.unwrap_or_default();
     let work = edition.works.as_ref().and_then(|w| w.first());
     let (authors, subjects) = futures::future::join(
@@ -693,10 +574,7 @@ impl MetadataProvider for OpenLibraryProvider {
     async fn search_works(&self, req: &SearchRequest) -> Result<Vec<ProviderWork>> {
         let url = build_search_url(&self.base, req)?;
         let text = self.get_text(&url).await?;
-        // Each doc is read twice from one parse: once as `Works`, and once as
-        // the raw JSON it was, split into the work and its matched edition so
-        // both can be kept as Open Library sent them — split, so another query
-        // matching another edition of the work cannot overwrite this one's.
+        // Split into work and matched edition so another query's edition cannot overwrite this one's.
         let resp: RawSearchResp = serde_json::from_str(&text)?;
         resp.docs
             .unwrap_or_default()
@@ -813,10 +691,6 @@ mod tests {
         assert_eq!(f.languages, vec!["fr", "en"]);
     }
 
-    /// A doc is kept as two records — the work, and the edition Open Library
-    /// matched — and the two read back into the same result: the same book,
-    /// the same facts. The work's record carries no edition, so a later search
-    /// matching a different edition cannot overwrite this one's.
     #[test]
     fn a_doc_is_kept_as_its_work_and_its_edition_and_reads_back_the_same() {
         let doc: serde_json::Value = serde_json::from_str(
@@ -850,17 +724,13 @@ mod tests {
         assert_eq!(back.facts, w.facts);
         assert!(back.kept.is_empty());
 
-        // Without its edition the work still reads, with no ISBN.
         let bare = decode_doc(&w.kept[0].body, None, 0).unwrap();
         assert_eq!(bare.found.book.isbn_13, None);
         assert_eq!(bare.found.book.title.as_deref(), Some("Middlemarch"));
-        // And a body that is not Open Library's is refused, not guessed at.
         assert!(decode_doc("[1,2]", None, 0).is_err());
         assert!(decode_doc("{\"key\": \"/works/X\"}", None, 0).is_err());
     }
 
-    /// A work with no nested edition still converts, with no ISBN rather than
-    /// some other edition's.
     #[test]
     fn a_work_without_a_matched_edition_has_no_isbn() {
         let json =
@@ -876,7 +746,6 @@ mod tests {
         );
     }
 
-    /// Open Library 422s a `q` under three characters, and parses `q` as Solr.
     #[test]
     fn a_short_query_goes_as_a_title_and_q_is_never_solr_syntax() {
         let short = SearchRequest {
@@ -908,9 +777,6 @@ mod tests {
         assert_eq!(plain_q("slaughterhouse-five"), "slaughterhouse-five");
     }
 
-    /// A 429 with `Retry-After` closes the provider for that long: the next
-    /// search is refused without a request, the error carries no URL (the URL
-    /// is the query), and the search after the wait asks again. Loopback only.
     #[tokio::test]
     async fn retry_after_closes_the_provider_and_no_url_leaks() {
         use wiremock::matchers::method;
@@ -937,14 +803,11 @@ mod tests {
         let left = ol.manners().and_then(Manners::closed_for).expect("closed");
         assert!(left <= std::time::Duration::from_secs(1));
 
-        // Closed: refused without a request (the mock expects exactly one).
         let again = ol.search(&req).await.unwrap_err().to_string();
         assert!(!again.contains("private"), "{again}");
         server.verify().await;
     }
 
-    /// A 503 without `Retry-After` is a failure and closes nothing, and an
-    /// ordinary HTTP error carries no URL either.
     #[tokio::test]
     async fn a_failure_without_retry_after_closes_nothing() {
         use wiremock::matchers::method;
@@ -1013,22 +876,16 @@ mod tests {
         );
     }
 
-    /// The two shapes that are read, and the many that are deliberately not.
-    ///
-    /// The `None` cases matter more than the `Some` ones: an index parsed out of
-    /// `Bd. 3 : Der Zauberberg` would be a confident claim about which book this
-    /// is, and the pair guard cannot help with a wrong value — only with a
-    /// missing one.
+    /// The `None` cases matter: a guessed index is a confident wrong claim.
     #[test]
     fn series_text_is_split_only_where_it_is_unambiguous() {
         let cases = [
             ("Dune Chronicles #2", Some(("Dune Chronicles", Some(2.0)))),
             ("Dune Chronicles, #2", Some(("Dune Chronicles", Some(2.0)))),
             ("Discworld ; 5", Some(("Discworld", Some(5.0)))),
-            // Novellas are numbered like this, which is why the column is REAL.
+            // Novellas are numbered like this, hence a REAL column.
             ("Wayfarers #1.5", Some(("Wayfarers", Some(1.5)))),
             ("  Penguin classics  ", Some(("Penguin classics", None))),
-            // A number that is not an index, and a separator that is not one.
             (
                 "Bd. 3 : Der Zauberberg",
                 Some(("Bd. 3 : Der Zauberberg", None)),
@@ -1047,10 +904,6 @@ mod tests {
         }
     }
 
-    /// An edition with no work and no authors reaches no network at all, which
-    /// is what makes the series half testable under the no-network rule. The
-    /// subjects half needs `/works/`, which only a server behind
-    /// [`OpenLibraryProvider::with_base`] can answer.
     #[tokio::test]
     async fn an_edition_carries_its_series_and_no_subjects_of_its_own() {
         let json = r#"{
@@ -1087,7 +940,6 @@ mod tests {
         let e: EditionJson = serde_json::from_str(json).unwrap();
         assert_eq!(e.number_of_pages, Some(490));
         assert_eq!(e.publish_date.as_deref(), Some("Aug 25, 2017"));
-        // The key the second request is made against. No work key, no request.
         assert_eq!(
             e.works.unwrap()[0].key.as_deref(),
             Some("/works/OL9000001W")

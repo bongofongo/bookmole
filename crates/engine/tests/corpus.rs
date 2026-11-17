@@ -1,19 +1,5 @@
-//! Tier-2 corpus: sidecars derived from real Project Gutenberg epubs.
-//!
-//! A separate file from `koreader_import.rs` on purpose. That harness is tuned
-//! to a flat, committed, auto-discovered fixture set with goldens; this corpus
-//! is optional, absent by default, differently laid out, and wants different
-//! assertions (scale, no-loss, real prose). Grafting it on would give all seven
-//! of those tests a skip branch and stop `make test-import` meaning "the fast
-//! committed harness".
-//!
-//! Everything here **skips loudly** when the corpus is absent (it is committed
-//! since 2026-10-20, so that is a deleted checkout rather than an unfetched one),
-//! and `BOOKMOLE_REQUIRE_FIXTURES=1` turns every such skip into a failure — so
-//! a broken fetch cannot masquerade as a green build.
-//!
-//!   scripts/fetch-corpus.sh && cargo run -p corpus -- gen-corpus --seed 42
-//!   (or just `make corpus`)
+//! Tier-2 corpus tests over sidecars derived from Gutenberg epubs. Every skip is loud, and
+//! `BOOKMOLE_REQUIRE_FIXTURES=1` turns it into a failure.
 
 use std::path::{Path, PathBuf};
 
@@ -26,12 +12,9 @@ fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/generated")
 }
 
-/// The generator emits one subtree per sidecar layout. Each is a plausible
-/// device library on its own; together they are not (see
-/// `the_whole_corpus_imports_idempotently`).
+/// One subtree per sidecar layout; each is a plausible device library alone, but not together.
 const LAYOUTS: [&str; 2] = ["modern", "legacy"];
 
-/// `None` means "not generated"; every test then skips.
 fn sidecars() -> Option<Vec<PathBuf>> {
     let dir = corpus_dir();
     if !dir.is_dir() {
@@ -41,7 +24,6 @@ fn sidecars() -> Option<Vec<PathBuf>> {
     (!found.is_empty()).then_some(found)
 }
 
-/// A skip that cannot hide. Returns true if the caller should bail out.
 fn skipped(reason: &str) -> bool {
     common::skipped(reason, "run `make corpus`")
 }
@@ -58,9 +40,6 @@ macro_rules! corpus_or_skip {
     };
 }
 
-/// The lock records what the generator produced. Comparing against it separates
-/// "not generated yet" from "generated, then hand-edited" — the second is a
-/// silent corruption of the corpus that would otherwise never be noticed.
 #[test]
 fn generated_sidecars_match_the_lock_file() {
     let _ = corpus_or_skip!();
@@ -73,9 +52,6 @@ fn generated_sidecars_match_the_lock_file() {
 
     let mut checked = 0;
     for (rel, want) in lock["files"].as_object().expect("files table") {
-        // `epub/<id>.epub` records the *input*; it lives in corpus/epub, not
-        // under generated/. Everything else — sidecars, the layout manifests
-        // and the statistics layer — is output and is checked.
         if rel.starts_with("epub/") {
             continue;
         }
@@ -98,9 +74,6 @@ fn generated_sidecars_match_the_lock_file() {
     assert!(checked > 0, "the lock recorded no sidecars");
 }
 
-/// Real prose is where a parser meets what it was never tested against:
-/// nineteenth-century punctuation, em-dashes, quotation marks, Cyrillic, and
-/// space-less Japanese and Chinese.
 #[test]
 fn every_generated_sidecar_parses() {
     let found = corpus_or_skip!();
@@ -139,26 +112,15 @@ fn every_generated_sidecar_parses() {
     assert!(total_highlights > 0, "the corpus produced no highlights");
 }
 
-/// The idempotency guarantee, over a whole layout tree at once rather than one
-/// fixture at a time — which also exercises importing a many-book library in a
-/// single call.
-///
-/// **One layout per pass, because a device carries one.** The two trees hold
-/// the same annotations of the same books in two encodings with different
-/// payloads (page `3i` against `7i`, notes only in the legacy one). Imported
-/// together they match the same library book and collide on `identity_hash`, so
-/// every pass refreshes every row toward whichever sidecar it read last and
-/// nothing is ever `skipped`. That is import behaving correctly on input no
-/// device can produce; the corpus is laid out so it cannot arise.
+/// One layout per pass, because a device carries one: both trees hold the same annotations with
+/// different payloads, so together every pass would refresh every row and never skip.
 #[tokio::test]
 async fn the_whole_corpus_imports_idempotently() {
     let _ = corpus_or_skip!();
 
     for layout in LAYOUTS {
         let dir = corpus_dir().join(layout);
-        // Loud, not `continue`: a corpus generated before the layout split has
-        // no subtrees at all, and silently covering nothing is exactly the
-        // failure mode the skip rule exists to prevent.
+        // Loud, not `continue`: silently covering nothing is what the skip rule prevents.
         let found = koreader::find_sidecars(&dir).unwrap_or_default();
         if found.is_empty() {
             skipped(&format!(
@@ -168,7 +130,6 @@ async fn the_whole_corpus_imports_idempotently() {
         }
 
         let storage = Storage::connect("sqlite::memory:").await.expect("db");
-        // Seed one book per sidecar so every one of them matches.
         for path in &found {
             let src = std::fs::read_to_string(path).unwrap();
             let Ok(sc) = parse_sidecar(&src) else {
@@ -203,7 +164,6 @@ async fn the_whole_corpus_imports_idempotently() {
         let seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
         assert!(inserted > 0, "{layout}: corpus import inserted nothing");
 
-        // Snapshot every book's rows before re-importing.
         let mut before = Vec::new();
         for s in &first.imported {
             before.push((s.book_id, storage.list_highlights(s.book_id).await.unwrap()));
@@ -218,9 +178,7 @@ async fn the_whole_corpus_imports_idempotently() {
                 "{layout}: re-import inserted rows for {}",
                 s.book_title
             );
-            // The `updated` counter, asserted here at scale: identical bytes
-            // must not look like a device edit. Without this the sum below can
-            // be satisfied by rows drifting into `updated` instead.
+            // Asserts `updated == 0` at scale: identical bytes must not look like a device edit.
             assert_eq!(
                 s.updated, 0,
                 "{layout}: re-import refreshed device fields for {} — the sidecar did not change",
@@ -254,10 +212,6 @@ async fn the_whole_corpus_imports_idempotently() {
     }
 }
 
-/// Both layouts are generated for every book, so the corpus is also a
-/// differential test: the same source text, expressed two ways, must yield the
-/// same highlight *text*. They live in sibling trees (see the idempotency test
-/// for why), so a pair is the same `<slug>.sdr` under each.
 #[test]
 fn the_modern_and_legacy_encodings_agree_on_the_text() {
     let _ = corpus_or_skip!();
@@ -300,11 +254,6 @@ fn the_modern_and_legacy_encodings_agree_on_the_text() {
     eprintln!("corpus: compared {compared} modern/legacy pairs");
 }
 
-// ---- v3: reading state, sentences, statistics, salted cases ------------------
-
-/// One layout's `manifest.json`: which sidecar is which book in which state,
-/// and which rows carry a hostile case. Written by the generator beside the
-/// sidecars; the tests below read it rather than re-deriving anything.
 fn layout_manifest(layout: &str) -> Option<serde_json::Value> {
     let raw = std::fs::read_to_string(corpus_dir().join(layout).join("manifest.json")).ok()?;
     Some(serde_json::from_str(&raw).expect("layout manifest parses"))
@@ -345,10 +294,6 @@ fn sidecar_path(layout: &str, slug: &str) -> PathBuf {
 const TERMINAL: &[char] = &['.', '?', '!', '。', '！', '？'];
 const CLOSING: &[char] = &['"', '\'', '”', '’', '»', '」', '』', '›'];
 
-/// Highlights are cut at sentence boundaries from the real prose, never at a
-/// character offset: either one to three whole sentences (ending in terminal
-/// punctuation, or a closing quote after it) or a single real word, which the
-/// engine turns into a flashcard. Salted rows are the declared exception.
 #[test]
 fn every_highlight_is_a_sentence_or_a_single_word() {
     let _ = corpus_or_skip!();
@@ -364,9 +309,6 @@ fn every_highlight_is_a_sentence_or_a_single_word() {
                 if salted.iter().any(|v| v == &h.text) {
                     continue;
                 }
-                // A word is one alphabetic run: the only shape the word
-                // picker makes. `IAGO.` or `767.` is neither a word nor a
-                // sentence, and fails below.
                 if !h.text.is_empty() && h.text.chars().all(char::is_alphabetic) {
                     words += 1;
                     continue;
@@ -383,7 +325,7 @@ fn every_highlight_is_a_sentence_or_a_single_word() {
         }
         let total = sentences + words;
         assert!(total > 0, "{layout}: no highlights");
-        // 5–10% single words is the target, measured in tenths of a percent.
+        // Target is 5-10% single words, measured in tenths of a percent.
         let per_mille = words * 1000 / total;
         assert!(
             (50..=100).contains(&per_mille),
@@ -392,14 +334,10 @@ fn every_highlight_is_a_sentence_or_a_single_word() {
     }
 }
 
-/// Han, kana and hangul: scripts written without spaces between words.
 fn is_spaceless_script(c: char) -> bool {
     matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF)
 }
 
-/// Every sidecar carries a consistent reading state, as a device writes one:
-/// a known status, `percent_finished`, `doc_pages`, `summary.modified`, a
-/// `stats` block, and a `partial_md5_checksum`. `complete` means 100%.
 #[test]
 fn every_sidecar_has_a_consistent_reading_state() {
     let found = corpus_or_skip!();
@@ -461,8 +399,6 @@ fn every_sidecar_has_a_consistent_reading_state() {
     assert!(by_status.contains_key("reading") && by_status.contains_key("complete"));
 }
 
-/// Seed one library book per sidecar of `layout`, import the layout, and hand
-/// back the storage and the first report.
 async fn imported(layout: &str) -> Option<(Storage, koreader::ImportReport)> {
     let dir = corpus_dir().join(layout);
     let found = koreader::find_sidecars(&dir)
@@ -494,9 +430,6 @@ async fn imported(layout: &str) -> Option<(Storage, koreader::ImportReport)> {
     Some((storage, report))
 }
 
-/// `summary.status = complete` on the device closes the reading here. Asserted
-/// per sidecar, through the md5 link the import records, so a sidecar that
-/// failed to match at all is a failure rather than a quiet omission.
 #[tokio::test]
 async fn every_complete_sidecar_imports_as_a_finished_reading() {
     let _ = corpus_or_skip!();
@@ -549,10 +482,6 @@ struct StatsDay {
     minutes: i64,
 }
 
-/// The statistics layer: `page_stat_data` sessions on the same evenings as the
-/// highlights, keyed by the sidecar's `partial_md5_checksum`. Materialised into
-/// a real SQLite file and imported after the sidecars, the device's measured
-/// days must land exactly as the generator totalled them while writing.
 #[tokio::test]
 async fn the_statistics_layer_imports_to_the_generators_totals() {
     use sqlx::Connection;
@@ -590,10 +519,8 @@ async fn the_statistics_layer_imports_to_the_generators_totals() {
             .unwrap();
         assert_eq!(report.books_in_db, exp.books.len(), "{layout}");
 
-        // Group by the library book each md5 linked to. The two editions of
-        // one title (Gutenberg 1342 and 42671, the duplicate-detection case)
-        // match the *same* seeded book by title, so their measured days are
-        // one book's days here — observed behaviour, pinned rather than blessed.
+        // Two editions of one title match the same seeded book by title, so their measured days are one
+        // book's days (observed behaviour, pinned).
         let mut per_book: std::collections::BTreeMap<i64, (Vec<String>, Vec<&StatsDay>)> =
             Default::default();
         for b in &exp.books {
@@ -619,8 +546,6 @@ async fn the_statistics_layer_imports_to_the_generators_totals() {
             let mut want_days: Vec<&str> = days.iter().map(|d| d.day.as_str()).collect();
             want_days.dedup();
             assert_eq!(got_days, want_days, "{layout}/{titles:?}: measured days");
-            // Per-day totals where one md5 owns the day (always, unless two
-            // editions were read the same evening).
             if want_days.len() == days.len() {
                 for (g, w) in got.iter().zip(&days) {
                     assert_eq!(
@@ -632,8 +557,6 @@ async fn the_statistics_layer_imports_to_the_generators_totals() {
                     assert_eq!(g.pages, Some(w.pages), "{layout}/{titles:?} on {}", w.day);
                 }
             }
-            // The cross-layer property: every measured day is a day the book
-            // has a highlight on.
             let hl_days: std::collections::BTreeSet<String> = storage
                 .list_highlights(id)
                 .await
@@ -658,12 +581,6 @@ async fn the_statistics_layer_imports_to_the_generators_totals() {
     }
 }
 
-/// Every salted hostile value reaches the class `hostile.json` declares for it:
-/// `verbatim` reads back byte-equal (through the parser, and for highlights
-/// through import into storage); `no-crash` parsed and imported at all, which
-/// the idempotency test then holds to `updated == 0`. The layer salts no
-/// `normalised` or `rejected` case today; one arriving fails here by name until
-/// an arm for it is written.
 #[tokio::test]
 async fn salted_cases_reach_their_declared_class() {
     let _ = corpus_or_skip!();

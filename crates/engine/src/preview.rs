@@ -1,101 +1,7 @@
-//! Preview (macOS): the annotations inside a PDF, imported as highlights.
-//!
-//! Import is one-way. bookmole reads a PDF and never writes into it.
-//! Everything the file says (the words under a highlight, its note, its colour,
-//! where it is) belongs to the file, and goes through the shared path
-//! [`Storage::upsert_imported_highlight`] with `origin = preview`.
-//!
-//! ## What is read
-//!
-//! Each page's `/Annots`: `Highlight`, `Underline`, `StrikeOut` (text markup)
-//! and `Text` (a sticky note) and `FreeText`. Everything else (links, widgets,
-//! ink, popups) is not a highlight and is ignored without a count.
-//!
-//! * `/Contents` is the note ([`ImportedHighlight::origin_note`]).
-//! * `/M` is `made_at`, normalised to UTC `YYYY-MM-DD HH:MM:SS` when it parses
-//!   (the unit KOReader's stamp is in), else the raw text.
-//! * `/T` (the author) is **dropped**: no column holds a per-highlight author
-//!   and inventing one is a migration, which this item does not carry.
-//! * `/C` becomes `#rrggbb` (gray, RGB and CMYK are folded to RGB).
-//! * The kind (highlight / underline / strike-out / note / free text) is kept
-//!   as a tag inside `pos0`, since no other column holds it.
-//!
-//! ## The words are not reliably stored
-//!
-//! A markup annotation does not contain the words it marks; they are in the
-//! page's content stream under the `/QuadPoints`. This module interprets the
-//! content stream (text positioning operators only) and takes the glyphs whose
-//! centres fall inside a quad. Extraction is **refused rather than guessed**:
-//! a run in a font whose advance widths are not known (`/Widths`, or Courier's
-//! fixed 600) that sits on a quad's line makes that annotation
-//! `text_unavailable`, and so does an extraction that finds nothing. Such a
-//! highlight is kept, with empty text, because its place and note are still
-//! real; wrong words shown as the user's passage would be worse than none.
-//!
-//! A sticky note or free text has no passage. It is a **note-only row**:
-//! `text = ""`, `text_unavailable = false` (nothing is missing), and the note
-//! carries it. One with no `/Contents` is skipped and counted in `unparsed`.
-//!
-//! ## Position
-//!
-//! `pos_kind = pdf_rect`, `page` = the 1-based page the source put it on, and
-//! `pos0 = "p{page}:{tag}:{n1},{n2},..."` where `tag` is `h`ighlight,
-//! `u`nderline, `s`trike-out, `t`ext note or `f`ree text and the numbers are
-//! the annotation's `/QuadPoints` (8 per quad, in the file's order) or, for a
-//! note/free text, its `/Rect` (4), in PDF user-space points, at most two
-//! decimals with trailing zeros trimmed. Never converted to another unit.
-//!
-//! ## Identity
-//!
-//! `/NM` (the annotation's unique name) is the `origin_id` when present and not
-//! repeated in the file. Otherwise `identity = "{page}|{tag}|{llx},{lly},{urx},{ury}"`
-//! with the `/Rect` (the quads' bounding box if there is no `/Rect`) rounded to
-//! whole points, so sub-point jitter between re-reads does not change it. Two
-//! annotations that would share an identity get a `|#n` counter in file order.
-//! Nothing the app rewrites in place (the note, the colour) is in it.
-//!
-//! Both keys are facts about **one file**, so every highlight is built with
-//! [`IdentityScope::Copy`]: two PDF copies of a book annotated at the same
-//! place (the same `/NM`, or the same page and rect) are two highlights, each
-//! found, refreshed and removed only by its own copy's import. The storage
-//! module doc (`storage/imported_highlights.rs`, "Scope") is how.
-//!
-//! ## Deletions
-//!
-//! Deleting an annotation in Preview deletes it from the file, so the file no
-//! longer has it. A re-import removes this file's rows (`copy_id` equal to the
-//! one imported and `origin = preview`, so another copy's rows are never
-//! touched) that the file no longer holds, **except** any that carry something
-//! of bookmole's own (an `annotation`, an anchored note, a flashcard, a
-//! citation, a card passage): those are kept and counted in a
-//! [`DiagnosticKind::PdfAnnotationsKept`]. Nothing is removed when there is no
-//! telling which file a row came from: no `copy_id`, or a copy with **more than
-//! one `path` place** (two files merged into one copy by `merge_copies`, or one
-//! file in two folders that have since diverged). A file that could not be
-//! read removes nothing, and neither does one that was read **incompletely**
-//! ([`PdfScan::is_complete`]: a cap reached, a page not all read, anything
-//! unparsed): a row the pass did not see may be one it did not read, so the
-//! removal is skipped and a [`DiagnosticKind::PdfScanIncomplete`] says so.
-//!
-//! ## Hostile files
-//!
-//! Every loop is bounded by a named cap, never by a count the file states:
-//! annotations, quads per annotation and per file, glyphs and unmeasured runs
-//! per page, `q` nesting, decoded content per page and per file, decoded font
-//! encodings, and the glyph visits extraction may make. Strings taken from the
-//! file (`/Contents`, `/NM`, `/M`) are cut to a byte budget **before** they are
-//! decoded. Coordinates must be finite and lie within the page's `/MediaBox`
-//! widened by a page on every side (and within [`MAX_ABS_COORD`]); an
-//! annotation's quads are all-or-nothing, so a single bad quad drops them all
-//! (the annotation keeps its `/Rect`, or is counted `unparsed`). A cap that is
-//! reached never produces guessed words: the highlights it affects are kept as
-//! `text_unavailable`, or counted `unparsed` when nothing of them is left.
-//!
-//! Highlight text and notes are the user's private reading: nothing here logs
-//! them above `trace!`, and nothing here logs them at all.
-//!
-//! [`DiagnosticKind::PdfAnnotationsKept`]: crate::DiagnosticKind::PdfAnnotationsKept
-//! [`DiagnosticKind::PdfScanIncomplete`]: crate::DiagnosticKind::PdfScanIncomplete
+//! Preview (macOS): annotations inside a PDF, imported one-way as highlights with `origin =
+//! preview`. Never writes to the PDF; words are refused rather than guessed.
+//! A re-import removes vanished rows only after a complete scan of a single-path copy, and keeps
+//! rows carrying bookmole's own data. Every loop is bounded by a named cap, never a file's count.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -112,69 +18,40 @@ use crate::highlight_origin::{
 };
 use crate::storage::Storage;
 
-/// A PDF larger than this is not read.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
-/// Most any single stream may inflate to while loading.
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
-/// Most one page's content may inflate to for reading its words. A page of
-/// text is tens of KB and a page of dense vector art a few MB; `Content::decode`
-/// holds every operation in memory, so this is also a memory bound. Past it the
-/// page's words are unavailable.
+/// Most one page's content may inflate to; `Content::decode` holds every operation in memory.
 const MAX_PAGE_CONTENT_BYTES: usize = 8 * 1024 * 1024;
-/// Most page content one file may inflate, across all its pages. Pages may
-/// share one content stream and each decodes it again, so the per-page cap alone
-/// does not bound a file.
+/// Most content one file may inflate across pages; pages may share a stream and each decodes it
+/// again.
 const MAX_FILE_CONTENT_BYTES: usize = 128 * 1024 * 1024;
-/// Most a simple font's encoding stream (a `ToUnicode` CMap, at most 256 codes,
-/// a few KB in practice) may inflate to.
 const MAX_FONT_BYTES: usize = 256 * 1024;
-/// Most font-encoding bytes one file may inflate, across its fonts.
 const MAX_FILE_FONT_BYTES: usize = 64 * 1024 * 1024;
-/// Annotations read from one file.
 const MAX_ANNOTATIONS: usize = 20_000;
-/// Quads read from one annotation.
 const MAX_QUADS: usize = 256;
-/// Quads read from one file, across its annotations. Each quad is eight stored
-/// numbers in `pos0` and one pass over its line's glyphs, and without this the
-/// two caps above multiply (20 000 × 256 = 5 million quads). A heavily
-/// annotated real book has a few thousand highlights of one to three lines, so
-/// this is ten times that, and bounds a file's `pos0` at about 4 MB. An
-/// annotation that would cross it is skipped and counted in `unparsed`.
+/// Quads per file; without it the per-annotation and per-file annotation caps multiply to millions.
 const MAX_FILE_QUADS: usize = 50_000;
-/// Glyphs collected from one page.
 const MAX_GLYPHS: usize = 400_000;
-/// Text runs in an unmeasurable font recorded from one page.
 const MAX_UNMEASURED: usize = 100_000;
-/// `q` nesting one page may reach (Acrobat's own limit is 28).
 const MAX_GSTATE_DEPTH: usize = 256;
-/// Glyph and run visits one file's extraction may make. Glyphs are searched by
-/// line, so a real highlight visits about one line (~100); this only bites when
-/// a file stacks thousands of quads over one enormous line. An annotation that
-/// would cross it gets `text_unavailable`.
+/// Glyph and run visits one file's extraction may make; an annotation crossing it is
+/// `text_unavailable`.
 const MAX_EXTRACTION_WORK: usize = 50_000_000;
-/// The longest note or extracted passage kept, in bytes.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
-/// The longest `/NM` taken as an identity, in bytes. A real one is a UUID or
-/// shorter; a longer one is ignored (not truncated: two truncated names could
-/// collide) and the annotation falls back to its place.
+/// Longest `/NM` taken as an identity; a longer one is ignored, not truncated, since truncated
+/// names could collide.
 const MAX_NAME_BYTES: usize = 256;
-/// The raw bytes of `/M` read. A PDF date is at most ~24 characters.
 const MAX_DATE_BYTES: usize = 128;
-/// No coordinate is further than this from the origin, in points (Acrobat's
-/// largest page is 14 400). Bounds every number in `pos0` to nine characters.
+/// Largest coordinate magnitude in points; bounds every number in `pos0` to nine characters.
 const MAX_ABS_COORD: f64 = 100_000.0;
-/// The longest `pos0` an annotation produces. With coordinates bounded by
-/// [`MAX_ABS_COORD`], [`MAX_QUADS`] quads never reach it from a scan; it is the
-/// guard for a [`PdfScan`] built by hand, and drops whole trailing quads.
+/// Longest `pos0`; a guard for a hand-built [`PdfScan`], dropping whole trailing quads.
 const MAX_POS0_BYTES: usize = 24 * 1024;
 
-/// What kind of PDF annotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotKind {
     Highlight,
     Underline,
     StrikeOut,
-    /// A sticky note.
     Text,
     FreeText,
 }
@@ -191,7 +68,6 @@ impl AnnotKind {
         })
     }
 
-    /// The tag inside `pos0` and the identity.
     pub fn tag(self) -> char {
         match self {
             AnnotKind::Highlight => 'h',
@@ -210,53 +86,38 @@ impl AnnotKind {
     }
 }
 
-/// One annotation as read from the file, before it becomes a highlight.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PdfAnnotation {
     /// 1-based.
     pub page: u32,
     pub kind: AnnotKind,
-    /// `/NM`.
     pub name: Option<String>,
     pub rect: Option<[f64; 4]>,
     pub quads: Vec<[f64; 8]>,
-    /// `/Contents`.
     pub contents: Option<String>,
-    /// `/M`, normalised.
     pub made_at: Option<String>,
-    /// `/C` as `#rrggbb`.
     pub color: Option<String>,
-    /// The words under the quads; `None` when they could not be extracted.
     pub text: Option<String>,
 }
 
-/// Everything readable in one PDF.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PdfScan {
     pub annotations: Vec<PdfAnnotation>,
-    /// Annotations of a handled type that could not be made into a highlight.
     pub unparsed: usize,
-    /// A cap was reached somewhere in the file: the annotation or quad budget,
-    /// a page whose content could not all be read (`broken`), or the file's
-    /// content, font or extraction budget. Together with `unparsed`, this is
-    /// what [`PdfScan::is_complete`] reads.
+    /// A cap was reached or a page could not be fully read. With `unparsed`, read by
+    /// [`PdfScan::is_complete`].
     pub truncated: bool,
 }
 
 impl PdfScan {
-    /// Whether this scan is an **authoritative list** of the file's
-    /// annotations: nothing was skipped, nothing unparsed, no cap reached. Only
-    /// a complete scan may remove rows the file "no longer holds" — after a cut
-    /// short one, a row not seen may simply not have been read.
+    /// Whether the scan is an authoritative list of the file's annotations. Only a complete scan may
+    /// remove rows the file no longer holds.
     pub fn is_complete(&self) -> bool {
         !self.truncated && self.unparsed == 0
     }
 }
 
-// ---- reading the file ---------------------------------------------------------
-
-/// Read every annotation of every page. `Err` is a typed [`Diagnostic`] (not a
-/// PDF, truncated, encrypted, too large), never a panic.
+/// `Err` is a typed [`Diagnostic`] (not a PDF, truncated, encrypted, too large), never a panic.
 pub fn scan_pdf_annotations(path: &Path) -> std::result::Result<PdfScan, Diagnostic> {
     let unreadable = |class: ErrorClass, detail: String| {
         Diagnostic::pdf_unreadable(path.to_path_buf(), class, detail)
@@ -273,8 +134,7 @@ pub fn scan_pdf_annotations(path: &Path) -> std::result::Result<PdfScan, Diagnos
         max_decompressed_size: Some(MAX_STREAM_BYTES),
         ..Default::default()
     };
-    // A hostile file must not take the pane down: lopdf is a parser of untrusted
-    // bytes, and a panic inside it becomes a diagnostic like any other failure.
+    // lopdf parses untrusted bytes; a panic inside it becomes a diagnostic.
     let loaded = std::panic::catch_unwind(|| Document::load_with_options(path, options));
     let doc = match loaded {
         Ok(Ok(doc)) => doc,
@@ -296,7 +156,6 @@ pub fn scan_pdf_annotations(path: &Path) -> std::result::Result<PdfScan, Diagnos
     }
 }
 
-/// What one file may still spend. Every cap that spans pages lives here.
 struct Budget {
     quads: usize,
     work: usize,
@@ -386,7 +245,6 @@ fn scan_document(doc: &Document) -> PdfScan {
             } else {
                 None
             };
-            // Handled types that carry nothing to make a highlight from.
             let placeless = if kind.is_markup() {
                 quads.is_empty() && rect.is_none()
             } else {
@@ -426,8 +284,7 @@ fn scan_document(doc: &Document) -> PdfScan {
             });
         }
     }
-    // A file-wide budget spent to the last byte means something was refused
-    // for want of it (every overspend zeroes or drains its budget).
+    // A file-wide budget spent to zero means something was refused for want of it.
     scan.truncated |= budget.work == 0 || budget.content_bytes == 0 || budget.font_bytes == 0;
     tracing::debug!(
         annotations = scan.annotations.len(),
@@ -438,8 +295,6 @@ fn scan_document(doc: &Document) -> PdfScan {
     scan
 }
 
-/// The annotation dictionaries of one page, whether `/Annots` is an array or a
-/// reference to one, and whether its members are references or direct.
 fn page_annotations(doc: &Document, page_id: ObjectId) -> Vec<&Dictionary> {
     let Ok(page) = doc.get_dictionary(page_id) else {
         return Vec::new();
@@ -465,13 +320,11 @@ fn string_of(o: &Object) -> Option<&[u8]> {
     }
 }
 
-/// At most the first `n` bytes: a string from the file is cut **before** it is
-/// decoded, so its length never sizes an allocation.
+/// At most the first `n` bytes: cut before decoding so a string's length never sizes an allocation.
 fn head(b: &[u8], n: usize) -> &[u8] {
     &b[..b.len().min(n)]
 }
 
-/// Where an annotation's coordinates may lie on one page.
 #[derive(Debug, Clone, Copy)]
 struct Bounds {
     x0: f64,
@@ -488,7 +341,6 @@ impl Bounds {
         y1: MAX_ABS_COORD,
     };
 
-    /// Every `(x, y)` pair of a flat coordinate list is finite and inside.
     fn holds_all(&self, v: &[f64]) -> bool {
         v.chunks_exact(2).all(|p| {
             let (x, y) = (p[0], p[1]);
@@ -500,10 +352,9 @@ impl Bounds {
     }
 }
 
-/// A page attribute, inherited through `/Parent` (as `/MediaBox` may be).
 fn inherited<'a>(doc: &'a Document, page_id: ObjectId, key: &[u8]) -> Option<&'a Object> {
     let mut dict = doc.get_dictionary(page_id).ok()?;
-    // The page tree is shallow; a deeper chain is a loop or an attack.
+    // The page tree is shallow; a deeper chain is a loop.
     for _ in 0..32 {
         if let Ok(o) = dict.get(key) {
             return deref(doc, o);
@@ -517,8 +368,6 @@ fn inherited<'a>(doc: &'a Document, page_id: ObjectId, key: &[u8]) -> Option<&'a
     None
 }
 
-/// The page's `/MediaBox` widened by its own larger side on every side, and
-/// never past [`MAX_ABS_COORD`]. No usable box means [`Bounds::ALL`].
 fn page_bounds(doc: &Document, page_id: ObjectId) -> Bounds {
     let Some(b) = inherited(doc, page_id, b"MediaBox").and_then(|o| number_array(doc, o, 4)) else {
         return Bounds::ALL;
@@ -548,8 +397,7 @@ fn number(doc: &Document, o: &Object) -> Option<f64> {
     }
 }
 
-/// A flat array of finite numbers, at most `MAX_QUADS * 8` of them; `len` 0
-/// means any length. All-or-nothing: one non-finite member rejects the array.
+/// A flat array of finite numbers (`len` 0 means any length); one non-finite member rejects it.
 fn number_array(doc: &Document, o: &Object, len: usize) -> Option<Vec<f64>> {
     let Object::Array(items) = deref(doc, o)? else {
         return None;
@@ -565,8 +413,7 @@ fn number_array(doc: &Document, o: &Object, len: usize) -> Option<Vec<f64>> {
     v.filter(|v| !v.is_empty())
 }
 
-/// A PDF text string: UTF-16BE with a BOM, UTF-8 with a BOM, else PDFDocEncoding
-/// (read here as Latin-1, which is exact for the printable range).
+/// A PDF text string: UTF-16BE or UTF-8 with a BOM, else PDFDocEncoding read as Latin-1.
 fn pdf_text(b: &[u8]) -> String {
     if let Some(rest) = b.strip_prefix(&[0xFE, 0xFF]) {
         let units: Vec<u16> = rest
@@ -592,8 +439,6 @@ fn cap_text(s: &str) -> String {
     s[..end].to_string()
 }
 
-/// `/C` to `#rrggbb`. Gray (1), RGB (3) and CMYK (4) are folded to RGB; an empty
-/// array (transparent) or any other length is no colour.
 fn color_hex(v: &[f64]) -> Option<String> {
     let c = |x: f64| x.clamp(0.0, 1.0);
     let (r, g, b) = match v {
@@ -610,9 +455,7 @@ fn color_hex(v: &[f64]) -> Option<String> {
     Some(format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b)))
 }
 
-/// `D:YYYYMMDDHHmmSSOHH'mm'` to UTC `YYYY-MM-DD HH:MM:SS`. Anything that does
-/// not parse is kept as the file wrote it (capped), since the stamp is the
-/// source's own.
+/// `D:YYYYMMDDHHmmSSOHH'mm'` to UTC `YYYY-MM-DD HH:MM:SS`; an unparseable stamp is kept as written.
 fn pdf_date(raw: &str) -> String {
     parse_pdf_date(raw).unwrap_or_else(|| raw.trim().chars().take(64).collect())
 }
@@ -641,7 +484,6 @@ fn parse_pdf_date(raw: &str) -> Option<String> {
     )
     .ok()?;
     let mut at = time::PrimitiveDateTime::new(date, clock);
-    // Offset: `Z`, or `+HH'mm'` / `-HH'mm'` (the apostrophes optional).
     if let Some(tz) = s.get(14..).filter(|t| !t.is_empty()) {
         let sign = match tz.as_bytes()[0] {
             b'+' => 1,
@@ -678,12 +520,8 @@ fn parse_pdf_date(raw: &str) -> Option<String> {
     ))
 }
 
-// ---- the words under a quad ---------------------------------------------------
-
 struct Glyph {
-    /// Centre of the glyph's advance, page space.
     cx: f64,
-    /// Vertical middle of the glyph, page space.
     cy: f64,
     /// Order in the content stream, which is reading order within a line.
     seq: u32,
@@ -692,14 +530,10 @@ struct Glyph {
 
 #[derive(Default)]
 struct PageGlyphs {
-    /// Sorted by `cy` once the page is read.
     glyphs: Vec<Glyph>,
-    /// `(x of the run's start, y)` of every run whose advance widths are not
-    /// known: text is there, but where each letter ends is not. Sorted by `y`.
+    /// `(x of the run's start, y)` of runs whose advance widths are unknown; sorted by `y`.
     unmeasured: Vec<(f64, f64)>,
-    /// The content stream could not be read or decoded at all, or a cap was
-    /// reached part-way: either way some of the page's words were not read, so
-    /// none of its quads can be said to hold all of theirs.
+    /// Some of the page's words were not read, so none of its quads can claim all of theirs.
     broken: bool,
 }
 
@@ -733,7 +567,6 @@ impl Mat {
 
 struct FontInfo<'a> {
     encoding: Option<lopdf::Encoding<'a>>,
-    /// Advance in 1/1000 em by code, when the font says (or is Courier).
     widths: Option<Widths>,
 }
 
@@ -772,9 +605,7 @@ impl Widths {
     }
 }
 
-/// Fonts read once per file, keyed by the font dictionary's address (pages
-/// share font objects, and a page names them under its own resource names).
-/// Read only when a `Tf` selects them.
+/// Fonts read once per file, keyed by the font dictionary's address (pages share font objects).
 #[derive(Default)]
 struct FontCache<'a> {
     infos: Vec<FontInfo<'a>>,
@@ -800,8 +631,6 @@ fn font_info<'a>(doc: &'a Document, dict: &'a Dictionary, budget: &mut Budget) -
         .ok()
         .and_then(|o| deref(doc, o))
         .and_then(|o| o.as_name().ok());
-    // A composite font's advances are not read, so its runs are unmeasured
-    // whatever its encoding; do not decode a CMap for nothing.
     if subtype == Some(b"Type0") {
         return FontInfo::UNMEASURED;
     }
@@ -839,7 +668,6 @@ fn font_info<'a>(doc: &'a Document, dict: &'a Dictionary, budget: &mut Budget) -
                 missing,
             })
         } else if base.starts_with(b"Courier") || base.windows(8).any(|w| w == b"+Courier") {
-            // A standard-14 monospaced font needs no /Widths: every glyph is 600.
             Some(Widths::Fixed(600.0))
         } else {
             None
@@ -847,20 +675,9 @@ fn font_info<'a>(doc: &'a Document, dict: &'a Dictionary, budget: &mut Budget) -
     if widths.is_none() {
         return FontInfo::UNMEASURED;
     }
-    // Every stream lopdf could inflate to build the encoding, probed (inflated
-    // once under the file's budget) before lopdf is allowed near it:
-    //
-    // * `/ToUnicode`, which lopdf 0.44 decodes when there is no usable
-    //   `/Encoding` **and** when `/Encoding` is the name `Identity-H` /
-    //   `Identity-V` (`Dictionary::base_encoding`). The second case is the one
-    //   the first cut missed: it probed `/ToUnicode` only when `/Encoding` was
-    //   absent, so an Identity-named simple font had lopdf inflate a stream the
-    //   budget never charged (found in a security review).
-    // * an `/Encoding` that is itself a stream (a CMap). lopdf 0.44 does not
-    //   decode one, but charging for it costs a few KB on a real file and keeps
-    //   the bound true if a later lopdf starts to.
-    //
-    // A name or a `/Differences` dictionary inflates nothing.
+    // Probe, under the file's budget, every stream lopdf would inflate for the encoding before it runs:
+    // `/ToUnicode` when `/Encoding` is absent or the name `Identity-H`/`Identity-V`, and an `/Encoding`
+    // stream. A plain name or `/Differences` dictionary inflates nothing.
     let encoding_entry = dict.get(b"Encoding").ok().and_then(|o| deref(doc, o));
     let to_unicode_decodable = match encoding_entry {
         None => true,
@@ -894,9 +711,8 @@ fn font_info<'a>(doc: &'a Document, dict: &'a Dictionary, budget: &mut Budget) -
             }
         }
     }
-    // lopdf now decodes (at most) one of the probed streams a second time, so
-    // that decode is charged too, and its limit is exactly what was probed and
-    // paid for: nothing lopdf inflates here is outside the per-file total.
+    // lopdf decodes one probed stream again, so charge that too: nothing it inflates escapes the file
+    // total.
     if largest > budget.font_bytes {
         budget.font_bytes = 0;
         return FontInfo::UNMEASURED;
@@ -906,7 +722,6 @@ fn font_info<'a>(doc: &'a Document, dict: &'a Dictionary, budget: &mut Budget) -
     FontInfo { encoding, widths }
 }
 
-/// A number operand, or 0 for anything else, including a non-finite one.
 fn operand(doc_ops: &[Object], i: usize) -> f64 {
     let n = match doc_ops.get(i) {
         Some(Object::Integer(n)) => *n as f64,
@@ -935,7 +750,6 @@ fn page_glyphs<'a>(
         return out;
     };
     drop(bytes);
-    // Resource names to font dictionaries; each is read on first `Tf`.
     let names: HashMap<Vec<u8>, &Dictionary> = doc
         .get_page_fonts(page_id)
         .map(|f| f.into_iter().collect())
@@ -947,8 +761,6 @@ fn page_glyphs<'a>(
     let (mut font, mut size, mut leading): (Option<usize>, f64, f64) = (None, 0.0, 0.0);
     let mut seq: u32 = 0;
 
-    // Show one string at the current text position, advancing it. Sets
-    // `out.broken` when a cap is reached, and the caller stops there.
     macro_rules! show {
         ($bytes:expr) => {{
             let bytes: &[u8] = $bytes;
@@ -959,9 +771,7 @@ fn page_glyphs<'a>(
                 .and_then(|f| f.widths.as_ref().map(|w| (f, w)));
             match measured {
                 Some((f, w)) if f.encoding.is_some() => {
-                    // A simple font is one byte per glyph: a run longer than
-                    // what is left of the cap would cross it, so it is refused
-                    // before its bytes are decoded at all.
+                    // One byte per glyph: a run that would cross the cap is refused before its bytes are decoded.
                     if bytes.len() > MAX_GLYPHS - out.glyphs.len() {
                         out.broken = true;
                     } else {
@@ -970,8 +780,7 @@ fn page_glyphs<'a>(
                             .as_ref()
                             .and_then(|e| Document::decode_text(e, bytes).ok())
                             .unwrap_or_default();
-                        // One code per character is what a simple font gives; if
-                        // the decoder disagrees, the positions cannot be trusted.
+                        // One code per character; if the decoder disagrees, positions cannot be trusted.
                         if text.chars().count() == bytes.len() {
                             let sx = (render.0[0].powi(2) + render.0[1].powi(2)).sqrt();
                             let sy = (render.0[2].powi(2) + render.0[3].powi(2)).sqrt();
@@ -984,7 +793,6 @@ fn page_glyphs<'a>(
                                 let adv = w.of(*code) / 1000.0 * size;
                                 let (x0, y0) = render.apply(dx, 0.0);
                                 let (cx, cy) = (x0 + adv * sx / 2.0, y0 + 0.3 * size * sy);
-                                // A glyph at a non-finite place is under no quad.
                                 if cx.is_finite() && cy.is_finite() {
                                     out.glyphs.push(Glyph { cx, cy, seq, ch });
                                     seq = seq.wrapping_add(1);
@@ -1102,7 +910,6 @@ fn page_glyphs<'a>(
         }
     }
     if out.broken {
-        // Nothing on this page will be read; free it now.
         out.glyphs = Vec::new();
         out.unmeasured = Vec::new();
         return out;
@@ -1112,9 +919,8 @@ fn page_glyphs<'a>(
     out
 }
 
-/// The words under a markup annotation's quads, or `None` when they cannot be
-/// stated honestly (see the module doc). Spends `work` (glyphs and runs
-/// visited); an annotation that would overspend it is `None` too.
+/// The words under a markup annotation's quads, or `None` when they cannot be stated honestly.
+/// Spends `work`; an annotation that would overspend it is `None` too.
 fn text_under(page: &PageGlyphs, quads: &[[f64; 8]], work: &mut usize) -> Option<String> {
     if page.broken {
         return None;
@@ -1125,7 +931,6 @@ fn text_under(page: &PageGlyphs, quads: &[[f64; 8]], work: &mut usize) -> Option
         let ys = [q[1], q[3], q[5], q[7]];
         let (minx, maxx) = (min_of(&xs), max_of(&xs));
         let (miny, maxy) = (min_of(&ys), max_of(&ys));
-        // The runs and glyphs on this quad's line, found by bisection.
         let runs = {
             let from = page.unmeasured.partition_point(|r| r.1 < miny - 1.0);
             let to = page.unmeasured.partition_point(|r| r.1 <= maxy + 1.0);
@@ -1142,7 +947,7 @@ fn text_under(page: &PageGlyphs, quads: &[[f64; 8]], work: &mut usize) -> Option
             return None;
         }
         *work -= cost;
-        // Text on this line in a font we cannot measure: not guessing.
+        // Text on this line in an unmeasurable font: refuse rather than guess.
         if runs.iter().any(|&(x, _)| x <= maxx) {
             return None;
         }
@@ -1154,7 +959,6 @@ fn text_under(page: &PageGlyphs, quads: &[[f64; 8]], work: &mut usize) -> Option
         out.push(' ');
         out.extend(hit.iter().map(|g| g.ch));
         if out.len() > MAX_TEXT_BYTES * 2 {
-            // Enough to fill the cap even after whitespace collapses.
             break;
         }
     }
@@ -1169,16 +973,13 @@ fn max_of(v: &[f64]) -> f64 {
     v.iter().copied().fold(f64::NEG_INFINITY, f64::max)
 }
 
-// ---- becoming highlights ------------------------------------------------------
-
 fn num(n: f64) -> String {
     let s = format!("{:.2}", if n == 0.0 { 0.0 } else { n });
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// `p{page}:{tag}:{numbers}`, never longer than [`MAX_POS0_BYTES`]: numbers are
-/// added a whole quad (or the whole rect) at a time, and a quad that would
-/// cross the cap is left out with every one after it.
+/// `p{page}:{tag}:{numbers}`, never longer than [`MAX_POS0_BYTES`]: a quad that would cross the cap
+/// is left out with every one after it.
 fn pos0_of(a: &PdfAnnotation) -> String {
     let groups: Vec<&[f64]> = if a.kind.is_markup() && !a.quads.is_empty() {
         a.quads.iter().map(|q| &q[..]).collect()
@@ -1201,10 +1002,8 @@ fn pos0_of(a: &PdfAnnotation) -> String {
     s
 }
 
-/// The annotation with every non-finite coordinate gone: quads all-or-nothing,
-/// as the scan does, and a non-finite `/Rect` dropped. A scan never yields one;
-/// this is for a [`PdfScan`] built by hand, so a NaN or an infinity can never
-/// reach `pos0` or the identity.
+/// The annotation with non-finite coordinates removed (quads all-or-nothing, a bad `/Rect`
+/// dropped), so a hand-built [`PdfScan`] cannot put a NaN or infinity into `pos0` or the identity.
 fn finite(a: &PdfAnnotation) -> PdfAnnotation {
     let mut a = a.clone();
     if !a.quads.iter().flatten().all(|n| n.is_finite()) {
@@ -1214,7 +1013,6 @@ fn finite(a: &PdfAnnotation) -> PdfAnnotation {
     a
 }
 
-/// The rounded box identity is taken from: `/Rect`, else the quads' bounds.
 fn identity_box(a: &PdfAnnotation) -> [i64; 4] {
     let r = a.rect.unwrap_or_else(|| {
         let xs: Vec<f64> = a
@@ -1233,17 +1031,15 @@ fn identity_box(a: &PdfAnnotation) -> [i64; 4] {
             [min_of(&xs), min_of(&ys), max_of(&xs), max_of(&ys)]
         }
     });
-    // Normalise the corner order (a /Rect may list either diagonal), then round.
     let (x0, x1) = (r[0].min(r[2]), r[0].max(r[2]));
     let (y0, y1) = (r[1].min(r[3]), r[1].max(r[3]));
     [x0, y0, x1, y1].map(|n| n.round() as i64)
 }
 
-/// Turn a scan into the highlights the shared path stores, in file order.
 pub fn highlights_of(scan: &PdfScan, copy_id: Option<i64>) -> Vec<ImportedHighlight> {
     let mut names: HashSet<&str> = HashSet::new();
     let mut identities: HashMap<String, usize> = HashMap::new();
-    // An /NM repeated in the file is not an identity; only its first holder uses it.
+    // An `/NM` repeated in the file is not an identity; only its first holder uses it.
     let repeated: HashSet<&str> = {
         let mut seen = HashSet::new();
         scan.annotations
@@ -1308,12 +1104,9 @@ pub fn highlights_of(scan: &PdfScan, copy_id: Option<i64>) -> Vec<ImportedHighli
         .collect()
 }
 
-/// Import one PDF's annotations as Preview highlights of `book_id`.
-///
-/// `copy_id` is the copy the file is a place of (stamped on new rows, and the
-/// scope of the deletion rule). A file that cannot be read degrades to a
-/// [`Diagnostic`] in the summary (`Ok`, nothing imported, nothing removed);
-/// `Err` is only a storage failure.
+/// `copy_id` is the copy the file is a place of; it scopes the deletion rule. An unreadable file
+/// degrades to a [`Diagnostic`] in the summary (`Ok`, nothing imported or removed); `Err` is
+/// storage only.
 pub async fn import_pdf_annotations(
     storage: &Storage,
     book_id: i64,
@@ -1339,9 +1132,8 @@ pub async fn import_pdf_annotations(
     for h in highlights_of(&scan, copy_id) {
         let outcome = match storage.upsert_imported_highlight(book_id, &h).await {
             Ok(o) => o,
-            // Every slot for this key is held by other copies' rows (storage
-            // module doc, "Known limits"): it cannot be stored, which is what
-            // `unparsed` counts.
+            // Every slot for this key is held by other copies' rows, so it cannot be stored; `unparsed` counts
+            // it.
             Err(EngineError::InvalidInput(_)) => {
                 summary.unparsed += 1;
                 continue;
@@ -1364,7 +1156,7 @@ pub async fn import_pdf_annotations(
         }
     }
 
-    // Only a copy that is this one file can say which rows the file dropped.
+    // Only a copy that is exactly this one file can say which rows the file dropped.
     let removable = match copy_id {
         Some(copy) => storage.get_copy(copy).await?.is_some_and(|c| {
             c.places
@@ -1375,10 +1167,8 @@ pub async fn import_pdf_annotations(
         }),
         None => false,
     };
-    // And only a **complete** read of it can say so: after a scan cut short (a
-    // cap reached, a page not all read, anything unparsed or unstorable), a
-    // row this pass did not see may simply be one it did not read. Removing it
-    // would delete the reader's highlight because the file was large.
+    // And only a complete read can say so: after a cut-short scan, an unseen row may just be unread,
+    // and removing it would delete the user's highlight because the file was large.
     let complete = scan_complete && summary.unparsed == 0;
     if removable && !complete {
         summary
@@ -1416,16 +1206,10 @@ pub async fn import_pdf_annotations(
     Ok(summary)
 }
 
-// ---- the rescan rule ----------------------------------------------------------
-
-/// What [`rescan_path_place`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RescanOutcome {
-    /// The file's mtime is the one recorded: not read.
     Unchanged,
-    /// The mtime moved: re-imported, and the place's hash and mtime refreshed.
     Reimported,
-    /// The file is not there: the place is marked missing, the copy untouched.
     Missing,
 }
 
@@ -1444,15 +1228,9 @@ fn mtime_secs(meta: &std::fs::Metadata) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
 }
 
-/// Rescan one `path` place of a copy: re-import its annotations only when the
-/// file's mtime differs from the place's `last_mtime`.
-///
-/// Annotating a PDF in Preview rewrites it, so its hash changes while it is
-/// still the same place and so the **same copy** (a `path` place is identified
-/// by its path, not its bytes): the place's
-/// `last_hash` and `last_mtime` are refreshed in step and no copy is made. A
-/// file that is gone marks the place missing (a fact about the place, never a
-/// verdict on the copy) and is not an error. A file that is back clears it.
+/// Re-imports one `path` place's annotations only when the file's mtime differs from `last_mtime`.
+/// Annotating rewrites the file but it stays the same place and copy, so hash and mtime are
+/// refreshed; a missing file marks the place missing, not an error.
 pub async fn rescan_path_place(
     storage: &Storage,
     copy_id: i64,
@@ -1493,9 +1271,6 @@ pub async fn rescan_path_place(
     storage.unmiss_place(PlaceKind::Path, reference).await?;
     let mtime = mtime_secs(&meta);
     if mtime.is_some() && place.last_mtime == mtime {
-        // Looked at, found as it was: that is still a look. `last_seen_at`
-        // moves (the Copies place says when Preview's highlights were last
-        // read in); the hash and mtime stay what they were.
         storage
             .refresh_place(
                 PlaceKind::Path,
@@ -1520,25 +1295,17 @@ pub async fn rescan_path_place(
     })
 }
 
-// ---- fixtures -----------------------------------------------------------------
-
-/// One page of a [`synthetic_annotated_pdf`].
 #[cfg(any(test, feature = "internals"))]
 #[derive(Debug, Clone, Default)]
 pub struct SyntheticPage {
-    /// `(x, y, font, text)`; font 1 is Courier (measurable), 2 is Helvetica with
-    /// no `/Widths` (not measurable, so words under a highlight are unavailable).
+    /// `(x, y, font, text)`; font 1 is Courier (measurable), 2 is Helvetica with no `/Widths` (not
+    /// measurable).
     pub lines: Vec<(f64, f64, u8, String)>,
-    /// Each annotation's dictionary body, e.g. `/Subtype /Highlight /Rect [..]`.
     pub annots: Vec<String>,
 }
 
-/// A classic PDF 1.4 file with the given pages, hand-assembled as bytes with an
-/// exact cross-reference table, so no fixture depends on `lopdf`'s writer or
-/// parser (the engine's parser must not build its own goldens). Courier 12 is
-/// 7.2 points per character, which is what the tests' quad points assume.
-///
-/// Test-only, behind `internals`, like [`crate::pdf::synthetic_pdf`].
+/// A PDF 1.4 file hand-assembled as bytes with an exact xref table, so no fixture depends on
+/// `lopdf`. Courier 12 is 7.2 points per character, which the tests' quad points assume.
 #[cfg(any(test, feature = "internals"))]
 pub fn synthetic_annotated_pdf(pages: &[SyntheticPage]) -> Vec<u8> {
     let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
@@ -1548,7 +1315,6 @@ pub fn synthetic_annotated_pdf(pages: &[SyntheticPage]) -> Vec<u8> {
         offsets.push(out.len());
         out.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
     };
-    // 1 catalog, 2 pages, 3 Courier, 4 Helvetica; then per page: page, content, annots.
     let mut bases = Vec::new();
     let mut next = 5;
     for p in pages {
@@ -1635,9 +1401,6 @@ pub fn synthetic_annotated_pdf(pages: &[SyntheticPage]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// An `Unchanged` rescan is still a look: the place's `last_seen_at`
-    /// moves (it is when Preview's highlights were last read in), while its
-    /// hash and mtime stay what they were and nothing is imported.
     #[tokio::test]
     async fn an_unchanged_rescan_still_stamps_when_the_place_was_seen() {
         use crate::copies::{CopyForm, LearnedFrom, NewCopy, NewPlace, Tenure};
@@ -1711,13 +1474,6 @@ mod tests {
         assert_eq!(pdf_text(b"plain"), "plain");
     }
 
-    /// Security review finding B. A simple font whose `/Encoding` is the
-    /// *name* `Identity-H` has lopdf inflate its `/ToUnicode`; the first cut
-    /// probed `/ToUnicode` only when `/Encoding` was absent, so that stream was
-    /// decoded and never charged. Built as lopdf objects in memory rather than
-    /// through `synthetic_annotated_pdf`, whose two fonts are fixed: this
-    /// asserts a budget, not a golden, so nothing here is the parser grading
-    /// its own output.
     #[test]
     fn every_stream_lopdf_inflates_for_an_encoding_is_charged() {
         use lopdf::{Dictionary, Document, Object, Stream};
@@ -1734,27 +1490,21 @@ mod tests {
             f
         };
 
-        // Identity-named: the probe and lopdf's own decode are both paid for.
         let identity = font(b"Identity-H");
         let mut budget = Budget::new();
         let _ = font_info(&doc, &identity, &mut budget);
         assert_eq!(MAX_FILE_FONT_BYTES - budget.font_bytes, 2 * N);
 
-        // A named simple encoding: lopdf never touches `/ToUnicode`, so
-        // nothing is inflated or charged for it.
         let mut budget = Budget::new();
         let _ = font_info(&doc, &font(b"WinAnsiEncoding"), &mut budget);
         assert_eq!(budget.font_bytes, MAX_FILE_FONT_BYTES);
 
-        // Less left than the stream: refused before lopdf is asked.
         let mut budget = Budget::new();
         budget.font_bytes = N / 2;
         let info = font_info(&doc, &identity, &mut budget);
         assert!(info.encoding.is_none() && info.widths.is_none());
         assert_eq!(budget.font_bytes, 0);
 
-        // Enough for the probe and not for lopdf's decode: refused too, and the
-        // total spent never passes what the file had.
         let mut budget = Budget::new();
         budget.font_bytes = N + N / 2;
         let info = font_info(&doc, &identity, &mut budget);

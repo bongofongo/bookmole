@@ -1,13 +1,5 @@
-//! Reading time out of KOReader's `statistics.sqlite3`.
-//!
-//! The fixture is `crates/corpus`' `gen-kostats` output: a `.sql` script
-//! carrying the plugin's verbatim DDL, plus `expected.json`, whose per-day
-//! totals were accumulated by the generator **while it wrote the rows** rather
-//! than read back out of them. That is what makes it an oracle — the assertions
-//! below compare the engine's aggregate against a number computed by code that
-//! shares nothing with it.
-//!
-//! Nothing here touches a real device or the network. The device is a tempdir.
+//! KOReader `statistics.sqlite3` import. The fixture's `expected.json` totals are accumulated by
+//! the generator while it writes rows, so they are an independent oracle.
 
 mod common;
 
@@ -54,11 +46,7 @@ fn expected() -> Expected {
     serde_json::from_str(&raw).expect("expected.json parses")
 }
 
-/// Materialise the fixture script into a real SQLite database.
-///
-/// A real database rather than a stub: the module under test opens one with
-/// SQLite, reads `PRAGMA user_version` off it and aggregates with `date(…,
-/// 'unixepoch')`, none of which a hand-rolled fake would exercise.
+/// Builds a real SQLite database: the module reads `user_version` and uses `date(.., 'unixepoch')`.
 async fn build_db(at: &Path) {
     let script = std::fs::read_to_string(Path::new(FIXTURE).join("statistics.sql"))
         .expect("the fixture script is committed");
@@ -79,8 +67,6 @@ async fn open(at: &Path, create: bool) -> sqlx::SqliteConnection {
         .expect("open")
 }
 
-/// A KOReader install with a statistics database in it, as `koreader_dir`
-/// expects to find one.
 fn install(root: &Path) -> PathBuf {
     let dir = root.join("koreader");
     std::fs::create_dir_all(dir.join("frontend")).unwrap();
@@ -90,8 +76,6 @@ fn install(root: &Path) -> PathBuf {
     dir.join("settings/statistics.sqlite3")
 }
 
-/// Create the library books the fixture says exist here, and link them by md5 —
-/// which is precisely the `device_books` join the module relies on.
 async fn seed_library(engine: &Engine, exp: &Expected) -> Vec<(String, i64)> {
     let mut out = Vec::new();
     for b in &exp.books {
@@ -110,10 +94,6 @@ async fn seed_library(engine: &Engine, exp: &Expected) -> Vec<(String, i64)> {
     out
 }
 
-// ---- the happy path ---------------------------------------------------------
-
-/// Every measured day the fixture describes lands as one `reading_events` row,
-/// with the minutes and pages the generator independently computed.
 #[tokio::test]
 async fn measured_days_land_as_events_with_the_generators_own_totals() {
     let (tmp, engine) = engine().await;
@@ -157,11 +137,6 @@ async fn measured_days_land_as_events_with_the_generators_own_totals() {
     }
 }
 
-/// A page opened three times in an evening is one page turned.
-///
-/// Pinned separately because `count(*)` is the natural thing to write and is
-/// wrong: the fixture's second day for `Middlemarch` holds two rows for page 13,
-/// and the expected page count says 2 rather than 3.
 #[tokio::test]
 async fn a_page_revisited_the_same_day_counts_once() {
     let (tmp, engine) = engine().await;
@@ -184,9 +159,6 @@ async fn a_page_revisited_the_same_day_counts_once() {
     );
 }
 
-/// The dead-clock guard. The fixture carries a row with `start_time = 0`, which
-/// is the column's declared default, and taking it at face value invents a day
-/// in 1970 that nobody read.
 #[tokio::test]
 async fn a_zero_start_time_does_not_become_a_day_in_1970() {
     let (tmp, engine) = engine().await;
@@ -210,14 +182,10 @@ async fn a_zero_start_time_does_not_become_a_day_in_1970() {
     }
 }
 
-// ---- absence, in all four of its shapes -------------------------------------
-
-/// No statistics database is the commonest case on earth — the plugin is
-/// optional — and it is a `Diagnostic`, an empty report and no error.
 #[tokio::test]
 async fn a_device_with_no_statistics_database_is_ordinary() {
     let (tmp, engine) = engine().await;
-    let db = install(tmp.path()); // the install exists; the database does not
+    let db = install(tmp.path());
     let report = bookmole::ko_statistics::import_statistics(engine.storage(), &db)
         .await
         .expect("absence is not an error");
@@ -231,10 +199,6 @@ async fn a_device_with_no_statistics_database_is_ordinary() {
     ));
 }
 
-/// A schema we do not know is **refused**, not read on a hunch. Importing a
-/// wrong number of minutes is worse than importing none: it would ratchet
-/// `confidence` to `measured` and nothing downstream could tell it from a right
-/// one.
 #[tokio::test]
 async fn an_unknown_schema_version_imports_nothing() {
     let (tmp, engine) = engine().await;
@@ -243,7 +207,6 @@ async fn an_unknown_schema_version_imports_nothing() {
     build_db(&db).await;
     seed_library(&engine, &exp).await;
 
-    // The plugin moved on and we have not.
     let mut conn = open(&db, false).await;
     sqlx::raw_sql("PRAGMA user_version=20991231;")
         .execute(&mut conn)
@@ -266,8 +229,6 @@ async fn an_unknown_schema_version_imports_nothing() {
     )));
 }
 
-/// A file that is not a database degrades rather than propagating a raw sqlx
-/// error out of the facade.
 #[tokio::test]
 async fn a_file_that_is_not_a_database_degrades() {
     let (tmp, engine) = engine().await;
@@ -284,9 +245,6 @@ async fn a_file_that_is_not_a_database_degrades() {
     )));
 }
 
-/// Books the device has and we do not, and rows carrying no md5 at all, are
-/// both reported. Ordinary — but a broken join looks exactly the same in
-/// silence, which is why neither is passed over quietly.
 #[tokio::test]
 async fn books_we_do_not_hold_and_rows_with_no_md5_are_both_reported() {
     let (tmp, engine) = engine().await;
@@ -321,13 +279,6 @@ async fn books_we_do_not_hold_and_rows_with_no_md5_are_both_reported() {
     );
 }
 
-// ---- idempotency ------------------------------------------------------------
-
-/// A device is scanned repeatedly and the same day must not accumulate.
-///
-/// The strong form: the second pass must report `updated == 0` as well as
-/// `inserted == 0`. Without that, every re-import rewrites every row and
-/// idempotency can never be *observed* — the trap the tier-2 corpus fell into.
 #[tokio::test]
 async fn re_importing_the_same_device_changes_nothing() {
     let (tmp, engine) = engine().await;
@@ -368,14 +319,8 @@ async fn re_importing_the_same_device_changes_nothing() {
     assert_eq!(after, before);
 }
 
-/// The upgrade this import is really about: the highlight filler's *inferred*
-/// days become *measured* ones carrying minutes, on the **same rows**.
-///
-/// `reading_events` is keyed `(book_id, day, source)` and this writes `source =
-/// 'koreader'` — the same rows the highlight filler writes. A delete-then-insert
-/// scoped by source would wipe the highlight filler's days, and that is the one
-/// way to break the activity log's promise (migration `0011`) that a later
-/// filler changes no query.
+/// Measured days must update the highlight filler's `source = 'koreader'` rows in place; a
+/// delete-then-insert by source would wipe its inferred days.
 #[tokio::test]
 async fn measured_minutes_upgrade_the_highlight_fillers_inferred_days() {
     let (tmp, engine) = engine().await;
@@ -385,8 +330,6 @@ async fn measured_minutes_upgrade_the_highlight_fillers_inferred_days() {
     let books = seed_library(&engine, &exp).await;
     let (_, middlemarch) = books.iter().find(|(t, _)| t == "Middlemarch").unwrap();
 
-    // A highlight on a day the device also measured, and one on a day it did
-    // not — the second is what proves nothing gets wiped.
     for when in ["2026-01-05 08:00:00", "2026-02-20 21:00:00"] {
         engine
             .storage()
@@ -429,7 +372,6 @@ async fn measured_minutes_upgrade_the_highlight_fillers_inferred_days() {
         "and it still has no minutes — absent, not zero"
     );
 
-    // The rows are the same rows: one per day, not one per source-that-spoke.
     assert_eq!(
         after.iter().filter(|e| e.day == "2026-01-05").count(),
         1,
@@ -437,16 +379,8 @@ async fn measured_minutes_upgrade_the_highlight_fillers_inferred_days() {
     );
 }
 
-// ---- the WAL, which is why `copy_out` takes three files ---------------------
-
-/// KOReader runs this database in WAL mode, so the main file alone is the state
-/// as of the last checkpoint. On an actively-used device that can be missing a
-/// whole session.
-///
-/// The connection is held open across the import on purpose: SQLite checkpoints
-/// and removes the `-wal` on a clean close, so a closed database would prove
-/// nothing at all. This is the only arrangement in which the uncheckpointed
-/// rows genuinely exist only in the sidecar file.
+/// The connection stays open across the import: a clean close checkpoints the `-wal` away,
+/// and the rows must exist only there.
 #[tokio::test]
 async fn rows_still_in_the_write_ahead_log_are_imported() {
     let (tmp, engine) = engine().await;
@@ -492,15 +426,6 @@ fn wal_beside(db: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-// ---- attribution ------------------------------------------------------------
-
-/// KOReader's statistics are per *file* and know nothing about rereads, so the
-/// attribution comes from our own reading windows — and stays NULL when they do
-/// not settle on one read.
-///
-/// The bug this guards is the one `attribute_highlights` shipped with: an
-/// unstarted reading whose window `COALESCE`d to −infinity swallowed every
-/// earlier read's data, silently, with nothing on screen looking wrong.
 #[tokio::test]
 async fn a_day_no_single_read_holds_is_left_unattributed() {
     let (tmp, engine) = engine().await;
@@ -510,9 +435,6 @@ async fn a_day_no_single_read_holds_is_left_unattributed() {
     let books = seed_library(&engine, &exp).await;
     let (_, middlemarch) = books.iter().find(|(t, _)| t == "Middlemarch").unwrap();
 
-    // 2026-01-05 00:00 UTC is 1767571200. One read closes during the fixture's
-    // first measured day and another opens the same day — so that day belongs
-    // to both, and to neither.
     let jan5 = 1_767_571_200i64;
     engine
         .storage()
@@ -549,7 +471,6 @@ async fn a_day_no_single_read_holds_is_left_unattributed() {
          gives one read the other's minutes with nothing looking wrong"
     );
 
-    // A day only the second read holds is attributed to it.
     let later = events.iter().find(|e| e.day == "2026-01-09").unwrap();
     assert!(
         later.reading_id.is_some(),
@@ -557,11 +478,6 @@ async fn a_day_no_single_read_holds_is_left_unattributed() {
     );
 }
 
-// ---- absent is not zero, end to end ----------------------------------------
-
-/// The distinction the whole import turns on — absent minutes are not zero —
-/// asserted through the public
-/// aggregate rather than through the log.
 #[tokio::test]
 async fn a_month_the_device_never_measured_has_absent_minutes_not_zero() {
     let (tmp, engine) = engine().await;

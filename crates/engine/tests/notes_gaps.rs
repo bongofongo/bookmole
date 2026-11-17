@@ -1,7 +1,3 @@
-//! Smaller note and passage reads: one passage by id, book faces
-//! for a set, a keyset cursor for the note list, the books with linked notes,
-//! a read's marks in one order, and the read number on a note row.
-
 mod common;
 
 use bookmole::{Engine, EngineConfig, NewNoteInput, NoteKind, NoteRowQuery, ReadMark};
@@ -99,7 +95,6 @@ async fn the_cursor_never_skips_two_notes_sharing_a_second() {
         seen.push(r.note.id);
         after = Some((r.latest_part_at, r.note.id));
     }
-    // `latest_part_at DESC, id DESC`: the second pair first, each pair newest id first.
     let expected = vec![ids[3], ids[2], ids[1], ids[0]];
     assert_eq!(
         seen, expected,
@@ -112,7 +107,6 @@ async fn a_reads_marks_interleave_and_a_review_row_knows_its_read() {
     let (_tmp, engine) = engine().await;
     let s = engine.storage();
     let book = common::seed_book(&engine, "Middlemarch").await;
-    // 2026-01-05 .. 2026-01-25, then a reread.
     let first = s
         .record_reading(
             book,

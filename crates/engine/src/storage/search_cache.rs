@@ -1,24 +1,6 @@
-//! Kept provider answers, kept searches, and which providers are switched on
-//! (migration `0032`).
-//!
-//! **Records are kept long; searches are kept short.** A record is what a
-//! provider sent about one work or edition, kept for the provider's own term
-//! (`ProviderDefaults::kept_for`) and found again by its key or, offline, by its
-//! words (`provider_record_index`). A search is the ordered list of record keys
-//! a query returned, kept thirty days under a **hash** of the query
-//! (`search::session::query_key`), never its text.
-//!
-//! Three rules are enforced here rather than by callers:
-//!
-//! - **A provider whose records may not be kept is refused** by
-//!   [`Storage::keep_answer`], whatever a caller hands it — Google Books' terms
-//!   allow no durable copy, and a rule that every caller has to
-//!   remember is a rule that holds until the first one forgets.
-//! - **A kept search naming a record that has expired is no answer at all**
-//!   ([`Storage::kept_answer`] returns `None`): half an answer, served as the
-//!   whole of it, would be a list with rows silently missing.
-//! - **Purging happens at open and on every write**, so a library nobody
-//!   searches in still forgets on schedule.
+//! Kept provider answers and searches, and which providers are on.
+//! Records are kept for the provider's term; searches thirty days, under a hash of the query, never
+//! its text.
 
 use std::collections::HashMap;
 
@@ -29,18 +11,10 @@ use super::{Storage, now_unix};
 use crate::error::Result;
 use crate::providers::{KeptRecord, ProviderId, RecordForm, RecordKind};
 
-/// How long a search is kept: thirty days. Provider records are kept long
-/// (their own terms, months); what you searched for is kept short.
 pub const SEARCHES_KEPT_FOR: i64 = 30 * 86_400;
 
-/// One result of a kept search, as `search_cache.results` stores it: the keys of
-/// the records it was kept as, in the order they are read back, and whether the
-/// provider returned it when asked for the query **as an author** (so a repeat
-/// reads it as that author's book, as the first answer did).
-///
-/// `by_author` is a flag and not the name: the name is the query, and the
-/// query is never stored: what somebody searches for is their private reading
-/// interest.
+/// One result of a kept search. `by_author` is a flag, not the name: the query is never stored,
+/// being private reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct KeptEntry {
     #[serde(rename = "r")]
@@ -49,7 +23,6 @@ pub(crate) struct KeptEntry {
     pub by_author: bool,
 }
 
-/// A kept record read back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KeptRow {
     pub key: String,
@@ -59,21 +32,17 @@ pub(crate) struct KeptRow {
     pub fetched_at: i64,
 }
 
-/// A kept search, with every record it names.
 #[derive(Debug, Clone)]
 pub(crate) struct KeptAnswer {
     pub fetched_at: i64,
     pub results: Vec<(KeptEntry, Vec<KeptRow>)>,
 }
 
-/// What is kept, for a settings view of the search providers.
-/// **No count of searches**: a number of things looked for is a history in
-/// all but name, and a settings view has no use for it.
+/// No count of searches: that would be a history in all but name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SearchCacheStatus {
-    /// Any kept search or kept record at all.
     pub anything_kept: bool,
-    /// When the oldest kept record was fetched (unix seconds).
+    /// Fetch time of the oldest kept record (unix seconds).
     pub oldest_record: Option<i64>,
 }
 
@@ -95,17 +64,12 @@ fn row_of(r: &sqlx::sqlite::SqliteRow) -> Option<KeptRow> {
     })
 }
 
-/// A word for fts5 `MATCH`, quoted so nothing in it is syntax (`storage/fts.rs`'
-/// rule): a `"` inside is doubled.
 fn phrase(word: &str) -> String {
     format!("\"{}\"", word.replace('"', "\"\""))
 }
 
 impl Storage {
-    /// The kept answer to the search `query_key` from `provider`, when one is
-    /// kept, is younger than [`SEARCHES_KEPT_FOR`], and every record it names
-    /// is still kept. `None` otherwise — including when a record has expired,
-    /// since a partial list read as a whole one is rows silently missing.
+    /// `None` if a named record has expired: a partial list read as a whole one silently drops rows.
     pub(crate) async fn kept_answer(
         &self,
         query_key: &str,
@@ -170,13 +134,8 @@ impl Storage {
         }))
     }
 
-    /// Keep what `provider` answered to the search `query_key`: every record,
-    /// then the ordered list naming them. One transaction, so a kept search
-    /// never names a record that was not written with it.
-    ///
-    /// **Refuses a provider whose records may not be kept**, with a
-    /// `debug!` and no write: the caller is told nothing went wrong, because
-    /// nothing did — the answer is still shown, it is just not kept.
+    /// Refuses a provider whose records may not be kept (no write, `debug!` only).
+    /// One transaction, so a kept search never names an unwritten record.
     pub(crate) async fn keep_answer(
         &self,
         query_key: &str,
@@ -230,11 +189,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Kept **work** records of `provider` whose title or authors hold any of
-    /// `words` — the offline index: an offline search finds a book seen before
-    /// by its own words. Best fts5 rank first. Words under three
-    /// characters cannot use a trigram index and are left out; with none left
-    /// there is nothing to ask and nothing is returned.
+    /// Words under three characters cannot use the trigram index and are dropped; with none left
+    /// nothing is returned.
     pub(crate) async fn kept_records_matching(
         &self,
         provider: ProviderId,
@@ -268,9 +224,6 @@ impl Storage {
         Ok(rows.iter().filter_map(row_of).collect())
     }
 
-    /// The language most of the library's books are in, when any say: the
-    /// default edition's second language preference, after the query's own
-    /// `lang:` and before English.
     pub(crate) async fn library_language(&self) -> Result<Option<String>> {
         Ok(sqlx::query_scalar(
             "SELECT language FROM books WHERE language IS NOT NULL AND language <> ''
@@ -280,9 +233,6 @@ impl Storage {
         .await?)
     }
 
-    /// Drop one kept record that no longer parses, so it is fetched again. The
-    /// kept searches naming it stop being answers ([`Storage::kept_answer`])
-    /// and are asked again.
     pub(crate) async fn drop_kept_record(&self, provider: ProviderId, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM provider_records WHERE provider = ? AND key = ?")
             .bind(provider.as_str())
@@ -292,9 +242,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Delete searches older than thirty days and records past their expiry.
-    /// Called when the engine opens; [`Storage::keep_answer`] does the same in
-    /// its own transaction.
     pub(crate) async fn purge_search_cache(&self, now: i64) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         purge_in(&mut tx, now).await?;
@@ -302,16 +249,14 @@ impl Storage {
         Ok(())
     }
 
-    /// *Forget searches*: empty `search_cache`; with `records`,
-    /// the kept records and their index as well. **Neither touches a book** —
-    /// a book added from a search is the reader's, not the cache's.
+    /// Empty the search cache; with `records`, the kept records and their index too. Never touches a
+    /// book.
     pub async fn forget_searches(&self, records: bool) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         sqlx::query("DELETE FROM search_cache")
             .execute(&mut *tx)
             .await?;
         if records {
-            // The delete trigger keeps the index in step, row by row.
             sqlx::query("DELETE FROM provider_records")
                 .execute(&mut *tx)
                 .await?;
@@ -321,7 +266,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Whether anything is kept, and the oldest kept record's date.
     pub async fn search_cache_status(&self) -> Result<SearchCacheStatus> {
         let row = sqlx::query(
             "SELECT (SELECT min(fetched_at) FROM provider_records) AS oldest,
@@ -337,9 +281,8 @@ impl Storage {
         })
     }
 
-    /// The providers the reader has switched on or off. A provider with no row
-    /// has its default (`providers::PROVIDER_DEFAULTS`); a row naming a provider
-    /// this build does not know (written by a newer one) is ignored.
+    /// A provider with no row has its default; a row naming an unknown provider (a newer build's) is
+    /// ignored.
     pub async fn provider_settings(&self) -> Result<HashMap<ProviderId, bool>> {
         let rows = sqlx::query("SELECT provider, enabled FROM provider_settings")
             .fetch_all(self.pool())
@@ -353,7 +296,6 @@ impl Storage {
             .collect())
     }
 
-    /// Switch a provider on or off.
     pub async fn set_provider_enabled(&self, provider: ProviderId, enabled: bool) -> Result<()> {
         sqlx::query(
             "INSERT INTO provider_settings (provider, enabled, updated_at) VALUES (?, ?, ?)
@@ -368,10 +310,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Move every kept search `by` seconds into the past, for the engine's own
-    /// tests and the benchmark's offline run: a kept answer that is no longer
-    /// fresh is the one a session refreshes, and nothing else makes one without
-    /// waiting a day. Records keep their dates.
+    /// Test and benchmark hook: moves every kept search `by` seconds into the past; records keep their
+    /// dates.
     #[cfg(any(test, feature = "internals"))]
     #[doc(hidden)]
     pub async fn age_kept_searches(&self, by: i64) -> Result<()> {
@@ -382,8 +322,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Every `(table, provider)` pair with a row, for the test that proves a
-    /// provider that may not be kept never was.
     #[cfg(any(test, feature = "internals"))]
     #[doc(hidden)]
     pub async fn kept_providers(&self) -> Result<Vec<(String, String)>> {
@@ -476,7 +414,6 @@ mod tests {
             vec![vec!["/works/W1", "/books/M1"], vec!["/works/W2"]]
         );
         assert_eq!(back.results[0].1[1].kind, RecordKind::Edition);
-        // Another query, another provider: nothing.
         assert!(
             s.kept_answer("q2", ProviderId::OpenLibrary, NOW)
                 .await
@@ -485,8 +422,6 @@ mod tests {
         );
     }
 
-    /// Thirty days for a search, the provider's term for a record — and a
-    /// search naming an expired record is no answer, never half of one.
     #[tokio::test]
     async fn searches_expire_at_thirty_days_and_records_at_their_term() {
         let s = storage().await;
@@ -511,7 +446,6 @@ mod tests {
                 .is_none(),
             "a search is kept thirty days"
         );
-        // The purge deletes the search and keeps the record (180 days).
         s.purge_search_cache(NOW + 31 * day).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM search_cache")
             .fetch_one(s.pool())
@@ -524,7 +458,6 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
 
-        // A fresh search naming a record past its term is no answer.
         s.keep_answer("q", ProviderId::OpenLibrary, &results, NOW)
             .await
             .unwrap();
@@ -547,8 +480,6 @@ mod tests {
         assert_eq!(n, 0, "an expired record is purged");
     }
 
-    /// Google Books' terms allow no durable copy: handed to the writer, its
-    /// answer is not written — asserted on the tables, not on a return value.
     #[tokio::test]
     async fn a_provider_that_may_not_be_kept_is_never_written() {
         let s = storage().await;
@@ -598,7 +529,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(found.len(), 2, "authors are indexed");
-        // Too short for a trigram, and syntax is not syntax.
         for w in [&["du"][..], &["\"dune OR"][..]] {
             assert!(
                 s.kept_records_matching(ProviderId::OpenLibrary, &words(w), NOW, 10)
@@ -648,7 +578,6 @@ mod tests {
             s.search_cache_status().await.unwrap(),
             SearchCacheStatus::default()
         );
-        // The index forgot too.
         assert!(
             s.kept_records_matching(ProviderId::OpenLibrary, &["dune".to_string()], NOW, 10)
                 .await
@@ -674,7 +603,6 @@ mod tests {
         let got = s.provider_settings().await.unwrap();
         assert_eq!(got.get(&ProviderId::OpenLibrary), Some(&true));
         assert_eq!(got.get(&ProviderId::GoogleBooks), Some(&false));
-        // A provider a newer build wrote is not an error.
         sqlx::query("INSERT INTO provider_settings VALUES ('wikidata', 1, 0)")
             .execute(s.pool())
             .await
