@@ -1,5 +1,6 @@
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
+use sqlx::{Row, SqliteConnection};
 
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
@@ -21,10 +22,10 @@ pub struct NewHighlight {
 }
 
 impl NewHighlight {
-    /// Hashes the book id, `ko_datetime`, `pos0` and text only; device-rewritable fields are excluded.
-    pub fn identity_hash(&self, book_id: i64) -> String {
+    /// Hashes `ko_datetime`, `pos0` and text only. Not the book, so the same highlight hashes alike
+    /// in every library and across a merge; not device-rewritable fields.
+    pub fn identity_hash(&self) -> String {
         identity_hash_of(
-            book_id,
             self.ko_datetime.as_deref(),
             self.pos0.as_deref(),
             &self.text,
@@ -32,22 +33,119 @@ impl NewHighlight {
     }
 }
 
-/// The single copy of the formula, so `merge_books` can recompute a moved highlight's hash.
+/// Begins every hash `identity_hash_of` makes. A KOReader or user highlight stored without it
+/// holds the earlier formula, which also hashed the book id; the storage rewrites those on open.
+pub(crate) const IDENTITY_PREFIX: &str = "v2:";
+
+/// The single copy of the formula for KOReader and user highlights. Imported highlights have their
+/// own (`imported_identity_hash`), which never carries the prefix, so the two cannot meet.
 pub(crate) fn identity_hash_of(
-    book_id: i64,
     ko_datetime: Option<&str>,
     pos0: Option<&str>,
     text: &str,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(book_id.to_string());
-    hasher.update("|");
-    hasher.update(ko_datetime.unwrap_or(""));
-    hasher.update("|");
-    hasher.update(pos0.unwrap_or(""));
-    hasher.update("|");
-    hasher.update(text);
-    format!("{:x}", hasher.finalize())
+    hasher.update(b"rb-local\0");
+    hasher.update(ko_datetime.unwrap_or("").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(pos0.unwrap_or("").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(text.as_bytes());
+    format!("{IDENTITY_PREFIX}{:x}", hasher.finalize())
+}
+
+/// KOReader and user highlights still on the earlier formula; `?1` is `IDENTITY_PREFIX`. A NULL
+/// origin is a row `insert_highlight` wrote for a source naming no origin, on that formula too.
+const ON_OLD_FORMULA: &str = "(origin IS NULL OR origin IN ('koreader', 'user'))
+     AND substr(identity_hash, 1, length(?1)) <> ?1";
+
+/// Rows rehashed per transaction when the storage opens.
+pub(super) const REHASH_BATCH: i64 = 500;
+
+/// Rewrites every highlight still on the earlier formula; returns how many rows it touched. Each
+/// batch is one transaction, so an interrupted pass leaves each row whole and the next open
+/// finishes it. Two rows of one book that now hash alike are one highlight, folded as
+/// `merge_books` folds a duplicate: the row that already holds the identity (the earlier) stays.
+pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Result<usize> {
+    // Read first: once every row is converted, opening a library takes no write lock for this.
+    let pending: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS (SELECT 1 FROM highlights WHERE {ON_OLD_FORMULA})"
+    ))
+    .bind(IDENTITY_PREFIX)
+    .fetch_one(pool)
+    .await?;
+    if !pending {
+        return Ok(0);
+    }
+    let mut touched = 0;
+    loop {
+        // Immediate, so two processes opening one library at once wait for each other instead of
+        // both reading a batch and then failing to upgrade to a write.
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let sql = format!(
+            "SELECT id, book_id, ko_datetime, pos0, text FROM highlights
+              WHERE {ON_OLD_FORMULA} ORDER BY id LIMIT ?2"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(IDENTITY_PREFIX)
+            .bind(batch)
+            .fetch_all(&mut *tx)
+            .await?;
+        if rows.is_empty() {
+            return Ok(touched);
+        }
+        for r in &rows {
+            let id: i64 = r.try_get("id")?;
+            let book_id: i64 = r.try_get("book_id")?;
+            let hash = identity_hash_of(
+                r.try_get::<Option<String>, _>("ko_datetime")?.as_deref(),
+                r.try_get::<Option<String>, _>("pos0")?.as_deref(),
+                &r.try_get::<String, _>("text")?,
+            );
+            let holder: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM highlights WHERE book_id = ? AND identity_hash = ?",
+            )
+            .bind(book_id)
+            .bind(&hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+            match holder {
+                Some(keep) => fold_highlight(&mut tx, id, keep).await?,
+                None => {
+                    sqlx::query("UPDATE highlights SET identity_hash = ? WHERE id = ?")
+                        .bind(&hash)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+            touched += 1;
+        }
+        tx.commit().await?;
+    }
+}
+
+/// Folds a duplicate into the highlight that keeps the identity. Everything hanging off `dup` moves
+/// first: flashcards and citations would cascade away, note anchors and card passages would null.
+pub(super) async fn fold_highlight(conn: &mut SqliteConnection, dup: i64, keep: i64) -> Result<()> {
+    for sql in [
+        "UPDATE notes SET highlight_id = ?1 WHERE highlight_id = ?2",
+        "UPDATE flashcards SET highlight_id = ?1 WHERE highlight_id = ?2",
+        // A note citing both keeps its one citation of `keep`; the other goes with `dup`.
+        "UPDATE OR IGNORE citations SET highlight_id = ?1 WHERE highlight_id = ?2",
+        "UPDATE readings SET card_highlight_id = ?1 WHERE card_highlight_id = ?2",
+    ] {
+        sqlx::query(sql)
+            .bind(keep)
+            .bind(dup)
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query("DELETE FROM highlights WHERE id = ?")
+        .bind(dup)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 /// One piece of code hashes both the sidecar's and the library's device-owned state.
@@ -210,7 +308,7 @@ impl Storage {
         // Seeded too: a set `origin_note` with NULL `last_seen_origin_note` reads as "device said nothing".
         .bind(h.note.as_ref())
         .bind(&h.source)
-        .bind(h.identity_hash(book_id))
+        .bind(h.identity_hash())
         .bind(now_unix())
         .bind(origin.map(|o| o.as_str()))
         .bind(copy_id)
@@ -232,7 +330,7 @@ impl Storage {
              WHERE book_id = ?1 AND identity_hash = ?2 AND copy_id IS NULL",
         )
         .bind(book_id)
-        .bind(h.identity_hash(book_id))
+        .bind(h.identity_hash())
         .bind(copy_id)
         .execute(self.pool())
         .await?;
@@ -254,7 +352,7 @@ impl Storage {
         );
         let done = sqlx::query(&sql)
             .bind(book_id)
-            .bind(h.identity_hash(book_id))
+            .bind(h.identity_hash())
             .bind(h.note.as_ref())
             .bind(h.color.as_ref())
             .bind(h.chapter.as_ref())
@@ -275,7 +373,7 @@ impl Storage {
         );
         let n: i64 = sqlx::query_scalar(&sql)
             .bind(book_id)
-            .bind(h.identity_hash(book_id))
+            .bind(h.identity_hash())
             .bind(h.note.as_ref())
             .bind(h.color.as_ref())
             .bind(h.chapter.as_ref())
@@ -332,7 +430,7 @@ impl Storage {
             "SELECT count(*) FROM highlights WHERE book_id = ? AND identity_hash = ?",
         )
         .bind(book_id)
-        .bind(h.identity_hash(book_id))
+        .bind(h.identity_hash())
         .fetch_one(self.pool())
         .await?;
         Ok(n > 0)
@@ -503,8 +601,8 @@ mod tests {
         };
 
         assert_eq!(
-            base.identity_hash(1),
-            edited.identity_hash(1),
+            base.identity_hash(),
+            edited.identity_hash(),
             "device-owned fields must not take part in identity"
         );
     }
@@ -526,9 +624,179 @@ mod tests {
                 ..base.clone()
             },
         ] {
-            assert_ne!(base.identity_hash(1), changed.identity_hash(1));
+            assert_ne!(base.identity_hash(), changed.identity_hash());
         }
-        assert_ne!(base.identity_hash(1), base.identity_hash(2));
+    }
+
+    /// The formula this one replaced, kept here only to build libraries that predate it.
+    fn old_hash(book_id: i64, h: &NewHighlight) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(book_id.to_string());
+        hasher.update("|");
+        hasher.update(h.ko_datetime.as_deref().unwrap_or(""));
+        hasher.update("|");
+        hasher.update(h.pos0.as_deref().unwrap_or(""));
+        hasher.update("|");
+        hasher.update(&h.text);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// The dev library seed (`corpus`'s `devdb.rs`) pins the same value, since it cannot call this.
+    #[test]
+    fn the_formula_is_pinned() {
+        assert_eq!(
+            identity_hash_of(Some("2025-01-01 00:00:00"), None, "Middlemarch."),
+            "v2:b42ceb06abe3683ea61a048fade5eafc88bcfccbe54c443765a2a4f65ac29eab"
+        );
+    }
+
+    #[test]
+    fn the_hash_is_marked_and_never_the_old_formula() {
+        let h = hl("a phrase worth keeping");
+        assert!(h.identity_hash().starts_with(IDENTITY_PREFIX));
+        assert_ne!(h.identity_hash(), old_hash(1, &h));
+    }
+
+    async fn raw_row(s: &Storage, book_id: i64, h: &NewHighlight, origin: &str, hash: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO highlights (book_id, text, pos0, ko_datetime, source, origin,
+                                     identity_hash, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0) RETURNING id",
+        )
+        .bind(book_id)
+        .bind(&h.text)
+        .bind(h.pos0.as_ref())
+        .bind(h.ko_datetime.as_ref())
+        .bind(origin)
+        .bind(origin)
+        .bind(hash)
+        .fetch_one(s.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn hashes(s: &Storage) -> Vec<(i64, String)> {
+        sqlx::query_as("SELECT id, identity_hash FROM highlights ORDER BY id")
+            .fetch_all(s.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn scalar(s: &Storage, sql: &str) -> Option<i64> {
+        sqlx::query_scalar(sql).fetch_one(s.pool()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn opening_moves_old_hashes_to_the_new_formula_once() {
+        let (s, book) = seeded().await;
+        let ko = hl("from the reader");
+        let mine = NewHighlight {
+            source: "user".into(),
+            ..hl("typed by hand")
+        };
+        raw_row(&s, book, &ko, "koreader", &old_hash(book, &ko)).await;
+        raw_row(&s, book, &mine, "user", &old_hash(book, &mine)).await;
+        let imported = raw_row(&s, book, &hl("from a kindle"), "kindle", "an imported hash").await;
+
+        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 2);
+        let after = hashes(&s).await;
+        assert_eq!(after[0].1, ko.identity_hash());
+        assert_eq!(after[1].1, mine.identity_hash());
+        assert_eq!(
+            after[2],
+            (imported, "an imported hash".to_string()),
+            "an imported hash is another formula and is left alone"
+        );
+
+        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 0);
+        assert_eq!(hashes(&s).await, after, "a second pass changes nothing");
+        assert!(
+            s.highlight_exists(book, &ko).await.unwrap(),
+            "an import finds the rehashed row"
+        );
+        assert!(s.insert_highlight(book, &ko).await.unwrap().is_none());
+    }
+
+    /// A row whose stored hash named another book (moved without being rehashed) and the same
+    /// highlight stored correctly are one highlight once the book leaves the formula.
+    #[tokio::test]
+    async fn a_collision_folds_into_the_earlier_row_with_its_dependents() {
+        let (s, book) = seeded().await;
+        let h = hl("a phrase worth keeping");
+        let keep = raw_row(&s, book, &h, "koreader", &old_hash(book, &h)).await;
+        let dup = raw_row(&s, book, &h, "koreader", &old_hash(book + 7, &h)).await;
+        s.set_annotation(keep, Some("mine")).await.unwrap();
+
+        let reading = s
+            .record_reading(book, Some(1_767_225_600), None, "reading", "manual")
+            .await
+            .unwrap();
+        s.set_card_passage(reading, Some(dup)).await.unwrap();
+        s.insert_flashcard(book, Some(dup), "keeping", None)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO notes (id, book_id, highlight_id, file_path, title, kind, created_at,
+                                last_modified)
+             VALUES (1, NULL, NULL, 'a.md', 'A', 'note', 0, 0),
+                    (2, NULL, NULL, 'b.md', 'B', 'note', 0, 0)",
+            "UPDATE notes SET highlight_id = ?2 WHERE id = 1",
+            "INSERT INTO citations (note_id, highlight_id, created_at) VALUES (1, ?2, 0),
+                    (2, ?1, 0), (2, ?2, 0)",
+        ] {
+            sqlx::query(sql)
+                .bind(keep)
+                .bind(dup)
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 2);
+        assert_eq!(hashes(&s).await, vec![(keep, h.identity_hash())]);
+        let survivor = s.get_highlight(keep).await.unwrap().unwrap();
+        assert_eq!(survivor.annotation.as_deref(), Some("mine"));
+
+        let card = format!("SELECT card_highlight_id FROM readings WHERE id = {reading}");
+        assert_eq!(scalar(&s, &card).await, Some(keep));
+        let anchors = "SELECT highlight_id FROM flashcards WHERE word = 'keeping'";
+        assert_eq!(scalar(&s, anchors).await, Some(keep));
+        assert_eq!(
+            scalar(&s, "SELECT highlight_id FROM notes WHERE id = 1").await,
+            Some(keep)
+        );
+        let cited: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT note_id, highlight_id FROM citations ORDER BY note_id")
+                .fetch_all(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(cited, vec![(1, keep), (2, keep)]);
+
+        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_library_on_the_old_formula_is_rehashed_when_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        let (book, h) = (
+            s.upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap(),
+            hl("a phrase worth keeping"),
+        );
+        raw_row(&s, book, &h, "koreader", &old_hash(book, &h)).await;
+        s.pool().close().await;
+
+        let s = Storage::connect(&url).await.unwrap();
+        assert_eq!(hashes(&s).await[0].1, h.identity_hash());
     }
 
     #[tokio::test]

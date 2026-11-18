@@ -149,7 +149,7 @@ async fn an_imported_hash_never_equals_koreaders() {
         &format!("{book}|2026-01-01 00:00:00||same words"),
         "same words",
     );
-    assert_ne!(imported_identity_hash(&h), ko.identity_hash(book));
+    assert_ne!(imported_identity_hash(&h), ko.identity_hash());
     s.upsert_imported_highlight(book, &h).await.unwrap();
     assert_eq!(s.list_highlights(book).await.unwrap().len(), 2);
 }

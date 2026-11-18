@@ -102,6 +102,13 @@ impl Storage {
             .connect_with(opts)
             .await?;
         migrate(&pool).await?;
+        let rehashed = highlights::rehash_old_identities(&pool, highlights::REHASH_BATCH).await?;
+        if rehashed > 0 {
+            tracing::info!(
+                rehashed,
+                "moved highlights to the book-independent identity hash"
+            );
+        }
         tracing::info!(max_connections = max, "storage connected and migrated");
         Ok(Storage { pool })
     }

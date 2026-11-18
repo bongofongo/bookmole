@@ -1032,3 +1032,91 @@ async fn import_records_the_paired_device_on_the_reader_place() {
     let copies = storage.copies_for_book(book_id).await.unwrap();
     assert_eq!(place(copies).detail.as_deref(), Some("kobo-1"));
 }
+
+async fn file_storage(dir: &Path) -> (Storage, sqlx::SqlitePool) {
+    let url = format!("sqlite://{}?mode=rwc", dir.join("app.db").display());
+    let storage = Storage::connect(&url).await.expect("open db");
+    let pool = sqlx::SqlitePool::connect(&url)
+        .await
+        .expect("second handle");
+    (storage, pool)
+}
+
+async fn stored_hashes(pool: &sqlx::SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT identity_hash FROM highlights ORDER BY identity_hash")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn one_sidecar_hashes_alike_in_two_libraries() {
+    let fixture = "Middlemarch.sdr";
+    let books = manifest()[fixture]["books"].clone();
+    let dir = synthetic_dir().join(fixture);
+
+    let (tmp_a, tmp_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, pool_a) = file_storage(tmp_a.path()).await;
+    let (b, pool_b) = file_storage(tmp_b.path()).await;
+    seed_books(&a, &books).await;
+    // Other books first, so the same book has another local id in the second library.
+    seed_books(
+        &b,
+        &json!([{ "title": "Silas Marner" }, { "title": "Adam Bede" }]),
+    )
+    .await;
+    seed_books(&b, &books).await;
+
+    let in_a = koreader::import(&a, &dir, false).await.expect("import a");
+    let in_b = koreader::import(&b, &dir, false).await.expect("import b");
+    assert_ne!(in_a.imported[0].book_id, in_b.imported[0].book_id);
+    assert!(in_a.imported[0].inserted > 0);
+
+    let hashes = stored_hashes(&pool_a).await;
+    assert_eq!(hashes.len(), in_a.imported[0].inserted);
+    assert_eq!(hashes, stored_hashes(&pool_b).await);
+}
+
+#[tokio::test]
+async fn a_reimport_after_a_merge_adds_nothing() {
+    let fixture = "Gen-Stats.sdr";
+    let books = manifest()[fixture]["books"].clone();
+    let dir = synthetic_dir().join(fixture);
+    let tmp = tempfile::tempdir().unwrap();
+    let (storage, pool) = file_storage(tmp.path()).await;
+    seed_books(&storage, &books).await;
+
+    let first = koreader::import(&storage, &dir, false)
+        .await
+        .expect("first");
+    let src = first.imported[0].book_id;
+    assert!(first.imported[0].inserted > 0);
+    let before = stored_hashes(&pool).await;
+
+    let dst = storage
+        .upsert_book(
+            &Book {
+                title: Some("A Counted Book (another record)".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    storage.merge_books(src, dst).await.unwrap();
+    assert_eq!(
+        stored_hashes(&pool).await,
+        before,
+        "a merge moves highlights without rehashing them"
+    );
+
+    let again = koreader::import(&storage, &dir, false)
+        .await
+        .expect("again");
+    assert_eq!(again.imported[0].book_id, dst, "the device link moved too");
+    assert_eq!(again.imported[0].inserted, 0);
+    assert_eq!(
+        storage.list_highlights(dst).await.unwrap().len(),
+        before.len()
+    );
+}
