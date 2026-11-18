@@ -856,7 +856,19 @@ async fn persist_device_state(
         .filter_map(|h| h.ko_datetime.as_deref())
         .filter_map(ko_datetime_to_unix)
         .min();
-    storage.ensure_reading(book_id, started, "koreader").await?;
+    let reading_id = storage.ensure_reading(book_id, started, "koreader").await?;
+    let last_report = storage
+        .get_reading(reading_id)
+        .await?
+        .map(|r| DeviceReport {
+            status: r.ko_status.as_deref().map(KoStatus::from),
+            percent: r.ko_percent,
+        })
+        .unwrap_or_default();
+    let report = DeviceReport {
+        status: stats.status.clone(),
+        percent: stats.percent_finished,
+    };
 
     storage
         .set_device_state(
@@ -867,18 +879,56 @@ async fn persist_device_state(
         )
         .await?;
 
-    match &stats.status {
-        Some(KoStatus::Complete) => {
+    match device_effect(&last_report, &report) {
+        DeviceEffect::Finish => {
             storage.finish_reading(book_id).await?;
         }
-        Some(KoStatus::Abandoned) => {
+        DeviceEffect::PutDown => {
             storage.abandon_reading(book_id).await?;
         }
-        Some(KoStatus::Reading) | Some(KoStatus::Other(_)) | None => {}
+        DeviceEffect::PickUp => {
+            storage.pick_up_reading(book_id).await?;
+        }
+        DeviceEffect::Nothing => {}
     }
 
     storage.attribute_highlights(book_id).await?;
     Ok(())
+}
+
+/// What a device said about a reading: the sidecar's status and `percent_finished`.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DeviceReport {
+    status: Option<KoStatus>,
+    percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceEffect {
+    Finish,
+    PutDown,
+    PickUp,
+    Nothing,
+}
+
+/// A sync changes the reading's pause only for what is new on the device since its last report, so a
+/// pause or pick-up made in the app stands until the device says something different. Compared with
+/// the device's own last report, never the app's page, which the reader may edit while paused.
+fn device_effect(last: &DeviceReport, now: &DeviceReport) -> DeviceEffect {
+    match &now.status {
+        Some(KoStatus::Complete) => DeviceEffect::Finish,
+        Some(KoStatus::Abandoned) if last.status == Some(KoStatus::Abandoned) => {
+            DeviceEffect::Nothing
+        }
+        Some(KoStatus::Abandoned) => DeviceEffect::PutDown,
+        Some(KoStatus::Reading) if last.status == Some(KoStatus::Abandoned) => DeviceEffect::PickUp,
+        Some(KoStatus::Reading) | Some(KoStatus::Other(_)) | None => {
+            match (last.percent, now.percent) {
+                (Some(was), Some(is)) if was != is => DeviceEffect::PickUp,
+                _ => DeviceEffect::Nothing,
+            }
+        }
+    }
 }
 
 /// Create a book from a sidecar's own metadata and import its highlights. Fully offline:
