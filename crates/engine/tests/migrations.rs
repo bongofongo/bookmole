@@ -1291,3 +1291,56 @@ async fn list_positions_keep_their_index_and_stop_refusing_duplicates() {
     .await
     .expect("two entries at one position are allowed");
 }
+
+const ANNOTATION_ALTERNATIVES: i64 = 36;
+
+#[tokio::test]
+async fn annotation_alternatives_hold_each_text_once_and_go_with_their_highlight() {
+    let mut conn = migrated_below(ANNOTATION_ALTERNATIVES).await;
+    let book = plain_book(&mut conn, "Middlemarch").await;
+    apply(&mut conn, ANNOTATION_ALTERNATIVES).await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let highlight: i64 = sqlx::query_scalar(
+        "INSERT INTO highlights (book_id, text, identity_hash, created_at)
+         VALUES (?, 'a passage', 'h', 0) RETURNING id",
+    )
+    .bind(book)
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    let empty: i64 = sqlx::query_scalar("SELECT count(*) FROM annotation_alternatives")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(empty, 0, "nothing is back-filled");
+
+    let put = "INSERT INTO annotation_alternatives (highlight_id, text, set_aside_at)
+               VALUES (?, 'what I first thought', 0)";
+    sqlx::query(put)
+        .bind(highlight)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query(put)
+            .bind(highlight)
+            .execute(&mut conn)
+            .await
+            .is_err(),
+        "the same text twice is refused"
+    );
+
+    sqlx::query("DELETE FROM highlights WHERE id = ?")
+        .bind(highlight)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM annotation_alternatives")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
