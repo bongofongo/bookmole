@@ -407,12 +407,13 @@ impl Storage {
         if let Some(existing) = Self::get_entry(&mut tx, list_id, book_id).await? {
             return Ok(existing);
         }
-        let next: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position) + 1, 0) FROM book_list_entries WHERE list_id = ?",
-        )
-        .bind(list_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        // Compact first, so the count is the next free place and no stored value is added to.
+        compact(&mut tx, list_id).await?;
+        let next: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM book_list_entries WHERE list_id = ?")
+                .bind(list_id)
+                .fetch_one(&mut *tx)
+                .await?;
         sqlx::query(
             "INSERT INTO book_list_entries (list_id, book_id, position, note, added_at) \
              VALUES (?, ?, ?, ?, ?)",
@@ -424,7 +425,6 @@ impl Storage {
         .bind(now_unix())
         .execute(&mut *tx)
         .await?;
-        compact(&mut tx, list_id).await?;
         let entry = Self::get_entry(&mut tx, list_id, book_id).await?;
         tx.commit().await?;
         entry.ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))
@@ -484,7 +484,7 @@ impl Storage {
                 "book id {book_id} on list id {list_id}"
             )));
         }
-        touch(&mut tx, list_id).await?;
+        compact(&mut tx, list_id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -787,6 +787,43 @@ mod tests {
         let added = s.add_to_list(list, extra, None).await.unwrap();
         assert!(dense(rows(&s, list).await));
         assert_eq!(added.position, 5, "appended last");
+
+        let (s, list, b) = scrambled().await;
+        s.set_list_note(list, b[0], Some("read this first"))
+            .await
+            .unwrap();
+        assert!(dense(rows(&s, list).await));
+    }
+
+    /// `MAX(position) + 1` would overflow into a REAL here.
+    #[tokio::test]
+    async fn adding_after_the_largest_position_appends() {
+        let (s, list, b) = scrambled().await;
+        sqlx::query("UPDATE book_list_entries SET position = ? WHERE book_id = ?")
+            .bind(i64::MAX)
+            .bind(b[4])
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let extra = s
+            .upsert_book(
+                &Book {
+                    title: Some("Daniel Deronda".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let added = s.add_to_list(list, extra, None).await.unwrap();
+        assert_eq!(added.position, 5);
+        let mut stored = rows(&s, list).await;
+        stored.sort_by_key(|&(_, p)| p);
+        assert_eq!(
+            stored.iter().map(|&(_, p)| p).collect::<Vec<_>>(),
+            (0..6).collect::<Vec<_>>()
+        );
+        assert_eq!(stored[4].0, b[4], "the largest stays before the new entry");
     }
 
     /// Ranks are one window over the list. A correlated count per entry took seconds here.

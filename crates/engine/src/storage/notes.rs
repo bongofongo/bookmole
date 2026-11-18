@@ -208,7 +208,8 @@ async fn reindex(
 }
 
 /// An unchanged body must not write the row at all, because a write to `note_bodies` is taken to
-/// mean the body changed. Trailing whitespace is no change, as in `reindex_from_body`.
+/// mean the body changed. Trailing whitespace is no change, as in `reindex_from_body`. The promise
+/// holds for AFTER triggers only: a BEFORE INSERT trigger fires ahead of the conflict check.
 async fn put_body(tx: &mut sqlx::SqliteConnection, note_id: i64, body: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO note_bodies (note_id, body) VALUES (?1, ?2)
