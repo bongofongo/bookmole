@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
+use super::annotation_alternatives::holds_reader_text;
 use super::highlights::{HIGHLIGHT_COLUMNS, row_to_highlight};
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
@@ -58,10 +59,10 @@ fn key_hashes(h: &ImportedHighlight, scope: Scope) -> Vec<String> {
     }
 }
 
-/// Rows with anything of bookmole's own attached; deleting one would cascade or null it away.
-const KEPT_SQL: &str = "(COALESCE(h.annotation, '') <> ''
-        OR EXISTS (SELECT 1 FROM annotation_alternatives aa WHERE aa.highlight_id = h.id)
-        OR EXISTS (SELECT 1 FROM notes n WHERE n.highlight_id = h.id)
+/// Rows with anything of bookmole's own attached; deleting one would cascade or null it away. The
+/// reader's own text (annotation and alternatives) is the other half, decided by
+/// `holds_reader_text` because SQL cannot apply the same notion of blank.
+const ATTACHED_SQL: &str = "(EXISTS (SELECT 1 FROM notes n WHERE n.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM flashcards f WHERE f.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM citations c WHERE c.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM readings r WHERE r.card_highlight_id = h.id))";
@@ -375,24 +376,38 @@ impl Storage {
 
     /// By row id, for sources keyed by `identity`. Same guard: kept, KOReader and user rows survive.
     pub async fn remove_imported_highlight_row(&self, highlight_id: i64) -> Result<bool> {
+        let mut tx = self.pool().begin().await?;
         let sql = format!(
-            "DELETE FROM highlights AS h WHERE h.id = ?
-               AND h.origin NOT IN ('koreader', 'user') AND NOT {KEPT_SQL}"
+            "SELECT h.id FROM highlights h WHERE h.id = ?
+               AND h.origin NOT IN ('koreader', 'user') AND NOT {ATTACHED_SQL}"
         );
-        let done = sqlx::query(&sql)
+        let removable: Option<i64> = sqlx::query_scalar(&sql)
             .bind(highlight_id)
-            .execute(self.pool())
+            .fetch_optional(&mut *tx)
             .await?;
-        Ok(done.rows_affected() > 0)
+        if removable.is_none() || holds_reader_text(&mut tx, highlight_id).await? {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM highlights WHERE id = ?")
+            .bind(highlight_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn imported_highlight_kept(&self, highlight_id: i64) -> Result<bool> {
-        let sql = format!("SELECT {KEPT_SQL} FROM highlights h WHERE h.id = ?");
-        let kept: Option<bool> = sqlx::query_scalar(&sql)
+        let mut conn = self.pool().acquire().await?;
+        let sql = format!("SELECT {ATTACHED_SQL} FROM highlights h WHERE h.id = ?");
+        let attached: Option<bool> = sqlx::query_scalar(&sql)
             .bind(highlight_id)
-            .fetch_optional(self.pool())
+            .fetch_optional(&mut *conn)
             .await?;
-        Ok(kept.unwrap_or(false))
+        match attached {
+            None => Ok(false),
+            Some(true) => Ok(true),
+            Some(false) => holds_reader_text(&mut conn, highlight_id).await,
+        }
     }
 
     pub async fn imported_highlights(
