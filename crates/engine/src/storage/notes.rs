@@ -203,7 +203,24 @@ async fn reindex(
         .bind(note_id)
         .execute(&mut *tx)
         .await?;
+    put_body(tx, note_id, body).await?;
     stamp_parts(tx, note_id, body).await
+}
+
+/// An unchanged body must not write the row at all, because a write to `note_bodies` is taken to
+/// mean the body changed. Trailing whitespace is no change, as in `reindex_from_body`.
+async fn put_body(tx: &mut sqlx::SqliteConnection, note_id: i64, body: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO note_bodies (note_id, body) VALUES (?1, ?2)
+         ON CONFLICT(note_id) DO UPDATE SET body = excluded.body
+         WHERE rtrim(note_bodies.body, char(9, 10, 13, 32))
+               IS NOT rtrim(excluded.body, char(9, 10, 13, 32))",
+    )
+    .bind(note_id)
+    .bind(body)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 /// Called by every writer of `notes_fts` and nothing else, so the parts columns always track the
@@ -276,6 +293,7 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
 
+        put_body(&mut tx, note_id, body).await?;
         write_links(&mut tx, note_id, title, links).await?;
         stamp_parts(&mut tx, note_id, body).await?;
 
@@ -322,10 +340,10 @@ impl Storage {
         Ok(())
     }
 
-    /// Body read back from the FTS cache so a refresh can skip writing when the file is unchanged.
+    /// The body as last indexed, so a refresh can skip writing when the file is unchanged.
     pub async fn indexed_body(&self, note_id: i64) -> Result<Option<String>> {
         Ok(
-            sqlx::query_scalar("SELECT body FROM notes_fts WHERE rowid = ?")
+            sqlx::query_scalar("SELECT body FROM note_bodies WHERE note_id = ?")
                 .bind(note_id)
                 .fetch_optional(self.pool())
                 .await?,

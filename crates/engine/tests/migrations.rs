@@ -1185,3 +1185,53 @@ async fn the_books_index_back_fills_and_follows_its_table() {
     assert!(book_hits(&mut conn, "bronte").await.is_empty());
     books_index_is_true(&mut conn).await;
 }
+
+const NOTE_BODIES: i64 = 34;
+
+#[tokio::test]
+async fn note_bodies_back_fill_from_the_index_and_only_for_indexed_notes() {
+    let mut conn = migrated_below(NOTE_BODIES).await;
+    sqlx::query(
+        "INSERT INTO notes (id, file_path, title, kind, created_at, last_modified)
+         VALUES (1, 'a.md', 'A', 'note', 1, 1), (2, 'b.md', 'B', 'note', 1, 1),
+                (3, 'c.md', 'C', 'note', 1, 1)",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO notes_fts (rowid, title, body) VALUES
+             (1, 'A', 'Dorothea''s dignity under pressure.'),
+             (2, 'B', NULL),
+             (99, 'Orphan', 'an index row with no note')",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    apply(&mut conn, NOTE_BODIES).await;
+
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT note_id, body FROM note_bodies ORDER BY note_id")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows,
+        vec![(1, "Dorothea's dignity under pressure.".to_string())],
+        "only a note with an indexed body gets a row; no guessed empty body, no orphan"
+    );
+
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM notes WHERE id = 1")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM note_bodies")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "a body row goes with its note");
+}
