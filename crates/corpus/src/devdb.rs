@@ -155,6 +155,10 @@ pub fn generate(
             q(&title),
             q(&body)
         ));
+        sql.push_str(&format!(
+            "INSERT INTO note_bodies (note_id, body) VALUES ({note_id}, {});\n",
+            q(&body)
+        ));
         let target = if dangling {
             "A Note Nobody Wrote".to_string()
         } else {
@@ -398,6 +402,11 @@ fn notes_final(
             "INSERT INTO notes_fts (rowid, title, body) VALUES ({}, {}, {});\n",
             n.id,
             q(&n.title),
+            q(&n.body)
+        ));
+        sql.push_str(&format!(
+            "INSERT INTO note_bodies (note_id, body) VALUES ({}, {});\n",
+            n.id,
             q(&n.body)
         ));
         for (to, target) in &n.links {
@@ -831,6 +840,10 @@ fn history(
             sql.push_str(&format!(
                 "INSERT INTO notes_fts (rowid, title, body) VALUES ({note_id}, {}, {});\n",
                 q(&note_title),
+                q(&body)
+            ));
+            sql.push_str(&format!(
+                "INSERT INTO note_bodies (note_id, body) VALUES ({note_id}, {});\n",
                 q(&body)
             ));
             if kind == "review" {
