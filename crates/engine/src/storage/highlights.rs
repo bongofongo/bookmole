@@ -87,6 +87,8 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
         return Ok(0);
     }
     let mut touched = 0;
+    // A cursor, so each batch starts where the last ended instead of scanning from the first row.
+    let mut after = i64::MIN;
     loop {
         // Immediate, so two processes opening one library at once wait for each other instead of
         // both reading a batch and then failing to upgrade to a write.
@@ -94,11 +96,12 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
         let sql = format!(
             "SELECT id, book_id, CAST(ko_datetime AS BLOB) AS ko_datetime,
                     CAST(pos0 AS BLOB) AS pos0, CAST(text AS BLOB) AS text
-               FROM highlights WHERE {ON_OLD_FORMULA} ORDER BY id LIMIT ?2"
+               FROM highlights WHERE {ON_OLD_FORMULA} AND id > ?3 ORDER BY id LIMIT ?2"
         );
         let rows = sqlx::query(&sql)
             .bind(IDENTITY_PREFIX)
             .bind(batch)
+            .bind(after)
             .fetch_all(&mut *tx)
             .await?;
         if rows.is_empty() {
@@ -106,6 +109,7 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
         }
         for r in &rows {
             let id: i64 = r.try_get("id")?;
+            after = id;
             let book_id: i64 = r.try_get("book_id")?;
             let hash = identity_hash_of_bytes(
                 &r.try_get::<Option<Vec<u8>>, _>("ko_datetime")?
