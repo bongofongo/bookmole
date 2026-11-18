@@ -60,6 +60,7 @@ fn key_hashes(h: &ImportedHighlight, scope: Scope) -> Vec<String> {
 
 /// Rows with anything of bookmole's own attached; deleting one would cascade or null it away.
 const KEPT_SQL: &str = "(COALESCE(h.annotation, '') <> ''
+        OR EXISTS (SELECT 1 FROM annotation_alternatives aa WHERE aa.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM notes n WHERE n.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM flashcards f WHERE f.highlight_id = h.id)
         OR EXISTS (SELECT 1 FROM citations c WHERE c.highlight_id = h.id)

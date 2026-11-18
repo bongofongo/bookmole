@@ -140,19 +140,56 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
     }
 }
 
+/// Trims what the reader cannot see, for comparing annotations: two that differ only here are one.
+const TRIMMED: &str = "char(9, 10, 13, 32)";
+
 /// Folds a duplicate into the highlight that keeps the identity. Everything hanging off `dup` moves
 /// first: flashcards and citations would cascade away, note anchors and card passages would null.
+/// No annotation is lost: `keep` takes `dup`'s if it has none, and otherwise holds it (and `dup`'s
+/// own alternatives) as alternatives. Plain SQL, so text that is not valid UTF-8 still moves.
 pub(super) async fn fold_highlight(conn: &mut SqliteConnection, dup: i64, keep: i64) -> Result<()> {
-    for sql in [
-        "UPDATE notes SET highlight_id = ?1 WHERE highlight_id = ?2",
-        "UPDATE flashcards SET highlight_id = ?1 WHERE highlight_id = ?2",
+    let blank = |col: &str| format!("COALESCE(trim({col}, {TRIMMED}), '')");
+    let (k, d, x, a) = (
+        blank("k.annotation"),
+        blank("d.annotation"),
+        blank("x.text"),
+        blank("a.text"),
+    );
+    let held = |col: &str| {
+        format!(
+            "NOT EXISTS (SELECT 1 FROM annotation_alternatives a \
+              WHERE a.highlight_id = ?1 AND {a} = {col})"
+        )
+    };
+    let statements = [
+        "UPDATE notes SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
+        "UPDATE flashcards SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
         // A note citing both keeps its one citation of `keep`; the other goes with `dup`.
-        "UPDATE OR IGNORE citations SET highlight_id = ?1 WHERE highlight_id = ?2",
-        "UPDATE readings SET card_highlight_id = ?1 WHERE card_highlight_id = ?2",
-    ] {
+        "UPDATE OR IGNORE citations SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
+        "UPDATE readings SET card_highlight_id = ?1 WHERE card_highlight_id = ?2".to_owned(),
+        format!(
+            "UPDATE highlights AS k SET annotation = d.annotation FROM highlights AS d \
+              WHERE k.id = ?1 AND d.id = ?2 AND {k} = '' AND {d} <> ''"
+        ),
+        format!(
+            "INSERT OR IGNORE INTO annotation_alternatives (highlight_id, text, set_aside_at) \
+             SELECT ?1, d.annotation, ?3 FROM highlights d, highlights k \
+              WHERE d.id = ?2 AND k.id = ?1 AND {d} <> '' AND {d} <> {k} AND {}",
+            held(&d)
+        ),
+        format!(
+            "INSERT OR IGNORE INTO annotation_alternatives (highlight_id, text, set_aside_at) \
+             SELECT ?1, x.text, x.set_aside_at FROM annotation_alternatives x, highlights k \
+              WHERE x.highlight_id = ?2 AND k.id = ?1 AND {x} <> '' AND {x} <> {k} AND {}",
+            held(&x)
+        ),
+    ];
+    let now = now_unix();
+    for sql in &statements {
         sqlx::query(sql)
             .bind(keep)
             .bind(dup)
+            .bind(now)
             .execute(&mut *conn)
             .await?;
     }
@@ -822,6 +859,175 @@ mod tests {
 
         let s = Storage::connect(&url).await.unwrap();
         assert_eq!(hashes(&s).await[0].1, h.identity_hash());
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Fold {
+        Rehash,
+        Merge,
+    }
+
+    /// Two rows of one highlight, annotated as given, folded by `how`; returns the survivor's id.
+    async fn folded(
+        how: Fold,
+        keep_note: Option<&str>,
+        dup_note: Option<&str>,
+        keep_alts: &[&str],
+        dup_alts: &[&str],
+    ) -> (Storage, i64) {
+        let (s, book) = seeded().await;
+        let h = hl("a phrase worth keeping");
+        let (keep, dup, other_book) = match how {
+            Fold::Rehash => {
+                let keep = raw_row(&s, book, &h, "koreader", &old_hash(book, &h)).await;
+                let dup = raw_row(&s, book, &h, "koreader", &old_hash(book + 7, &h)).await;
+                (keep, dup, None)
+            }
+            Fold::Merge => {
+                let other = s
+                    .upsert_book(
+                        &Book {
+                            title: Some("Middlemarch (again)".into()),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let keep = s.insert_highlight(book, &h).await.unwrap().unwrap();
+                let dup = s.insert_highlight(other, &h).await.unwrap().unwrap();
+                (keep, dup, Some(other))
+            }
+        };
+        s.set_annotation(keep, keep_note).await.unwrap();
+        s.set_annotation(dup, dup_note).await.unwrap();
+        for (id, alts) in [(keep, keep_alts), (dup, dup_alts)] {
+            for t in alts {
+                sqlx::query(
+                    "INSERT INTO annotation_alternatives (highlight_id, text, set_aside_at)
+                     VALUES (?, ?, 1)",
+                )
+                .bind(id)
+                .bind(t)
+                .execute(s.pool())
+                .await
+                .unwrap();
+            }
+        }
+        match (how, other_book) {
+            (Fold::Rehash, _) => {
+                rehash_old_identities(s.pool(), 500).await.unwrap();
+            }
+            (Fold::Merge, Some(other)) => {
+                s.merge_books(other, book).await.unwrap();
+            }
+            (Fold::Merge, None) => unreachable!(),
+        }
+        assert!(s.get_highlight(dup).await.unwrap().is_none(), "{how:?}");
+        (s, keep)
+    }
+
+    async fn annotation_and_alternatives(s: &Storage, id: i64) -> (Option<String>, Vec<String>) {
+        let alts = sqlx::query_scalar(
+            "SELECT text FROM annotation_alternatives WHERE highlight_id = ? ORDER BY text",
+        )
+        .bind(id)
+        .fetch_all(s.pool())
+        .await
+        .unwrap();
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM annotation_alternatives WHERE highlight_id <> ?",
+        )
+        .bind(id)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+        assert_eq!(left, 0, "nothing is left on the dropped row");
+        (s.get_highlight(id).await.unwrap().unwrap().annotation, alts)
+    }
+
+    fn owned(v: &[&str]) -> Vec<String> {
+        v.iter().map(|t| (*t).to_owned()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_fold_never_loses_an_annotation() {
+        for how in [Fold::Rehash, Fold::Merge] {
+            let (s, keep) = folded(how, None, Some("only the duplicate's"), &[], &[]).await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("only the duplicate's".into()), vec![]),
+                "{how:?}: the survivor had none, so it takes the other's"
+            );
+
+            let (s, keep) = folded(
+                how,
+                Some("the same words"),
+                Some("the same words \n"),
+                &[],
+                &[],
+            )
+            .await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("the same words".into()), vec![]),
+                "{how:?}: equal once trimmed is one annotation"
+            );
+
+            let (s, keep) = folded(how, Some("mine"), Some("theirs"), &[], &[]).await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("mine".into()), owned(&["theirs"])),
+                "{how:?}: different texts sit side by side"
+            );
+
+            let (s, keep) = folded(
+                how,
+                Some("mine"),
+                None,
+                &["held already"],
+                &["held already", "mine", "new to the survivor"],
+            )
+            .await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (
+                    Some("mine".into()),
+                    owned(&["held already", "new to the survivor"])
+                ),
+                "{how:?}: the other's alternatives move, without repeats"
+            );
+
+            let (s, keep) = folded(how, None, Some("theirs"), &[], &["an older thought"]).await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("theirs".into()), owned(&["an older thought"])),
+                "{how:?}"
+            );
+
+            let (s, keep) = folded(how, None, None, &[], &[]).await;
+            assert_eq!(annotation_and_alternatives(&s, keep).await, (None, vec![]));
+        }
+    }
+
+    /// Three rows of one highlight, only the last annotated: the text survives two folds.
+    #[tokio::test]
+    async fn three_rows_of_one_highlight_keep_the_one_annotation() {
+        let (s, book) = seeded().await;
+        let h = hl("the collision passage");
+        let keep = raw_row(&s, book, &h, "koreader", &old_hash(book, &h)).await;
+        raw_row(&s, book, &h, "koreader", &old_hash(book + 1, &h)).await;
+        let third = raw_row(&s, book, &h, "user", &old_hash(book + 2, &h)).await;
+        s.set_annotation(third, Some("DUP annotation the reader wrote"))
+            .await
+            .unwrap();
+
+        rehash_old_identities(s.pool(), 1).await.unwrap();
+        assert_eq!(hashes(&s).await.len(), 1);
+        assert_eq!(
+            annotation_and_alternatives(&s, keep).await,
+            (Some("DUP annotation the reader wrote".into()), vec![])
+        );
     }
 
     async fn file_library() -> (tempfile::TempDir, String, Storage, i64) {
