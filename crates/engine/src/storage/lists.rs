@@ -28,9 +28,12 @@ const SHELF_SOURCE: &str = "goodreads";
 /// The one order of a list's entries. Ends in the book so equal positions still read stably.
 const ENTRY_ORDER: &str = "e.position, e.added_at, e.book_id";
 
-/// An entry's place in `ENTRY_ORDER`, 0-based: what `position` holds once the list is compact.
-const RANK_SQL: &str = "(SELECT count(*) FROM book_list_entries x WHERE x.list_id = e.list_id \
-     AND (x.position, x.added_at, x.book_id) < (e.position, e.added_at, e.book_id))";
+/// Each entry's place in `ENTRY_ORDER`, 0-based: what `position` holds once the list is compact.
+/// Callers narrow it to the lists they read and join it, so the rank always counts a whole list
+/// whatever filter the outer query applies.
+const RANKED: &str = "SELECT list_id, book_id, \
+     row_number() OVER (PARTITION BY list_id ORDER BY position, added_at, book_id) - 1 AS rank \
+     FROM book_list_entries";
 
 const LIST_COLUMNS: &str = "id, name, description, source, source_ref, created_at, updated_at";
 
@@ -73,12 +76,14 @@ fn row_to_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ListEntry> {
 fn entry_select() -> String {
     let in_lib = in_library_sql(IN_LIBRARY_BOOK);
     format!(
-        "SELECT {BOOK_COLUMNS}, {RANK_SQL} AS e_position, e.note AS e_note, \
+        "WITH r AS ({RANKED} WHERE list_id = ?1) \
+         SELECT {BOOK_COLUMNS}, r.rank AS e_position, e.note AS e_note, \
          e.added_at AS e_added_at, {YEAR_SQL} AS e_year, \
          CASE WHEN {YEAR_IS_EDITION_SQL} THEN 1 ELSE 0 END AS e_year_is_edition, \
          CASE WHEN {in_lib} THEN 1 ELSE 0 END AS e_in_library \
          {BOOK_FROM} JOIN book_list_entries e ON e.book_id = books.id \
-         WHERE e.list_id = ?"
+         JOIN r ON r.book_id = e.book_id \
+         WHERE e.list_id = ?1"
     )
 }
 
@@ -380,7 +385,7 @@ impl Storage {
         list_id: i64,
         book_id: i64,
     ) -> Result<Option<ListEntry>> {
-        let sql = format!("{} AND e.book_id = ?", entry_select());
+        let sql = format!("{} AND e.book_id = ?2", entry_select());
         let row = sqlx::query(&sql)
             .bind(list_id)
             .bind(book_id)
@@ -488,10 +493,13 @@ impl Storage {
         let mut conn = self.pool().acquire().await?;
         book_exists(&mut conn, book_id).await?;
         let sql = format!(
-            "SELECT l.id, l.name, {RANK_SQL} AS position, e.note, \
+            "WITH r AS ({RANKED} WHERE list_id IN \
+                 (SELECT list_id FROM book_list_entries WHERE book_id = ?1)) \
+             SELECT l.id, l.name, r.rank AS position, e.note, \
                (SELECT count(*) FROM book_list_entries x WHERE x.list_id = l.id) AS size \
              FROM book_list_entries e JOIN book_lists l ON l.id = e.list_id \
-             WHERE e.book_id = ? ORDER BY l.name COLLATE NOCASE ASC, l.id ASC"
+             JOIN r ON r.list_id = e.list_id AND r.book_id = e.book_id \
+             WHERE e.book_id = ?1 ORDER BY l.name COLLATE NOCASE ASC, l.id ASC"
         );
         let rows = sqlx::query(&sql)
             .bind(book_id)
@@ -779,6 +787,71 @@ mod tests {
         let added = s.add_to_list(list, extra, None).await.unwrap();
         assert!(dense(rows(&s, list).await));
         assert_eq!(added.position, 5, "appended last");
+    }
+
+    /// Ranks are one window over the list. A correlated count per entry took seconds here.
+    #[tokio::test]
+    async fn a_long_list_reads_quickly_and_ranks_count_the_whole_list() {
+        const N: i64 = 4_000;
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let list = s.create_list("Everything", None).await.unwrap().id;
+        let mut tx = s.pool().begin().await.unwrap();
+        for i in 0..N {
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO books (title, created_at, last_modified) VALUES (?, 0, 0) RETURNING id",
+            )
+            .bind(format!("Book {i}"))
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO book_list_entries (list_id, book_id, position, added_at)
+                 VALUES (?, ?, ?, 0)",
+            )
+            .bind(list)
+            .bind(id)
+            .bind(N - 1 - i)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let started = std::time::Instant::now();
+        for sort in [EntrySort::Yours, EntrySort::Title, EntrySort::Published] {
+            let read = s.list_entries(list, EntryShow::All, sort).await.unwrap();
+            assert_eq!(read.len() as i64, N);
+        }
+        let yours = read_order(&s, list).await;
+        let ranks: Vec<i64> = yours.iter().map(|&(_, p)| p).collect();
+        assert_eq!(ranks, (0..N).collect::<Vec<_>>());
+        let last = yours.last().unwrap().0;
+        assert_eq!(s.lists_for_book(last).await.unwrap()[0].position, N);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "{N} entries took {elapsed:?}"
+        );
+
+        // One book in the library: the filter leaves one entry, ranked within the whole list.
+        let book_1: i64 = sqlx::query_scalar("SELECT id FROM books WHERE title = 'Book 1'")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO copies (book_id, tenure, learned_from, created_at, updated_at)
+             VALUES (?, 'own', 'user', 0, 0)",
+        )
+        .bind(book_1)
+        .execute(s.pool())
+        .await
+        .unwrap();
+        let held = s
+            .list_entries(list, EntryShow::InLibrary, EntrySort::Yours)
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].position, N - 2);
     }
 }
 
