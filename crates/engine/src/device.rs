@@ -336,14 +336,15 @@ async fn scan_one(
         book.title = Some(matched.display_title().to_string());
     }
 
-    // The cached facts carry no rating, so only a status or percent change is seen here.
-    let last = koreader::last_device_report(storage, book_id).await?;
     let report = koreader::DeviceReport {
         status: book.ko_status.clone(),
         percent: book.ko_percent,
-        rating: last.as_ref().and_then(|l| l.rating),
+        // The cached facts carry no rating, so a rating-only change is not seen here.
+        rating: None,
     };
-    let reading_moved = koreader::is_new(last.as_ref(), &report);
+    let reading_moved = koreader::device_news(storage, book_id, &report)
+        .await?
+        .is_some();
 
     // A row count would miss a note rewritten on the device; the digest covers the device-owned
     // payload.

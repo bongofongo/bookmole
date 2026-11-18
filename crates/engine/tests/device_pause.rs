@@ -6,7 +6,7 @@ mod common;
 use std::path::PathBuf;
 
 use bookmole::device::DeviceState;
-use bookmole::{Engine, EngineConfig, HistorySpan, Reading, ReadingState};
+use bookmole::{Engine, EngineConfig, HistorySpan, Progress, Reading, ReadingState};
 use common::seed_book;
 
 /// A file database, so a test can reach the rows through a second connection.
@@ -33,13 +33,22 @@ async fn backdate_readings(engine: &Engine) {
 
 const MD5: &str = "0123456789abcdef0123456789abcdef";
 
-fn sidecar(status: Option<&str>, percent: Option<f64>) -> String {
+fn sidecar(status: Option<&str>, percent: Option<f64>, rating: Option<i64>) -> String {
     let percent = percent
         .map(|p| format!(r#"["percent_finished"] = {p},"#))
         .unwrap_or_default();
-    let summary = status
-        .map(|s| format!(r#"["summary"] = {{ ["status"] = "{s}" }},"#))
-        .unwrap_or_default();
+    let mut fields = Vec::new();
+    if let Some(s) = status {
+        fields.push(format!(r#"["status"] = "{s}""#));
+    }
+    if let Some(r) = rating {
+        fields.push(format!(r#"["rating"] = {r}"#));
+    }
+    let summary = if fields.is_empty() {
+        String::new()
+    } else {
+        format!(r#"["summary"] = {{ {} }},"#, fields.join(", "))
+    };
     format!(
         r#"
 return {{
@@ -76,18 +85,37 @@ impl Reader {
     }
 
     fn write(&self, status: Option<&str>, percent: impl Into<Option<f64>>) {
-        let path = self.sidecar_path();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, sidecar(status, percent.into())).unwrap();
+        self.write_rated(status, percent, None);
     }
 
-    async fn sync(&self, engine: &Engine, status: Option<&str>, percent: impl Into<Option<f64>>) {
-        self.write(status, percent);
+    fn write_rated(
+        &self,
+        status: Option<&str>,
+        percent: impl Into<Option<f64>>,
+        rating: Option<i64>,
+    ) {
+        let path = self.sidecar_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, sidecar(status, percent.into(), rating)).unwrap();
+    }
+
+    async fn import(&self, engine: &Engine) {
         let report = engine
             .import_koreader(self.dir.path(), false)
             .await
             .unwrap();
         assert_eq!(report.imported.len(), 1, "the sidecar matched the book");
+    }
+
+    async fn scan(&self, engine: &Engine) -> (DeviceState, usize) {
+        let scan = engine.scan_device(self.dir.path()).await.unwrap();
+        assert_eq!(scan.books.len(), 1);
+        (scan.books[0].state.clone(), scan.parsed)
+    }
+
+    async fn sync(&self, engine: &Engine, status: Option<&str>, percent: impl Into<Option<f64>>) {
+        self.write(status, percent);
+        self.import(engine).await;
     }
 }
 
@@ -447,4 +475,121 @@ async fn a_single_sidecar_pull_shares_the_rule() {
         ReadingState::Reading,
         "abandoned to reading on the device picks it up"
     );
+}
+
+#[tokio::test]
+async fn a_rating_alone_lands_on_a_reread_without_the_old_status_or_percent() {
+    let (_tmp, engine, reader, book) = setup().await;
+    reader.write_rated(Some("complete"), 1.0, Some(4));
+    reader.import(&engine).await;
+    let first = only_reading(&engine, book).await;
+    engine.reread(book).await.unwrap();
+
+    reader.write_rated(Some("complete"), 1.0, Some(5));
+    reader.import(&engine).await;
+    let r = open_read(&engine, book).await;
+    assert_eq!(state_of(&r), ReadingState::Reading);
+    assert_eq!((r.ko_status, r.ko_percent), (None, None));
+    assert_eq!(r.ko_rating, Some(5), "the rating is the news");
+    let progress = Progress::of_book(&engine.get_book(book).await.unwrap().unwrap());
+    assert_ne!(
+        progress.percent(),
+        Some(100),
+        "a read just opened is not all read"
+    );
+    assert!(
+        engine.list_readings(book).await.unwrap().contains(&first),
+        "the earlier read keeps the device's status and percent"
+    );
+
+    backdate_readings(&engine).await;
+    let before = engine.list_readings(book).await.unwrap();
+    reader.import(&engine).await;
+    assert_eq!(engine.list_readings(book).await.unwrap(), before);
+}
+
+/// A sidecar's status and percent.
+type Said = (Option<&'static str>, Option<f64>);
+
+/// The scan's verdict and the sync's write come from one predicate, so a row the scan calls updated is
+/// one the sync changes, and after that sync the scan settles.
+#[tokio::test]
+async fn the_scan_settles_once_the_sync_has_nothing_left_to_write() {
+    let cases: [(&str, Said, Said, bool); 5] = [
+        (
+            "everything dropped",
+            (Some("reading"), Some(0.4)),
+            (None, None),
+            false,
+        ),
+        (
+            "status dropped",
+            (Some("reading"), Some(0.4)),
+            (None, Some(0.4)),
+            false,
+        ),
+        (
+            "percent dropped",
+            (Some("reading"), Some(0.4)),
+            (Some("reading"), None),
+            false,
+        ),
+        (
+            "status dropped, moved",
+            (Some("reading"), Some(0.4)),
+            (None, Some(0.6)),
+            true,
+        ),
+        (
+            "status added",
+            (None, Some(0.4)),
+            (Some("abandoned"), Some(0.4)),
+            true,
+        ),
+    ];
+    for (name, (s0, p0), (s1, p1), news) in cases {
+        let (_tmp, engine, reader, book) = setup().await;
+        reader.write(s0, p0);
+        engine.sync_mount(reader.dir.path()).await.unwrap();
+        let before = engine.list_readings(book).await.unwrap();
+
+        reader.write(s1, p1);
+        let (state, parsed) = reader.scan(&engine).await;
+        assert_eq!(parsed, 1, "{name}");
+        if news {
+            assert_eq!(
+                state,
+                DeviceState::Updated {
+                    new_highlights: 0,
+                    refreshed: 0
+                },
+                "{name}"
+            );
+        } else {
+            assert_eq!(state, DeviceState::Unchanged, "{name}");
+        }
+
+        backdate_readings(&engine).await;
+        let backdated = engine.list_readings(book).await.unwrap();
+        engine.sync_mount(reader.dir.path()).await.unwrap();
+        reader.import(&engine).await;
+        let after = engine.list_readings(book).await.unwrap();
+        assert_eq!(
+            after != backdated,
+            news,
+            "{name}: the sync wrote iff the scan said so"
+        );
+        if !news {
+            assert_eq!(after.len(), before.len(), "{name}");
+        }
+
+        for _ in 0..2 {
+            assert_eq!(
+                reader.scan(&engine).await,
+                (DeviceState::Unchanged, 0),
+                "{name}: settled, and served from the cache"
+            );
+            engine.sync_mount(reader.dir.path()).await.unwrap();
+        }
+    }
 }
