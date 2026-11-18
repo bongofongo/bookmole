@@ -1120,3 +1120,97 @@ async fn a_reimport_after_a_merge_adds_nothing() {
         before.len()
     );
 }
+
+/// A rehash that failed once, then a re-import, then a rehash that succeeds: the re-import's
+/// duplicates fold into the original rows, never the other way round.
+#[tokio::test]
+async fn a_late_rehash_keeps_the_original_rows_and_every_annotation() {
+    let fixture = "Middlemarch.sdr";
+    let books = manifest()[fixture]["books"].clone();
+    let dir = synthetic_dir().join(fixture);
+    let tmp = tempfile::tempdir().unwrap();
+    let (storage, pool) = file_storage(tmp.path()).await;
+    seed_books(&storage, &books).await;
+    let book = koreader::import(&storage, &dir, false)
+        .await
+        .expect("import")
+        .imported[0]
+        .book_id;
+
+    // Any hash without the current prefix reads as the earlier formula.
+    sqlx::query("UPDATE highlights SET identity_hash = 'earlier-' || id, created_at = id")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse BEFORE UPDATE OF identity_hash ON highlights
+         BEGIN SELECT RAISE(ABORT, 'refused'); END",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let originals: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT id, created_at FROM highlights ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    drop(storage);
+    let url = format!("sqlite://{}?mode=rwc", tmp.path().join("app.db").display());
+    let storage = Storage::connect(&url)
+        .await
+        .expect("opens despite the refusal");
+
+    let first = originals[0].0;
+    storage
+        .set_annotation(first, Some("on the original"))
+        .await
+        .unwrap();
+    let again = koreader::import(&storage, &dir, false)
+        .await
+        .expect("re-import");
+    assert_eq!(
+        again.imported[0].inserted,
+        originals.len(),
+        "duplicates appeared"
+    );
+    let duplicate: i64 = sqlx::query_scalar(
+        "SELECT d.id FROM highlights d JOIN highlights o
+           ON o.id = ? AND d.text = o.text AND d.id <> o.id",
+    )
+    .bind(first)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    storage
+        .set_annotation(duplicate, Some("on the duplicate"))
+        .await
+        .unwrap();
+
+    sqlx::query("DROP TRIGGER refuse")
+        .execute(&pool)
+        .await
+        .unwrap();
+    drop(storage);
+    let storage = Storage::connect(&url).await.unwrap();
+
+    let after: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT id, created_at FROM highlights ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(after, originals, "the original ids and created_at survive");
+    let kept = storage.get_highlight(first).await.unwrap().unwrap();
+    assert_eq!(kept.annotation.as_deref(), Some("on the original"));
+    let set_aside: Vec<String> = storage
+        .annotation_alternatives(first)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.text)
+        .collect();
+    assert_eq!(set_aside, ["on the duplicate"]);
+    assert_eq!(
+        storage.list_highlights(book).await.unwrap().len(),
+        originals.len()
+    );
+}
