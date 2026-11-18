@@ -97,6 +97,9 @@ fn detail(r: &DeviceRow) -> String {
             if *refreshed > 0 {
                 parts.push(format!("{refreshed} edited on the device"));
             }
+            if parts.is_empty() {
+                parts.push("progress changed on the device".to_string());
+            }
             parts.join(", ")
         }
         DeviceState::New { candidates } => match candidates.first() {

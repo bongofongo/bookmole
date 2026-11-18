@@ -407,6 +407,9 @@ fn device_line(b: &DeviceBook) -> String {
             if *refreshed > 0 {
                 parts.push(format!("{refreshed} edited on the device"));
             }
+            if parts.is_empty() {
+                parts.push("progress changed on the device".to_string());
+            }
             format!("  ({})", parts.join(", "))
         }
         DeviceState::New { .. } => String::new(),

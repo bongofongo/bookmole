@@ -856,51 +856,74 @@ async fn persist_device_state(
         .filter_map(|h| h.ko_datetime.as_deref())
         .filter_map(ko_datetime_to_unix)
         .min();
-    let reading_id = storage.ensure_reading(book_id, started, "koreader").await?;
-    let last_report = storage
-        .get_reading(reading_id)
-        .await?
-        .map(|r| DeviceReport {
-            status: r.ko_status.as_deref().map(KoStatus::from),
-            percent: r.ko_percent,
-        })
-        .unwrap_or_default();
+    storage.ensure_reading(book_id, started, "koreader").await?;
+    let last = last_device_report(storage, book_id).await?;
     let report = DeviceReport {
         status: stats.status.clone(),
         percent: stats.percent_finished,
+        rating: stats.rating,
     };
 
-    storage
-        .set_device_state(
-            book_id,
-            stats.status.as_ref(),
-            stats.percent_finished,
-            stats.rating,
-        )
-        .await?;
-
-    match device_effect(&last_report, &report) {
-        DeviceEffect::Finish => {
-            storage.finish_reading(book_id).await?;
+    // An unchanged report is not mirrored either: a read the reader opened since (a reread) would
+    // take on a stale status and percent.
+    if is_new(last.as_ref(), &report) {
+        storage
+            .set_device_state(
+                book_id,
+                stats.status.as_ref(),
+                stats.percent_finished,
+                stats.rating,
+            )
+            .await?;
+        match device_effect(&last.unwrap_or_default(), &report) {
+            DeviceEffect::Finish => {
+                storage.finish_reading(book_id).await?;
+            }
+            DeviceEffect::PutDown => {
+                storage.abandon_reading(book_id).await?;
+            }
+            DeviceEffect::PickUp => {
+                storage.pick_up_reading(book_id).await?;
+            }
+            DeviceEffect::Nothing => {}
         }
-        DeviceEffect::PutDown => {
-            storage.abandon_reading(book_id).await?;
-        }
-        DeviceEffect::PickUp => {
-            storage.pick_up_reading(book_id).await?;
-        }
-        DeviceEffect::Nothing => {}
     }
 
     storage.attribute_highlights(book_id).await?;
     Ok(())
 }
 
-/// What a device said about a reading: the sidecar's status and `percent_finished`.
+/// What a device said about a book: the sidecar's status, `percent_finished` and rating.
 #[derive(Debug, Clone, Default, PartialEq)]
-struct DeviceReport {
-    status: Option<KoStatus>,
-    percent: Option<f64>,
+pub(crate) struct DeviceReport {
+    pub(crate) status: Option<KoStatus>,
+    pub(crate) percent: Option<f64>,
+    pub(crate) rating: Option<i64>,
+}
+
+/// The device's last report on the book, across its readings; see `Storage::last_device_report`.
+pub(crate) async fn last_device_report(
+    storage: &Storage,
+    book_id: i64,
+) -> Result<Option<DeviceReport>> {
+    Ok(storage
+        .last_device_report(book_id)
+        .await?
+        .map(|r| DeviceReport {
+            status: r.status.as_deref().map(KoStatus::from),
+            percent: r.percent,
+            rating: r.rating,
+        }))
+}
+
+/// Whether a sync would change anything: a report without a percent keeps the last one.
+pub(crate) fn is_new(last: Option<&DeviceReport>, now: &DeviceReport) -> bool {
+    let Some(last) = last else {
+        return now.status.is_some() || now.percent.is_some() || now.rating.is_some();
+    };
+    last.status != now.status
+        || last.rating != now.rating
+        || now.percent.is_some_and(|p| last.percent != Some(p))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -911,17 +934,17 @@ enum DeviceEffect {
     Nothing,
 }
 
-/// A sync changes the reading's pause only for what is new on the device since its last report, so a
-/// pause or pick-up made in the app stands until the device says something different. Compared with
-/// the device's own last report, never the app's page, which the reader may edit while paused.
+/// A sync changes the reading's state only for what is new on the device since its last report, so a
+/// pause, pick-up or reread made in the app stands until the device says something different.
+/// Compared with the device's own last report, never the app's page, which the reader may edit.
 fn device_effect(last: &DeviceReport, now: &DeviceReport) -> DeviceEffect {
+    let was = |s: KoStatus| last.status.as_ref() == Some(&s);
     match &now.status {
+        Some(KoStatus::Complete) if was(KoStatus::Complete) => DeviceEffect::Nothing,
         Some(KoStatus::Complete) => DeviceEffect::Finish,
-        Some(KoStatus::Abandoned) if last.status == Some(KoStatus::Abandoned) => {
-            DeviceEffect::Nothing
-        }
+        Some(KoStatus::Abandoned) if was(KoStatus::Abandoned) => DeviceEffect::Nothing,
         Some(KoStatus::Abandoned) => DeviceEffect::PutDown,
-        Some(KoStatus::Reading) if last.status == Some(KoStatus::Abandoned) => DeviceEffect::PickUp,
+        Some(KoStatus::Reading) if was(KoStatus::Abandoned) => DeviceEffect::PickUp,
         Some(KoStatus::Reading) | Some(KoStatus::Other(_)) | None => {
             match (last.percent, now.percent) {
                 (Some(was), Some(is)) if was != is => DeviceEffect::PickUp,
@@ -1656,15 +1679,44 @@ return {{
             .await
             .unwrap();
         import(&s, tmp.path(), false).await.unwrap();
+        let first = s.list_readings(id).await.unwrap().remove(0);
 
         let second = s.reread(id).await.unwrap();
         import(&s, tmp.path(), false).await.unwrap();
-
+        let reread = |readings: &[crate::storage::Reading]| {
+            readings
+                .iter()
+                .find(|r| r.id == second)
+                .expect("reread")
+                .clone()
+        };
         let readings = s.list_readings(id).await.unwrap();
         assert_eq!(readings.len(), 2, "the reread is the user's, not ours");
-        let touched = readings.iter().find(|r| r.id == second).expect("reread");
+        let untouched = reread(&readings);
+        assert_eq!(
+            (untouched.ko_status, untouched.finished_at),
+            (None, None),
+            "the device said nothing new, so the reread stays as the reader opened it"
+        );
+
+        for status in ["reading", "complete"] {
+            std::fs::write(
+                sdr.join("metadata.epub.lua"),
+                sidecar_with_status(status, "2026-01-05 21:14:08"),
+            )
+            .unwrap();
+            import(&s, tmp.path(), false).await.unwrap();
+        }
+        let readings = s.list_readings(id).await.unwrap();
+        assert_eq!(readings.len(), 2);
+        let touched = reread(&readings);
         assert_eq!(touched.ko_status.as_deref(), Some("complete"));
-        assert!(touched.finished_at.is_some(), "complete closes it again");
+        assert!(touched.finished_at.is_some(), "a new complete closes it");
+        assert_eq!(
+            readings.iter().find(|r| r.id == first.id),
+            Some(&first),
+            "the device writes to the open reading, never the closed one"
+        );
     }
 
     /// The walker must not see `metadata.*.lua.old` backups: importing them would resurrect
