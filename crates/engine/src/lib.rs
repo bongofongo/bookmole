@@ -882,12 +882,24 @@ impl Engine {
     #[tracing::instrument(skip_all)]
     pub async fn lookup_isbn_reported(&self, raw: &str) -> Result<IsbnLookup> {
         let isbn = normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
-        let providers = self.providers();
-        let (found, warnings) = search::lookup_isbn_all(&providers, &isbn).await;
+        let outcome = search::lookup_isbn_result(&self.providers(), &isbn).await;
         Ok(IsbnLookup {
-            book: search::merge_provider_books(found),
-            warnings,
+            book: outcome.results.into_iter().next().map(|r| r.book),
+            warnings: outcome.warnings,
         })
+    }
+
+    /// [`Engine::lookup_isbn_reported`] as a search result: at most one, the same book, with the
+    /// merge's per-field claims to hand to [`Engine::save_search_result`] and the library's copy in
+    /// `shelf_id`. An ISBN no provider knows is an empty outcome.
+    #[tracing::instrument(skip_all)]
+    pub async fn lookup_isbn_result(&self, raw: &str) -> Result<SearchOutcome> {
+        let isbn = normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
+        let mut outcome = search::lookup_isbn_result(&self.providers(), &isbn).await;
+        for r in &mut outcome.results {
+            r.shelf_id = self.shelf_of(&r.book).await?;
+        }
+        Ok(outcome)
     }
 
     /// Saves (insert-or-merge) and returns the stored copy.
@@ -2750,9 +2762,28 @@ impl Engine {
     /// [`Engine::save_book`] that records an `unrecorded` copy when the save created the book;
     /// an update to an existing book adds nothing.
     pub async fn save_book_unrecorded(&self, book: &Book) -> Result<Book> {
+        self.save_unrecorded_claimed(book, &[]).await
+    }
+
+    /// [`Engine::save_book_unrecorded`] for a search result, stamping each claimed field as
+    /// [`Engine::save_search_result`] does.
+    pub async fn save_search_result_unrecorded(
+        &self,
+        book: &Book,
+        claims: &[FieldClaim],
+    ) -> Result<Book> {
+        let claims = claimed_columns(claims)?;
+        self.save_unrecorded_claimed(book, &claims).await
+    }
+
+    async fn save_unrecorded_claimed(
+        &self,
+        book: &Book,
+        claims: &[(&'static str, storage::Source)],
+    ) -> Result<Book> {
         let id = self
             .storage
-            .upsert_book_with_first_copy(book, |id| {
+            .upsert_book_with_first_copy(book, claims, |id| {
                 NewCopy::new(id, None, Tenure::Unrecorded, LearnedFrom::User)
             })
             .await?;

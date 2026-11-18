@@ -7,9 +7,14 @@ use super::resolve_one;
 use crate::{prompt, render};
 
 pub async fn add_isbn(engine: &Engine, isbn: &str, no_cover: bool) -> Result<()> {
-    let Some(mut book) = engine.lookup_isbn(isbn).await? else {
+    let outcome = engine.lookup_isbn_result(isbn).await?;
+    for w in &outcome.warnings {
+        eprintln!("warning: {w}");
+    }
+    let Some(found) = outcome.results.into_iter().next() else {
         bail!("no edition found for ISBN {isbn}");
     };
+    let mut book = found.book;
     if !no_cover && book.cover_url.is_some() {
         match engine.download_cover(&mut book).await {
             Ok(Some(p)) => println!("cover -> {}", p.display()),
@@ -17,7 +22,9 @@ pub async fn add_isbn(engine: &Engine, isbn: &str, no_cover: bool) -> Result<()>
             Err(e) => eprintln!("cover download failed: {e}"),
         }
     }
-    let saved = engine.save_book_unrecorded(&book).await?;
+    let saved = engine
+        .save_search_result_unrecorded(&book, &found.claims)
+        .await?;
     println!("saved {}", render::book_line(&saved));
     Ok(())
 }

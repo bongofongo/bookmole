@@ -41,6 +41,13 @@ pub enum Request {
     LookupIsbn {
         isbn: String,
     },
+    /// `LookupIsbn` answered as a search outcome: at most one result, the same book, with the
+    /// per-field `claims` to send back with `SaveSearchResult` or `AddSearchResultToList`, the
+    /// library's copy in `shelf_id`, and any provider that failed in `warnings`. An ISBN no provider
+    /// knows is an empty `results`, not an error. Answered with `SearchOutcome`.
+    LookupIsbnResult {
+        isbn: String,
+    },
 
     SaveBook {
         book: BookDto,

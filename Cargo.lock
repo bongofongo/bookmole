@@ -260,6 +260,7 @@ dependencies = [
 name = "bookmole-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bookmole",
  "serde",
  "serde_json",

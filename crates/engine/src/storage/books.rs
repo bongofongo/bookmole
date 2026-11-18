@@ -706,6 +706,7 @@ impl Storage {
     pub async fn upsert_book_with_first_copy(
         &self,
         book: &Book,
+        claims: &[(&'static str, Source)],
         first_copy: impl FnOnce(i64) -> NewCopy,
     ) -> Result<i64> {
         let mut tx = self.pool().begin().await?;
@@ -718,7 +719,7 @@ impl Storage {
             .fetch_one(&mut *tx)
             .await?;
         }
-        let id = upsert_book_in(&mut tx, book, &[]).await?;
+        let id = upsert_book_in(&mut tx, book, claims).await?;
         if !existed {
             copies::insert_copy(&mut tx, &first_copy(id)).await?;
         }

@@ -87,6 +87,10 @@ impl Api {
         Ok(self.engine.lookup_isbn(isbn).await?.map(Into::into))
     }
 
+    pub async fn lookup_isbn_result(&self, isbn: &str) -> ApiResult<SearchOutcomeDto> {
+        Ok(self.engine.lookup_isbn_result(isbn).await?.into())
+    }
+
     pub async fn save_book(&self, book: BookDto) -> ApiResult<BookDto> {
         Ok(self.engine.save_book(&book.into()).await?.into())
     }
@@ -1179,6 +1183,9 @@ impl Api {
 
             R::Search { request } => Response::SearchOutcome(self.search(request).await?),
             R::LookupIsbn { isbn } => Response::Book(self.lookup_isbn(&isbn).await?),
+            R::LookupIsbnResult { isbn } => {
+                Response::SearchOutcome(self.lookup_isbn_result(&isbn).await?)
+            }
 
             R::SaveBook { book } => Response::Book(Some(self.save_book(book).await?)),
             R::SaveSearchResult { book, claims } => {

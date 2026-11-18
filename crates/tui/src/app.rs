@@ -3093,30 +3093,42 @@ impl App {
     }
 
     async fn add_search_result(&mut self) -> Result<()> {
-        let Some(mut book) = self
+        let Some((mut book, claims)) = self
             .search_state
             .selected()
             .and_then(|i| self.search_results.get(i))
-            .map(|r| r.book.clone())
+            .map(|r| (r.book.clone(), r.claims.clone()))
         else {
             return Ok(());
         };
         if book.cover_url.is_some() {
             self.engine.download_cover(&mut book).await.ok();
         }
-        let saved = self.engine.save_book_unrecorded(&book).await?;
+        let saved = self
+            .engine
+            .save_search_result_unrecorded(&book, &claims)
+            .await?;
         self.status = Some(format!("saved {}", saved.display_title()));
         self.refresh_library().await?;
         Ok(())
     }
 
     async fn add_isbn(&mut self, isbn: String) -> Result<()> {
-        match self.engine.lookup_isbn(&isbn).await {
-            Ok(Some(mut book)) => {
+        let found = self
+            .engine
+            .lookup_isbn_result(&isbn)
+            .await
+            .map(|o| o.results.into_iter().next());
+        match found {
+            Ok(Some(found)) => {
+                let mut book = found.book;
                 if book.cover_url.is_some() {
                     self.engine.download_cover(&mut book).await.ok();
                 }
-                let saved = self.engine.save_book_unrecorded(&book).await?;
+                let saved = self
+                    .engine
+                    .save_search_result_unrecorded(&book, &found.claims)
+                    .await?;
                 self.status = Some(format!("added {}", saved.display_title()));
                 self.refresh_library().await?;
             }

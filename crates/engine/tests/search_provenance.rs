@@ -29,8 +29,14 @@ impl MetadataProvider for Scripted {
             position: 0,
         }])
     }
-    async fn by_isbn(&self, _: &str) -> bookmole::Result<Option<ProviderBook>> {
-        Ok(None)
+    async fn by_isbn(&self, isbn: &str) -> bookmole::Result<Option<ProviderBook>> {
+        Ok(
+            (self.book.isbn_13.as_deref() == Some(isbn)).then(|| ProviderBook {
+                book: self.book.clone(),
+                provider: self.id,
+                position: 0,
+            }),
+        )
     }
 }
 
@@ -250,4 +256,82 @@ async fn a_claim_on_a_column_no_provider_supplies_is_refused() {
             .await,
         Err(EngineError::InvalidInput(_))
     ));
+}
+
+#[tokio::test]
+async fn a_book_saved_from_an_isbn_lookup_names_the_provider_of_every_field() {
+    let (_tmp, engine) = engine().await;
+    engine.replace_providers(providers());
+    let mut outcome = engine
+        .lookup_isbn_result("978-1-900000-17-8")
+        .await
+        .unwrap();
+    assert_eq!(outcome.results.len(), 1, "{:?}", outcome.results);
+    let result = outcome.results.remove(0);
+    assert_eq!(
+        format!("{:?}", Some(&result.book)),
+        format!("{:?}", engine.lookup_isbn(ISBN).await.unwrap().as_ref()),
+        "the result is the book the plain lookup answers"
+    );
+    assert_eq!(result.shelf_id, None);
+
+    let by = claimed(&result.claims);
+    assert_eq!(by.get("language").map(String::as_str), Some("googlebooks"));
+    assert_eq!(
+        by.get("description").map(String::as_str),
+        Some("googlebooks")
+    );
+    assert_eq!(by.get("publisher").map(String::as_str), Some("openlibrary"));
+    assert!(by.contains_key("page_count") && by.contains_key("title"));
+
+    let saved = engine
+        .save_search_result(&result.book, &result.claims)
+        .await
+        .unwrap();
+    let id = saved.id.unwrap();
+    assert_eq!(provenance(&engine, id).await, by);
+
+    let again = engine.lookup_isbn_result(ISBN).await.unwrap();
+    assert_eq!(again.results[0].shelf_id, Some(id), "now on the shelf");
+}
+
+#[tokio::test]
+async fn an_isbn_no_provider_knows_is_an_empty_answer() {
+    let (_tmp, engine) = engine().await;
+    engine.replace_providers(providers());
+    let outcome = engine.lookup_isbn_result("9780141439549").await.unwrap();
+    assert!(outcome.results.is_empty() && outcome.warnings.is_empty());
+    assert!(matches!(
+        engine.lookup_isbn_result("not an isbn").await,
+        Err(EngineError::InvalidIsbn(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_unrecorded_save_of_a_result_keeps_its_provenance_and_its_copy() {
+    let (_tmp, engine) = engine().await;
+    engine.replace_providers(providers());
+    let result = engine
+        .lookup_isbn_result(ISBN)
+        .await
+        .unwrap()
+        .results
+        .remove(0);
+    let saved = engine
+        .save_search_result_unrecorded(&result.book, &result.claims)
+        .await
+        .unwrap();
+    let id = saved.id.unwrap();
+    assert_eq!(provenance(&engine, id).await, claimed(&result.claims));
+    assert_eq!(engine.copies_for_book(id).await.unwrap().len(), 1);
+
+    engine
+        .save_search_result_unrecorded(&result.book, &result.claims)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.copies_for_book(id).await.unwrap().len(),
+        1,
+        "saving a known book again adds no copy"
+    );
 }
