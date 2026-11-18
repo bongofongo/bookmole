@@ -592,3 +592,25 @@ async fn one_key_fits_sixteen_copies_and_no_more() {
         Err(bookmole::EngineError::InvalidInput(_))
     ));
 }
+
+/// An alternative annotation is the reader's text too, so it keeps an imported row from removal.
+#[tokio::test]
+async fn a_row_holding_only_an_alternative_annotation_is_kept() {
+    let (_t, e) = engine().await;
+    let s = e.storage();
+    let (src, dst) = (seed_book(&e, "A").await, seed_book(&e, "B").await);
+    let h = imp(HighlightOrigin::Preview, Some("a"), "a", "t");
+    let mine = s.upsert_imported_highlight(dst, &h).await.unwrap().id();
+    let theirs = s.upsert_imported_highlight(src, &h).await.unwrap().id();
+    s.set_annotation(mine, Some("mine")).await.unwrap();
+    s.set_annotation(theirs, Some("theirs")).await.unwrap();
+    s.merge_books(src, dst).await.unwrap();
+
+    s.set_annotation(mine, None).await.unwrap();
+    assert!(s.imported_highlight_kept(mine).await.unwrap());
+    assert!(
+        !s.remove_imported_highlight(dst, HighlightOrigin::Preview, "a")
+            .await
+            .unwrap()
+    );
+}
