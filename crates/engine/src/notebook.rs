@@ -503,7 +503,8 @@ impl Engine {
     }
 
     /// A passage typed by hand: `source = 'user'`, no `pos0`, `ko_datetime` of now to the nanosecond.
-    /// The instant is stored, not only hashed: merges rehash, so identical stamps would collide.
+    /// The instant is stored, not only hashed, so the identity can be recomputed from the row. Its
+    /// nanoseconds keep two passages typed with the same words apart, since the hash names no book.
     pub async fn create_highlight(
         &self,
         book_id: i64,

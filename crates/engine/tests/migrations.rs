@@ -1246,8 +1246,7 @@ async fn list_positions_keep_their_index_and_stop_refusing_duplicates() {
     const FACES: &str = "SELECT books.id FROM books \
          JOIN book_list_entries e ON e.book_id = books.id \
          WHERE e.list_id = 1 ORDER BY e.position, e.added_at, e.book_id LIMIT 4";
-    const NEXT: &str =
-        "SELECT COALESCE(MAX(position) + 1, 0) FROM book_list_entries WHERE list_id = 1";
+    const NEXT: &str = "SELECT count(*) FROM book_list_entries WHERE list_id = 1";
 
     let mut conn = migrated_below(LIST_POSITIONS).await;
     let mut before = Vec::new();

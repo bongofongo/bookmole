@@ -8,7 +8,8 @@
 -- It has one writer: the code that indexes a note's body. That code upserts
 -- here only when the body differs from the stored one (trailing whitespace is
 -- not a difference), so an unchanged body leaves the row untouched and a write
--- here always means the body changed.
+-- here always means the body changed. That holds for AFTER triggers: a BEFORE
+-- INSERT trigger fires on every upsert, ahead of its conflict check.
 -- A row goes with its note by the cascade.
 CREATE TABLE note_bodies (
     note_id INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
