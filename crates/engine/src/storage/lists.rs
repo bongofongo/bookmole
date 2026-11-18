@@ -1,6 +1,7 @@
 //! Lists: a book is on a list at most once and positions are exactly `0..n` after every write.
-//! Deleting a book must renumber its lists, which the cascade cannot; renumbering parks rows at
-//! negative positions first because of the unique `(list_id, position)` index.
+//! The database does not enforce that (positions may arrive duplicated or gapped), so reads order
+//! by `ENTRY_ORDER` and report a rank, and writes renumber. Deleting a book must renumber its
+//! lists, which the cascade cannot.
 
 use sqlx::{Row, SqliteConnection};
 
@@ -23,6 +24,13 @@ const IN_LIBRARY_BOOK: &str = "books.id";
 
 /// The only source whose shelves are offered. Calibre's tags are never suggested.
 const SHELF_SOURCE: &str = "goodreads";
+
+/// The one order of a list's entries. Ends in the book so equal positions still read stably.
+const ENTRY_ORDER: &str = "e.position, e.added_at, e.book_id";
+
+/// An entry's place in `ENTRY_ORDER`, 0-based: what `position` holds once the list is compact.
+const RANK_SQL: &str = "(SELECT count(*) FROM book_list_entries x WHERE x.list_id = e.list_id \
+     AND (x.position, x.added_at, x.book_id) < (e.position, e.added_at, e.book_id))";
 
 const LIST_COLUMNS: &str = "id, name, description, source, source_ref, created_at, updated_at";
 
@@ -65,7 +73,7 @@ fn row_to_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ListEntry> {
 fn entry_select() -> String {
     let in_lib = in_library_sql(IN_LIBRARY_BOOK);
     format!(
-        "SELECT {BOOK_COLUMNS}, e.position AS e_position, e.note AS e_note, \
+        "SELECT {BOOK_COLUMNS}, {RANK_SQL} AS e_position, e.note AS e_note, \
          e.added_at AS e_added_at, {YEAR_SQL} AS e_year, \
          CASE WHEN {YEAR_IS_EDITION_SQL} THEN 1 ELSE 0 END AS e_year_is_edition, \
          CASE WHEN {in_lib} THEN 1 ELSE 0 END AS e_in_library \
@@ -103,33 +111,33 @@ async fn touch(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Two passes: rows park at negative positions first, since the unique `(list_id, position)`
-/// index forbids moving a row into a slot another still holds.
+/// `ids` must be every entry of the list, in its new order. A row already in its place is not
+/// written.
 async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
-    sqlx::query("UPDATE book_list_entries SET position = -position - 1 WHERE list_id = ?")
+    for (i, book_id) in ids.iter().enumerate() {
+        sqlx::query(
+            "UPDATE book_list_entries SET position = ?1
+              WHERE list_id = ?2 AND book_id = ?3 AND position IS NOT ?1",
+        )
+        .bind(i as i64)
         .bind(list_id)
+        .bind(book_id)
         .execute(&mut *conn)
         .await?;
-    for (i, book_id) in ids.iter().enumerate() {
-        sqlx::query("UPDATE book_list_entries SET position = ? WHERE list_id = ? AND book_id = ?")
-            .bind(i as i64)
-            .bind(list_id)
-            .bind(book_id)
-            .execute(&mut *conn)
-            .await?;
     }
     Ok(())
 }
 
 async fn entry_order(conn: &mut SqliteConnection, list_id: i64) -> Result<Vec<i64>> {
-    Ok(sqlx::query_scalar(
-        "SELECT book_id FROM book_list_entries WHERE list_id = ? ORDER BY position",
-    )
-    .bind(list_id)
-    .fetch_all(conn)
-    .await?)
+    let sql =
+        format!("SELECT book_id FROM book_list_entries e WHERE list_id = ? ORDER BY {ENTRY_ORDER}");
+    Ok(sqlx::query_scalar(&sql)
+        .bind(list_id)
+        .fetch_all(conn)
+        .await?)
 }
 
+/// Restores positions to exactly `0..n` in `ENTRY_ORDER`, repairing duplicates and gaps.
 async fn compact(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     let ids = entry_order(&mut *conn, list_id).await?;
     renumber(&mut *conn, list_id, &ids).await?;
@@ -326,7 +334,7 @@ impl Storage {
         let sql = format!(
             "SELECT {BOOK_COLUMNS} {BOOK_FROM} \
              JOIN book_list_entries e ON e.book_id = books.id \
-             WHERE e.list_id = ? ORDER BY e.position LIMIT ?"
+             WHERE e.list_id = ? ORDER BY {ENTRY_ORDER} LIMIT ?"
         );
         let rows = sqlx::query(&sql)
             .bind(list_id)
@@ -351,13 +359,13 @@ impl Storage {
             EntryShow::NotInLibrary => format!(" AND NOT ({})", in_library_sql(IN_LIBRARY_BOOK)),
         };
         let order = match sort {
-            EntrySort::Yours => "e.position".to_owned(),
+            EntrySort::Yours => ENTRY_ORDER.to_owned(),
             EntrySort::Published => {
-                format!("{YEAR_SQL} IS NULL, {YEAR_SQL} ASC, e.position")
+                format!("{YEAR_SQL} IS NULL, {YEAR_SQL} ASC, {ENTRY_ORDER}")
             }
-            EntrySort::Title => "COALESCE(books.sort_title, books.title) COLLATE NOCASE ASC, \
-                 e.position"
-                .to_owned(),
+            EntrySort::Title => {
+                format!("COALESCE(books.sort_title, books.title) COLLATE NOCASE ASC, {ENTRY_ORDER}")
+            }
         };
         let sql = format!("{}{filter} ORDER BY {order}", entry_select());
         let rows = sqlx::query(&sql)
@@ -411,7 +419,7 @@ impl Storage {
         .bind(now_unix())
         .execute(&mut *tx)
         .await?;
-        touch(&mut tx, list_id).await?;
+        compact(&mut tx, list_id).await?;
         let entry = Self::get_entry(&mut tx, list_id, book_id).await?;
         tx.commit().await?;
         entry.ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))
@@ -479,15 +487,16 @@ impl Storage {
     pub(crate) async fn lists_for_book(&self, book_id: i64) -> Result<Vec<ListMembership>> {
         let mut conn = self.pool().acquire().await?;
         book_exists(&mut conn, book_id).await?;
-        let rows = sqlx::query(
-            "SELECT l.id, l.name, e.position, e.note, \
+        let sql = format!(
+            "SELECT l.id, l.name, {RANK_SQL} AS position, e.note, \
                (SELECT count(*) FROM book_list_entries x WHERE x.list_id = l.id) AS size \
              FROM book_list_entries e JOIN book_lists l ON l.id = e.list_id \
-             WHERE e.book_id = ? ORDER BY l.name COLLATE NOCASE ASC, l.id ASC",
-        )
-        .bind(book_id)
-        .fetch_all(&mut *conn)
-        .await?;
+             WHERE e.book_id = ? ORDER BY l.name COLLATE NOCASE ASC, l.id ASC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(book_id)
+            .fetch_all(&mut *conn)
+            .await?;
         rows.iter()
             .map(|r| {
                 Ok(ListMembership {
@@ -636,6 +645,140 @@ impl Storage {
         .execute(self.pool())
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn rows(s: &Storage, list: i64) -> Vec<(i64, i64)> {
+        sqlx::query_as(
+            "SELECT book_id, position FROM book_list_entries WHERE list_id = ? ORDER BY book_id",
+        )
+        .bind(list)
+        .fetch_all(s.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn read_order(s: &Storage, list: i64) -> Vec<(i64, i64)> {
+        s.list_entries(list, EntryShow::All, EntrySort::Yours)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| (e.book.id.unwrap(), e.position))
+            .collect()
+    }
+
+    /// Positions as two copies of a library combined could leave them: duplicated and gapped.
+    async fn scrambled() -> (Storage, i64, Vec<i64>) {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let list = s.create_list("To read", None).await.unwrap().id;
+        let mut books = Vec::new();
+        for title in [
+            "Middlemarch",
+            "Silas Marner",
+            "Adam Bede",
+            "Romola",
+            "Felix Holt",
+        ] {
+            let b = Book {
+                title: Some(title.into()),
+                ..Default::default()
+            };
+            let id = s.upsert_book(&b, None).await.unwrap();
+            s.add_to_list(list, id, None).await.unwrap();
+            books.push(id);
+        }
+        // (position, added_at) per book: two ties on position, one broken by added_at and one
+        // only by the book id, and gaps at 1, 2 and 4.
+        for (book, (pos, added)) in books
+            .iter()
+            .zip([(3, 10), (0, 20), (3, 5), (0, 20), (9, 1)])
+        {
+            sqlx::query(
+                "UPDATE book_list_entries SET position = ?, added_at = ?
+                  WHERE list_id = ? AND book_id = ?",
+            )
+            .bind(pos)
+            .bind(added)
+            .bind(list)
+            .bind(book)
+            .execute(s.pool())
+            .await
+            .unwrap();
+        }
+        (s, list, books)
+    }
+
+    #[tokio::test]
+    async fn duplicate_and_gapped_positions_read_in_one_stable_order() {
+        let (s, list, b) = scrambled().await;
+        let want = vec![(b[1], 0), (b[3], 1), (b[2], 2), (b[0], 3), (b[4], 4)];
+        assert_eq!(read_order(&s, list).await, want);
+        assert_eq!(read_order(&s, list).await, want, "the same order twice");
+
+        let faces: Vec<i64> = s
+            .list_faces(list, 2)
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.id.unwrap())
+            .collect();
+        assert_eq!(faces, vec![b[1], b[3]]);
+        let on = s.lists_for_book(b[0]).await.unwrap();
+        assert_eq!(on[0].position, 4, "a rank, not the stored 3");
+        assert!(
+            rows(&s, list).await.iter().any(|&(_, p)| p == 9),
+            "reading repairs nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn compacting_restores_zero_to_n_in_the_order_read() {
+        let (s, list, b) = scrambled().await;
+        let read = read_order(&s, list).await;
+        let mut conn = s.pool().acquire().await.unwrap();
+        compact(&mut conn, list).await.unwrap();
+        drop(conn);
+        let mut stored = rows(&s, list).await;
+        stored.sort_by_key(|&(_, p)| p);
+        assert_eq!(stored, read, "stored positions are now the ranks");
+        assert_eq!(stored[0].0, b[1]);
+    }
+
+    #[tokio::test]
+    async fn every_write_leaves_a_scrambled_list_dense() {
+        let dense = |r: Vec<(i64, i64)>| {
+            let mut p: Vec<i64> = r.iter().map(|&(_, p)| p).collect();
+            p.sort_unstable();
+            p == (0..r.len() as i64).collect::<Vec<_>>()
+        };
+
+        let (s, list, b) = scrambled().await;
+        s.move_in_list(list, b[4], 0).await.unwrap();
+        assert!(dense(rows(&s, list).await));
+        assert_eq!(read_order(&s, list).await[0].0, b[4]);
+
+        let (s, list, b) = scrambled().await;
+        s.remove_from_list(list, b[2]).await.unwrap();
+        assert!(dense(rows(&s, list).await));
+
+        let (s, list, _) = scrambled().await;
+        let extra = s
+            .upsert_book(
+                &Book {
+                    title: Some("Daniel Deronda".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let added = s.add_to_list(list, extra, None).await.unwrap();
+        assert!(dense(rows(&s, list).await));
+        assert_eq!(added.position, 5, "appended last");
     }
 }
 
