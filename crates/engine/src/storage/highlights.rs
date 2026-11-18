@@ -74,7 +74,9 @@ pub(super) const REHASH_BATCH: i64 = 500;
 /// Rewrites every highlight still on the earlier formula; returns how many rows it touched. Each
 /// batch is one transaction, so an interrupted pass leaves each row whole and the next open
 /// finishes it. Two rows of one book that now hash alike are one highlight, folded as
-/// `merge_books` folds a duplicate: the row that already holds the identity (the earlier) stays.
+/// `merge_books` folds a duplicate. The older row (lower id) stays, whichever already holds the new
+/// hash: a holder with a higher id was written while an earlier rehash failed, and keeping it would
+/// replace the original's id, `created_at`, copy and reading.
 pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Result<usize> {
     // Read first: once every row is converted, opening a library takes no write lock for this.
     let pending: bool = sqlx::query_scalar(&format!(
@@ -125,8 +127,11 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
             .fetch_optional(&mut *tx)
             .await?;
             match holder {
-                Some(keep) => fold_highlight(&mut tx, id, keep).await?,
-                None => {
+                Some(older) if older < id => fold_highlight(&mut tx, id, older).await?,
+                newer => {
+                    if let Some(newer) = newer {
+                        fold_highlight(&mut tx, newer, id).await?;
+                    }
                     sqlx::query("UPDATE highlights SET identity_hash = ? WHERE id = ?")
                         .bind(&hash)
                         .bind(id)
