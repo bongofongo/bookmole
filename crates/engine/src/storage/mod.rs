@@ -102,12 +102,19 @@ impl Storage {
             .connect_with(opts)
             .await?;
         migrate(&pool).await?;
-        let rehashed = highlights::rehash_old_identities(&pool, highlights::REHASH_BATCH).await?;
-        if rehashed > 0 {
-            tracing::info!(
+        // Never fatal: a library must open even if the rehash cannot finish. Each batch commits
+        // alone, and the next open carries on from the rows still left.
+        match highlights::rehash_old_identities(&pool, highlights::REHASH_BATCH).await {
+            Ok(0) => {}
+            Ok(rehashed) => tracing::info!(
                 rehashed,
                 "moved highlights to the book-independent identity hash"
-            );
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                "could not move every highlight to the book-independent identity hash; \
+                 the next open tries again"
+            ),
         }
         tracing::info!(max_connections = max, "storage connected and migrated");
         Ok(Storage { pool })
