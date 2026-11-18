@@ -1401,9 +1401,10 @@ fn slug(t: &str) -> String {
 fn identity_hash(datetime: &str, text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"rb-local\0");
-    hasher.update(datetime.as_bytes());
-    hasher.update(b"\0\0");
-    hasher.update(text.as_bytes());
+    for field in [datetime.as_bytes(), b"", text.as_bytes()] {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
     format!("v2:{}", hex(&hasher.finalize()))
 }
 
@@ -1495,7 +1496,7 @@ mod tests {
     fn the_highlight_hash_is_the_engines() {
         assert_eq!(
             identity_hash("2025-01-01 00:00:00", "Middlemarch."),
-            "v2:b42ceb06abe3683ea61a048fade5eafc88bcfccbe54c443765a2a4f65ac29eab"
+            "v2:1793de266aa2d27e2a0c2b6542e94b239cd0d2eaf69f5ba5f68453d289785903"
         );
     }
 

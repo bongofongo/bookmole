@@ -55,11 +55,11 @@ pub(crate) fn identity_hash_of(
 fn identity_hash_of_bytes(ko_datetime: &[u8], pos0: &[u8], text: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"rb-local\0");
-    hasher.update(ko_datetime);
-    hasher.update(b"\0");
-    hasher.update(pos0);
-    hasher.update(b"\0");
-    hasher.update(text);
+    // Each field carries its length, so no value can move bytes across a boundary.
+    for field in [ko_datetime, pos0, text] {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
     format!("{IDENTITY_PREFIX}{:x}", hasher.finalize())
 }
 
@@ -657,8 +657,18 @@ mod tests {
     fn the_formula_is_pinned() {
         assert_eq!(
             identity_hash_of(Some("2025-01-01 00:00:00"), None, "Middlemarch."),
-            "v2:b42ceb06abe3683ea61a048fade5eafc88bcfccbe54c443765a2a4f65ac29eab"
+            "v2:1793de266aa2d27e2a0c2b6542e94b239cd0d2eaf69f5ba5f68453d289785903"
         );
+    }
+
+    #[test]
+    fn a_nul_cannot_move_a_field_boundary() {
+        let a = identity_hash_of(Some("2025-01-01\0x"), Some(""), "t");
+        let b = identity_hash_of(Some("2025-01-01"), Some("x\0"), "t");
+        assert_ne!(a, b);
+        let c = identity_hash_of(None, Some("p\0q"), "");
+        let d = identity_hash_of(None, Some("p"), "q");
+        assert_ne!(c, d);
     }
 
     #[test]
