@@ -438,8 +438,7 @@ fn notes_final(
             at.rem_euclid(60)
         );
         let text = "Typed in by hand: the house was older than the town.";
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}|{datetime}||{text}", reread.id));
+        let identity = identity_hash(&datetime, text);
         sql.push_str(&format!(
             "INSERT INTO highlights (id, book_id, reading_id, text, chapter, page, ko_datetime, \
              color, origin_note, annotation, source, identity_hash, created_at) VALUES \
@@ -448,7 +447,7 @@ fn notes_final(
             reread.id,
             q(text),
             q(&datetime),
-            q(&hex(&hasher.finalize())),
+            q(&identity),
         ));
     }
     Ok(notes.len())
@@ -785,8 +784,7 @@ fn history(
                 at.rem_euclid(3_600) / 60,
             );
             let text = format!("{}.", PHRASES[(highlight_id as usize) % PHRASES.len()]);
-            let mut hasher = Sha256::new();
-            hasher.update(format!("{}|{datetime}||{text}", book.id));
+            let identity = identity_hash(&datetime, &text);
             sql.push_str(&format!(
                 "INSERT INTO highlights (id, book_id, reading_id, text, chapter, page, ko_datetime, \
                  color, origin_note, annotation, source, identity_hash, created_at) VALUES \
@@ -796,7 +794,7 @@ fn history(
                 q(&text),
                 1 + (k * 23) % pages,
                 q(&datetime),
-                q(&hex(&hasher.finalize())),
+                q(&identity),
             ));
         }
         let mut seeded: Vec<(String, &'static str, Option<i64>, String, i64)> = (0..notes as i64)
@@ -1053,8 +1051,7 @@ impl Book {
                 );
                 // The passage alone: any suffix would be drawn as if the reader had highlighted it.
                 let text = format!("{}.", PHRASES[(rng.next_u32() as usize) % PHRASES.len()]);
-                let mut hasher = Sha256::new();
-                hasher.update(format!("{}|{datetime}||{text}", self.id));
+                let identity = identity_hash(&datetime, &text);
                 // No `highlights_fts` row: triggers on the external-content table fill the index on INSERT.
                 format!(
                     "INSERT INTO highlights (id, book_id, reading_id, text, chapter, page, ko_datetime, \
@@ -1072,7 +1069,7 @@ impl Book {
                     } else {
                         "NULL".into()
                     },
-                    q(&hex(&hasher.finalize())),
+                    q(&identity),
                     EPOCH + *next * 601
                 )
             })
@@ -1399,6 +1396,17 @@ fn slug(t: &str) -> String {
     if s.is_empty() { "untitled".into() } else { s }
 }
 
+/// The engine's formula for a KOReader or user highlight with no position (`identity_hash_of`).
+/// Kept in step by hand: the engine rewrites any other hash when it opens the library.
+fn identity_hash(datetime: &str, text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"rb-local\0");
+    hasher.update(datetime.as_bytes());
+    hasher.update(b"\0\0");
+    hasher.update(text.as_bytes());
+    format!("v2:{}", hex(&hasher.finalize()))
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1481,6 +1489,15 @@ const PHRASES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine's `identity_hash_of` pins the same value; a change to either breaks one pin.
+    #[test]
+    fn the_highlight_hash_is_the_engines() {
+        assert_eq!(
+            identity_hash("2025-01-01 00:00:00", "Middlemarch."),
+            "v2:b42ceb06abe3683ea61a048fade5eafc88bcfccbe54c443765a2a4f65ac29eab"
+        );
+    }
 
     const DECLARED: &str = include_str!("../edge-cases.json");
 

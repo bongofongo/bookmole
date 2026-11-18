@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use super::copies;
 use super::field_provenance::{self, Source};
-use super::highlights::identity_hash_of;
+use super::highlights::fold_highlight;
 use super::query::{Bind, BookFilter, BookQuery, BookSummary, LibraryScope};
 use super::{Storage, now_unix};
 use crate::book::{Book, series_index_text};
@@ -994,25 +994,14 @@ impl Storage {
         let src_book = row_to_book(&src_row)?;
         report.src_existed = true;
 
-        let rows =
-            sqlx::query(
-                "SELECT id, text, pos0, ko_datetime, identity_hash, origin FROM highlights WHERE book_id = ?",
-            )
-                .bind(src)
-                .fetch_all(&mut *tx)
-                .await?;
+        // A highlight's hash does not name its book, so the same highlight on both books collides.
+        let rows = sqlx::query("SELECT id, identity_hash FROM highlights WHERE book_id = ?")
+            .bind(src)
+            .fetch_all(&mut *tx)
+            .await?;
         for r in &rows {
             let id: i64 = r.try_get("id")?;
-            let text: String = r.try_get("text")?;
-            let pos0: Option<String> = r.try_get("pos0")?;
-            let ko_datetime: Option<String> = r.try_get("ko_datetime")?;
-            // An imported row's hash omits `book_id` and is not KOReader's formula, so it moves unchanged.
-            let origin: Option<String> = r.try_get("origin")?;
-            let hash = match origin.as_deref() {
-                Some(o) if o != "koreader" && o != "user" => r.try_get("identity_hash")?,
-                _ => identity_hash_of(dst, ko_datetime.as_deref(), pos0.as_deref(), &text),
-            };
-
+            let hash: String = r.try_get("identity_hash")?;
             let survivor: Option<i64> = sqlx::query_scalar(
                 "SELECT id FROM highlights WHERE book_id = ? AND identity_hash = ?",
             )
@@ -1022,33 +1011,15 @@ impl Storage {
             .await?;
             match survivor {
                 Some(keep) => {
-                    // Move what hangs off the copy before dropping it: `flashcards.highlight_id` cascades and
-                    // `notes.highlight_id` nulls, so the other order loses note anchors.
-                    sqlx::query("UPDATE notes SET highlight_id = ? WHERE highlight_id = ?")
-                        .bind(keep)
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?;
-                    sqlx::query("UPDATE flashcards SET highlight_id = ? WHERE highlight_id = ?")
-                        .bind(keep)
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?;
-                    sqlx::query("DELETE FROM highlights WHERE id = ?")
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?;
+                    fold_highlight(&mut tx, id, keep).await?;
                     report.highlights_dropped += 1;
                 }
                 None => {
-                    sqlx::query(
-                        "UPDATE highlights SET book_id = ?, identity_hash = ? WHERE id = ?",
-                    )
-                    .bind(dst)
-                    .bind(&hash)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
+                    sqlx::query("UPDATE highlights SET book_id = ? WHERE id = ?")
+                        .bind(dst)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
                     report.highlights_moved += 1;
                 }
             }
