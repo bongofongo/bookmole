@@ -125,8 +125,8 @@ pub enum DeviceState {
         candidates: Vec<MatchCandidate>,
     },
     Unchanged,
-    /// Linked, with annotations to bring across. `refreshed` counts rows whose device-owned fields
-    /// differ.
+    /// Linked, with annotations or reading state to bring across. `refreshed` counts rows whose
+    /// device-owned fields differ; both counts are zero when only the status or position moved.
     Updated {
         new_highlights: usize,
         refreshed: usize,
@@ -336,9 +336,20 @@ async fn scan_one(
         book.title = Some(matched.display_title().to_string());
     }
 
+    // The cached facts carry no rating, so only a status or percent change is seen here.
+    let last = koreader::last_device_report(storage, book_id).await?;
+    let report = koreader::DeviceReport {
+        status: book.ko_status.clone(),
+        percent: book.ko_percent,
+        rating: last.as_ref().and_then(|l| l.rating),
+    };
+    let reading_moved = koreader::is_new(last.as_ref(), &report);
+
     // A row count would miss a note rewritten on the device; the digest covers the device-owned
     // payload.
-    if highlights.is_none() && storage.device_highlight_digest(book_id).await? == facts.entry_digest
+    if highlights.is_none()
+        && !reading_moved
+        && storage.device_highlight_digest(book_id).await? == facts.entry_digest
     {
         book.state = DeviceState::Unchanged;
         return Ok(book);
@@ -364,7 +375,7 @@ async fn scan_one(
             refreshed += 1;
         }
     }
-    book.state = if new_highlights == 0 && refreshed == 0 {
+    book.state = if new_highlights == 0 && refreshed == 0 && !reading_moved {
         DeviceState::Unchanged
     } else {
         DeviceState::Updated {

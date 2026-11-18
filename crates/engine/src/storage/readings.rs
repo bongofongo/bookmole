@@ -149,7 +149,15 @@ pub(super) fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<R
 /// Null-safe "sidecar differs" test: `IS NOT`, not `!=`, so a rating cleared on the device counts
 /// as a change.
 const DEVICE_STATE_DIFFER: &str =
-    "(ko_status IS NOT ?2 OR ko_percent IS NOT ?3 OR ko_rating IS NOT ?4)";
+    "(ko_status IS NOT ?2 OR (?3 IS NOT NULL AND ko_percent IS NOT ?3) OR ko_rating IS NOT ?4)";
+
+/// The device's last report on a book; see [`Storage::last_device_report`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DeviceReportRow {
+    pub status: Option<String>,
+    pub percent: Option<f64>,
+    pub rating: Option<i64>,
+}
 
 /// A book's readings as unix-second windows (`?1` is the book id, used twice).
 /// One macro so the missing-`started_at` derivation stays a single text.
@@ -689,7 +697,8 @@ impl Storage {
     }
 
     /// Mirror device status/percent/rating onto the current reading; returns whether anything changed.
-    /// Straight assignment, not `COALESCE`: an absent rating means the user cleared it. Opens no
+    /// Status and rating assign straight, since an absent rating means the user cleared it. An absent
+    /// percent keeps the last one, which is the position a later sync compares against. Opens no
     /// reading.
     pub(crate) async fn set_device_state(
         &self,
@@ -699,7 +708,7 @@ impl Storage {
         rating: Option<i64>,
     ) -> Result<bool> {
         let sql = format!(
-            "UPDATE readings SET ko_status = ?2, ko_percent = ?3, ko_rating = ?4,
+            "UPDATE readings SET ko_status = ?2, ko_percent = COALESCE(?3, ko_percent), ko_rating = ?4,
                                  last_modified = ?5
              WHERE id = (SELECT id FROM readings WHERE book_id = ?1
                          ORDER BY (finished_at IS NULL) DESC,
@@ -715,6 +724,35 @@ impl Storage {
             .execute(self.pool())
             .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    /// What the device last reported on the book: status and rating from the latest reading that holds a
+    /// report, percent from the latest that holds one. Book-wide, because a read opened in the app (a
+    /// reread) holds none, and the device has not said anything new just because the read is new.
+    pub(crate) async fn last_device_report(&self, book_id: i64) -> Result<Option<DeviceReportRow>> {
+        const LATEST: &str = "ORDER BY (finished_at IS NULL) DESC,
+                                       COALESCE(started_at, created_at) DESC, id DESC LIMIT 1";
+        let sql = format!(
+            "SELECT ko_status, ko_rating,
+                    (SELECT ko_percent FROM readings WHERE book_id = ?1 AND ko_percent IS NOT NULL
+                     {LATEST}) AS ko_percent
+               FROM readings
+              WHERE book_id = ?1
+                AND (ko_status IS NOT NULL OR ko_percent IS NOT NULL OR ko_rating IS NOT NULL)
+              {LATEST}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(book_id)
+            .fetch_optional(self.pool())
+            .await?;
+        row.map(|r| {
+            Ok(DeviceReportRow {
+                status: r.try_get("ko_status")?,
+                percent: r.try_get("ko_percent")?,
+                rating: r.try_get("ko_rating")?,
+            })
+        })
+        .transpose()
     }
 
     pub async fn device_state_differs(
@@ -1095,6 +1133,15 @@ mod tests {
         let r = &s.list_readings(id).await.unwrap()[0];
         assert_eq!(r.ko_rating, None);
         assert_eq!(r.ko_status, None);
+        assert_eq!(
+            r.ko_percent,
+            Some(0.5),
+            "a report without a percent keeps the last one"
+        );
+        assert!(
+            !s.device_state_differs(id, None, None, None).await.unwrap(),
+            "the preview agrees that a missing percent changes nothing"
+        );
     }
 
     #[tokio::test]
