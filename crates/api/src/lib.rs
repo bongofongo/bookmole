@@ -312,6 +312,48 @@ impl Api {
         Ok(self.engine.set_annotation(highlight_id, annotation).await?)
     }
 
+    pub async fn annotation_alternatives(
+        &self,
+        highlight_id: i64,
+    ) -> ApiResult<Vec<AnnotationAlternativeDto>> {
+        Ok(map(self
+            .engine
+            .annotation_alternatives(highlight_id)
+            .await?))
+    }
+
+    pub async fn book_annotation_alternatives(
+        &self,
+        book_id: i64,
+    ) -> ApiResult<Vec<AnnotationAlternativeDto>> {
+        Ok(map(self
+            .engine
+            .book_annotation_alternatives(book_id)
+            .await?))
+    }
+
+    pub async fn promote_annotation_alternative(
+        &self,
+        highlight_id: i64,
+        text: &str,
+    ) -> ApiResult<()> {
+        Ok(self
+            .engine
+            .promote_annotation_alternative(highlight_id, text)
+            .await?)
+    }
+
+    pub async fn remove_annotation_alternative(
+        &self,
+        highlight_id: i64,
+        text: &str,
+    ) -> ApiResult<()> {
+        Ok(self
+            .engine
+            .remove_annotation_alternative(highlight_id, text)
+            .await?)
+    }
+
     pub async fn import_epub(&self, path: &Path) -> ApiResult<BookDto> {
         let book = self.engine.import_epub(path).await?;
         if let Some(id) = book.id {
@@ -1293,6 +1335,22 @@ impl Api {
                 annotation,
             } => {
                 self.set_annotation(highlight_id, annotation.as_deref())
+                    .await?;
+                Response::Unit
+            }
+            R::AnnotationAlternatives { highlight_id } => {
+                Response::AnnotationAlternatives(self.annotation_alternatives(highlight_id).await?)
+            }
+            R::BookAnnotationAlternatives { book_id } => {
+                Response::AnnotationAlternatives(self.book_annotation_alternatives(book_id).await?)
+            }
+            R::PromoteAnnotationAlternative { highlight_id, text } => {
+                self.promote_annotation_alternative(highlight_id, &text)
+                    .await?;
+                Response::Unit
+            }
+            R::RemoveAnnotationAlternative { highlight_id, text } => {
+                self.remove_annotation_alternative(highlight_id, &text)
                     .await?;
                 Response::Unit
             }

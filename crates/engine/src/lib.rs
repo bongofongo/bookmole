@@ -142,12 +142,12 @@ pub use search::works::{Edition, WorkResult};
 pub use search::{FieldClaim, IsbnLookup, RankedResult, SearchOutcome};
 pub use storage::imported_identity_hash;
 pub use storage::{
-    ActivitySummary, BookFile, BookFilter, BookMatch, BookQuery, BookSort, BookSummary, BookTag,
-    Confidence, DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight,
-    LibraryScope, MergeReport, Moment, MomentKind, MonthActivity, NewHighlight, NewReadingEvent,
-    NoteCitations, NoteRecord, NoteScope, OutgoingLink, PairedDevice, RESURFACE_REST_DAYS,
-    RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering, Reading, ReadingEvent,
-    ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingYears, RefillReport,
+    ActivitySummary, AnnotationAlternative, BookFile, BookFilter, BookMatch, BookQuery, BookSort,
+    BookSummary, BookTag, Confidence, DayActivity, DayRange, FieldSource, FillStats, FlashcardRow,
+    Highlight, LibraryScope, MergeReport, Moment, MomentKind, MonthActivity, NewHighlight,
+    NewReadingEvent, NoteCitations, NoteRecord, NoteScope, OutgoingLink, PairedDevice,
+    RESURFACE_REST_DAYS, RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering, Reading,
+    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingYears, RefillReport,
     ResurfaceReason, Resurfaced, ResurfacedPassage, SearchHit, SearchSource, Setting, Source,
     StatusFilter, Storage, parse_local_date,
 };
@@ -1395,6 +1395,40 @@ impl Engine {
     /// Writes the reader's own annotation; `origin_note` is the source app's and imports refresh it.
     pub async fn set_annotation(&self, highlight_id: i64, annotation: Option<&str>) -> Result<()> {
         self.storage.set_annotation(highlight_id, annotation).await
+    }
+
+    /// The reader's other annotations of a highlight, set aside when two highlights became one or
+    /// when one was promoted over them.
+    pub async fn annotation_alternatives(
+        &self,
+        highlight_id: i64,
+    ) -> Result<Vec<AnnotationAlternative>> {
+        self.storage.annotation_alternatives(highlight_id).await
+    }
+
+    /// Every alternative annotation of a book's highlights in one read.
+    pub async fn book_annotation_alternatives(
+        &self,
+        book_id: i64,
+    ) -> Result<Vec<AnnotationAlternative>> {
+        self.storage.book_annotation_alternatives(book_id).await
+    }
+
+    /// Shows an alternative as the annotation; the one it replaces becomes an alternative.
+    pub async fn promote_annotation_alternative(
+        &self,
+        highlight_id: i64,
+        text: &str,
+    ) -> Result<()> {
+        self.storage
+            .promote_annotation_alternative(highlight_id, text)
+            .await
+    }
+
+    pub async fn remove_annotation_alternative(&self, highlight_id: i64, text: &str) -> Result<()> {
+        self.storage
+            .remove_annotation_alternative(highlight_id, text)
+            .await
     }
 
     /// Imports a local .epub: ISBN, provider enrichment, embedded cover.

@@ -1,3 +1,4 @@
+mod annotation_alternatives;
 mod book_files;
 mod book_search;
 mod books;
@@ -23,6 +24,7 @@ mod search_cache;
 mod settings;
 mod sidecar_seen;
 
+pub use annotation_alternatives::AnnotationAlternative;
 pub use book_files::BookFile;
 pub use book_search::BookMatch;
 #[cfg(test)]

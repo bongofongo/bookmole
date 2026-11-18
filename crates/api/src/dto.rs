@@ -12,21 +12,22 @@ use bookmole::GoodreadsMatch;
 use bookmole::koreader::UnmatchedSidecar;
 use bookmole::providers::ProviderId;
 use bookmole::{
-    ActivitySummary, AnkiExport, Book, BookFile, BookFilter, BookImportStats, BookQuery, BookSort,
-    BookSummary, BookTag, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport, CloudFolder,
-    CloudService, Confidence, CreatedNote, DayActivity, DayRange, DeviceBook, DeviceScan,
-    DeviceState, Diagnostic, DiagnosticKind, EditionShape, EnrichCandidate, EnrichMatch,
-    EnrichOutcome, EnrichReport, ErrorClass, ExpandedPaths, FieldChange, FieldClaim, FieldSource,
-    FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow,
-    FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight, ImportReport,
-    InstallReport, KoStatus, LibraryLocation, LinkContext, LinkDirection, ListenerMode,
-    ListenerStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind, MonthActivity,
-    MountSync, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, PairedDevice,
-    Pairing, PluginCondition, PluginStatus, Progress, PullReport, RankedResult, Rating,
-    RatingScale, Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort,
-    ReadingState, ReadingYears, RefillReport, SavedAnkiExport, SearchHit, SearchOutcome,
-    SearchRequest, SearchSource, Severity, ShapeSource, SkippedEntries, Source, StatsImportReport,
-    StatusFilter, TableOfContents, TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
+    ActivitySummary, AnkiExport, AnnotationAlternative, Book, BookFile, BookFilter,
+    BookImportStats, BookQuery, BookSort, BookSummary, BookTag, CalibreBook, CalibreBookReport,
+    CalibreMatch, CalibreReport, CloudFolder, CloudService, Confidence, CreatedNote, DayActivity,
+    DayRange, DeviceBook, DeviceScan, DeviceState, Diagnostic, DiagnosticKind, EditionShape,
+    EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, ErrorClass, ExpandedPaths,
+    FieldChange, FieldClaim, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome,
+    FillStats, FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField,
+    Highlight, ImportReport, InstallReport, KoStatus, LibraryLocation, LinkContext, LinkDirection,
+    ListenerMode, ListenerStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
+    MonthActivity, MountSync, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink,
+    PairedDevice, Pairing, PluginCondition, PluginStatus, Progress, PullReport, RankedResult,
+    Rating, RatingScale, Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow,
+    ReadingSort, ReadingState, ReadingYears, RefillReport, SavedAnkiExport, SearchHit,
+    SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, SkippedEntries, Source,
+    StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UninstallReport,
+    UnmatchedRow,
 };
 
 fn path_str(p: &Path) -> String {
@@ -2151,6 +2152,38 @@ impl From<SavedAnkiExport> for SavedAnkiExportDto {
         SavedAnkiExportDto {
             path: opt_path(&path),
             count,
+        }
+    }
+}
+
+/// Another annotation the reader wrote on a highlight, held beside the one it shows. Arrives when
+/// two highlights turn out to be one, or when another is promoted over it.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnotationAlternativeDto {
+    pub highlight_id: i64,
+    /// Also its handle: `PromoteAnnotationAlternative` and `RemoveAnnotationAlternative` name it
+    /// by highlight and text.
+    pub text: String,
+    /// Unix seconds.
+    pub set_aside_at: i64,
+}
+
+impl From<AnnotationAlternative> for AnnotationAlternativeDto {
+    fn from(a: AnnotationAlternative) -> Self {
+        let AnnotationAlternative {
+            highlight_id,
+            text,
+            set_aside_at,
+        } = a;
+        AnnotationAlternativeDto {
+            highlight_id,
+            text,
+            set_aside_at,
         }
     }
 }

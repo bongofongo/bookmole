@@ -204,6 +204,27 @@ pub enum Request {
         #[serde(default)]
         annotation: Option<String>,
     },
+    /// The reader's other annotations of one highlight, oldest first. `not_found` for no highlight.
+    AnnotationAlternatives {
+        highlight_id: i64,
+    },
+    /// Every alternative annotation of a book's highlights in one answer, ordered by highlight; a
+    /// highlight with none is absent. For a screen of a book's passages.
+    BookAnnotationAlternatives {
+        book_id: i64,
+    },
+    /// Show this alternative as the annotation. The annotation it replaces, if any, becomes an
+    /// alternative, so nothing is lost. `not_found` when the highlight holds no such alternative.
+    PromoteAnnotationAlternative {
+        highlight_id: i64,
+        text: String,
+    },
+    /// Remove one alternative annotation; removing one already gone is not an error. Clearing the
+    /// shown annotation is `SetAnnotation` with a `null` annotation.
+    RemoveAnnotationAlternative {
+        highlight_id: i64,
+        text: String,
+    },
 
     ImportEpub {
         path: String,
@@ -1036,6 +1057,7 @@ pub enum Response {
 
     Highlights(Vec<HighlightDto>),
     Highlight(Option<HighlightDto>),
+    AnnotationAlternatives(Vec<AnnotationAlternativeDto>),
 
     SearchOutcome(SearchOutcomeDto),
 

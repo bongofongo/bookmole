@@ -41,6 +41,10 @@ CardPassage reading_id
 SetCardPassage reading_id highlight_id
 CardPassageCandidates reading_id
 SetAnnotation highlight_id annotation
+AnnotationAlternatives highlight_id
+BookAnnotationAlternatives book_id
+PromoteAnnotationAlternative highlight_id text
+RemoveAnnotationAlternative highlight_id text
 ImportEpub path
 ImportFile path new
 AddFileToBook book_id path
