@@ -98,7 +98,9 @@ pub async fn run(engine: &Engine, args: SearchArgs) -> Result<()> {
             Err(e) => eprintln!("cover download failed: {e}"),
         }
     }
-    let saved = engine.save_book_unrecorded(&book).await?;
+    let saved = engine
+        .save_search_result_unrecorded(&book, &shown[i].claims)
+        .await?;
     println!("saved {}", render::book_line(&saved));
     Ok(())
 }

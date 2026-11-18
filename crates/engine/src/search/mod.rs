@@ -230,6 +230,35 @@ pub(crate) fn merge_provider_books_claimed(raw: Vec<ProviderBook>) -> Option<(Bo
     dedup(raw).into_iter().next().map(|m| (m.book, m.claims))
 }
 
+/// The direct edition lookup as a search outcome of at most one result: the answers merged as
+/// [`merge_provider_books`] merges them, with the merge's claims, scored as a search for this ISBN
+/// would score it. `isbn` is already normalized.
+pub(crate) async fn lookup_isbn_result(
+    providers: &[Box<dyn MetadataProvider>],
+    isbn: &str,
+) -> SearchOutcome {
+    let (raw, warnings) = lookup_isbn_all(providers, isbn).await;
+    let req = SearchRequest {
+        isbn: Some(isbn.to_string()),
+        ..Default::default()
+    };
+    let results = dedup(raw)
+        .into_iter()
+        .take(1)
+        .map(|m| {
+            let score = rank(&m.book, &m.sources, m.best_position, &req);
+            RankedResult {
+                book: m.book,
+                sources: m.sources,
+                score,
+                shelf_id: None,
+                claims: m.claims.to_vec(),
+            }
+        })
+        .collect();
+    SearchOutcome { results, warnings }
+}
+
 pub(crate) async fn lookup_isbn_all(
     providers: &[Box<dyn MetadataProvider>],
     isbn: &str,

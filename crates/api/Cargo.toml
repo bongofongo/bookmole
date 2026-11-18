@@ -29,6 +29,10 @@ ts-rs = { version = "12", optional = true }
 ts = ["dep:ts-rs"]
 
 [dev-dependencies]
+# `internals` lets a test script the metadata providers, so a provider answer crosses the seam
+# without the network. A dev-dependency, so nothing that ships has it.
+async-trait.workspace = true
+bookmole = { path = "../engine", features = ["internals"] }
 tempfile = "3"
 # The DTO tests build a `Book` with real timestamps, which is the only way to
 # assert that the seam turns an `OffsetDateTime` into unix seconds and back.

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -4181,4 +4182,127 @@ async fn currently_reading_lists_only_reads_in_state_reading() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+struct ByIsbn {
+    id: bookmole::providers::ProviderId,
+    book: bookmole::Book,
+}
+
+#[async_trait::async_trait]
+impl bookmole::providers::MetadataProvider for ByIsbn {
+    fn id(&self) -> bookmole::providers::ProviderId {
+        self.id
+    }
+    async fn search(
+        &self,
+        _: &bookmole::providers::SearchRequest,
+    ) -> bookmole::Result<Vec<bookmole::providers::ProviderBook>> {
+        Ok(Vec::new())
+    }
+    async fn by_isbn(
+        &self,
+        isbn: &str,
+    ) -> bookmole::Result<Option<bookmole::providers::ProviderBook>> {
+        Ok((self.book.isbn_13.as_deref() == Some(isbn)).then(|| {
+            bookmole::providers::ProviderBook {
+                book: self.book.clone(),
+                provider: self.id,
+                position: 0,
+            }
+        }))
+    }
+}
+
+/// An ISBN lookup's result goes back through `SaveSearchResult` as it came.
+#[tokio::test]
+async fn dispatch_and_the_typed_method_agree_on_an_isbn_lookup_result() {
+    use bookmole::providers::ProviderId;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let engine = Engine::open(EngineConfig::in_memory(tmp.path()))
+        .await
+        .expect("engine");
+    let edition = |publisher: Option<&str>, language: Option<&str>| bookmole::Book {
+        title: Some("Middlemarch".into()),
+        authors: vec!["George Eliot".into()],
+        isbn_13: Some("9781900000178".into()),
+        publisher: publisher.map(Into::into),
+        language: language.map(Into::into),
+        ..Default::default()
+    };
+    engine.replace_providers(vec![
+        Box::new(ByIsbn {
+            id: ProviderId::OpenLibrary,
+            book: edition(Some("Blackwood"), None),
+        }),
+        Box::new(ByIsbn {
+            id: ProviderId::GoogleBooks,
+            book: edition(None, Some("en")),
+        }),
+    ]);
+    let api = Api::new(Arc::new(engine));
+
+    let typed = api.lookup_isbn_result("978-1-900000-17-8").await.unwrap();
+    let dispatched = match ok(api
+        .dispatch(Request::LookupIsbnResult {
+            isbn: "978-1-900000-17-8".into(),
+        })
+        .await)
+    {
+        Response::SearchOutcome(o) => o,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(dispatched, typed);
+    assert_eq!(typed.results.len(), 1);
+    let result = typed.results[0].clone();
+    let plain = api.lookup_isbn("9781900000178").await.unwrap();
+    assert_eq!(
+        Some(&result.book),
+        plain.as_ref(),
+        "the same book LookupIsbn answers"
+    );
+
+    let claims = result.claims.expect("the engine reports claims");
+    let saved = match ok(api
+        .dispatch(Request::SaveSearchResult {
+            book: result.book,
+            claims,
+        })
+        .await)
+    {
+        Response::Book(Some(b)) => b,
+        other => panic!("{other:?}"),
+    };
+    let stamped: BTreeMap<String, String> = api
+        .field_provenance(saved.id.unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.field, f.source))
+        .collect();
+    assert_eq!(
+        stamped.get("publisher").map(String::as_str),
+        Some("openlibrary")
+    );
+    assert_eq!(
+        stamped.get("language").map(String::as_str),
+        Some("googlebooks")
+    );
+
+    match ok(api
+        .dispatch(Request::LookupIsbnResult {
+            isbn: "9780141439549".into(),
+        })
+        .await)
+    {
+        Response::SearchOutcome(o) => assert!(o.results.is_empty(), "unknown is an answer"),
+        other => panic!("{other:?}"),
+    }
+    let err = api
+        .dispatch(Request::LookupIsbnResult {
+            isbn: "not an isbn".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidIsbn);
 }
