@@ -4306,3 +4306,122 @@ async fn dispatch_and_the_typed_method_agree_on_an_isbn_lookup_result() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidIsbn);
 }
+
+/// Alternative annotations exist only after a fold, so the test merges a book through the engine.
+#[tokio::test]
+async fn alternative_annotations_agree_across_dispatch_and_are_rechecked() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let engine = Arc::new(
+        Engine::open(EngineConfig::in_memory(tmp.path()))
+            .await
+            .expect("engine"),
+    );
+    let api = Api::new(Arc::clone(&engine));
+    let book = seed(&api).await;
+    let again = api
+        .save_book(BookDto {
+            title: Some("Station Eleven (another record)".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    let passage = bookmole::NewHighlight {
+        text: "a phrase worth keeping".into(),
+        chapter: None,
+        page: Some(12),
+        pos0: Some("/body/p[3]/text().0".into()),
+        pos1: None,
+        ko_datetime: Some("2026-01-05 21:14:08".into()),
+        ko_datetime_updated: None,
+        color: None,
+        note: None,
+        source: "koreader".into(),
+    };
+    let keep = engine
+        .storage()
+        .insert_highlight(book, &passage)
+        .await
+        .unwrap()
+        .unwrap();
+    let dup = engine
+        .storage()
+        .insert_highlight(again, &passage)
+        .await
+        .unwrap()
+        .unwrap();
+    api.set_annotation(keep, Some("mine")).await.unwrap();
+    api.set_annotation(dup, Some("theirs")).await.unwrap();
+    api.merge_books(again, book).await.unwrap();
+
+    let typed = api.annotation_alternatives(keep).await.unwrap();
+    assert_eq!(typed.len(), 1);
+    assert_eq!(typed[0].text, "theirs");
+    match ok(api
+        .dispatch(Request::AnnotationAlternatives { highlight_id: keep })
+        .await)
+    {
+        Response::AnnotationAlternatives(dispatched) => assert_eq!(dispatched, typed),
+        other => panic!("{other:?}"),
+    }
+    match ok(api
+        .dispatch(Request::BookAnnotationAlternatives { book_id: book })
+        .await)
+    {
+        Response::AnnotationAlternatives(dispatched) => {
+            assert_eq!(
+                dispatched,
+                api.book_annotation_alternatives(book).await.unwrap()
+            );
+            assert_eq!(dispatched, typed);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    match ok(api
+        .dispatch(Request::PromoteAnnotationAlternative {
+            highlight_id: keep,
+            text: "theirs".into(),
+        })
+        .await)
+    {
+        Response::Unit => {}
+        other => panic!("{other:?}"),
+    }
+    let shown = api.get_highlight(keep).await.unwrap().unwrap().annotation;
+    assert_eq!(shown.as_deref(), Some("theirs"));
+    assert_eq!(
+        api.annotation_alternatives(keep).await.unwrap()[0].text,
+        "mine"
+    );
+
+    match ok(api
+        .dispatch(Request::RemoveAnnotationAlternative {
+            highlight_id: keep,
+            text: "mine".into(),
+        })
+        .await)
+    {
+        Response::Unit => {}
+        other => panic!("{other:?}"),
+    }
+    assert!(api.annotation_alternatives(keep).await.unwrap().is_empty());
+
+    for request in [
+        Request::AnnotationAlternatives {
+            highlight_id: keep + 1_000,
+        },
+        Request::PromoteAnnotationAlternative {
+            highlight_id: keep,
+            text: "mine".into(),
+        },
+        Request::RemoveAnnotationAlternative {
+            highlight_id: keep + 1_000,
+            text: "mine".into(),
+        },
+    ] {
+        let err = api.dispatch(request).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+    }
+}
