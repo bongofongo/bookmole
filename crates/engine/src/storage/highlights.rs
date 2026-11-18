@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePool;
 use sqlx::{Row, SqliteConnection};
 
+use super::annotation_alternatives::{fold_annotations, is_blank};
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 use crate::highlight_origin::{HighlightOrigin, PosKind};
@@ -145,59 +146,24 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
     }
 }
 
-/// Trims what the reader cannot see, for comparing annotations: two that differ only here are one.
-const TRIMMED: &str = "char(9, 10, 13, 32)";
-
 /// Folds a duplicate into the highlight that keeps the identity. Everything hanging off `dup` moves
-/// first: flashcards and citations would cascade away, note anchors and card passages would null.
-/// No annotation is lost: `keep` takes `dup`'s if it has none, and otherwise holds it (and `dup`'s
-/// own alternatives) as alternatives. Plain SQL, so text that is not valid UTF-8 still moves.
+/// first: flashcards and citations would cascade away, note anchors and card passages would null,
+/// and no annotation the reader wrote is lost (`fold_annotations`).
 pub(super) async fn fold_highlight(conn: &mut SqliteConnection, dup: i64, keep: i64) -> Result<()> {
-    let blank = |col: &str| format!("COALESCE(trim({col}, {TRIMMED}), '')");
-    let (k, d, x, a) = (
-        blank("k.annotation"),
-        blank("d.annotation"),
-        blank("x.text"),
-        blank("a.text"),
-    );
-    let held = |col: &str| {
-        format!(
-            "NOT EXISTS (SELECT 1 FROM annotation_alternatives a \
-              WHERE a.highlight_id = ?1 AND {a} = {col})"
-        )
-    };
-    let statements = [
-        "UPDATE notes SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
-        "UPDATE flashcards SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
+    for sql in [
+        "UPDATE notes SET highlight_id = ?1 WHERE highlight_id = ?2",
+        "UPDATE flashcards SET highlight_id = ?1 WHERE highlight_id = ?2",
         // A note citing both keeps its one citation of `keep`; the other goes with `dup`.
-        "UPDATE OR IGNORE citations SET highlight_id = ?1 WHERE highlight_id = ?2".to_owned(),
-        "UPDATE readings SET card_highlight_id = ?1 WHERE card_highlight_id = ?2".to_owned(),
-        format!(
-            "UPDATE highlights AS k SET annotation = d.annotation FROM highlights AS d \
-              WHERE k.id = ?1 AND d.id = ?2 AND {k} = '' AND {d} <> ''"
-        ),
-        format!(
-            "INSERT OR IGNORE INTO annotation_alternatives (highlight_id, text, set_aside_at) \
-             SELECT ?1, d.annotation, ?3 FROM highlights d, highlights k \
-              WHERE d.id = ?2 AND k.id = ?1 AND {d} <> '' AND {d} <> {k} AND {}",
-            held(&d)
-        ),
-        format!(
-            "INSERT OR IGNORE INTO annotation_alternatives (highlight_id, text, set_aside_at) \
-             SELECT ?1, x.text, x.set_aside_at FROM annotation_alternatives x, highlights k \
-              WHERE x.highlight_id = ?2 AND k.id = ?1 AND {x} <> '' AND {x} <> {k} AND {}",
-            held(&x)
-        ),
-    ];
-    let now = now_unix();
-    for sql in &statements {
+        "UPDATE OR IGNORE citations SET highlight_id = ?1 WHERE highlight_id = ?2",
+        "UPDATE readings SET card_highlight_id = ?1 WHERE card_highlight_id = ?2",
+    ] {
         sqlx::query(sql)
             .bind(keep)
             .bind(dup)
-            .bind(now)
             .execute(&mut *conn)
             .await?;
     }
+    fold_annotations(conn, dup, keep).await?;
     sqlx::query("DELETE FROM highlights WHERE id = ?")
         .bind(dup)
         .execute(&mut *conn)
@@ -440,9 +406,10 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// An annotation that says nothing (`is_blank`) is stored as none.
     pub async fn set_annotation(&self, highlight_id: i64, annotation: Option<&str>) -> Result<()> {
         sqlx::query("UPDATE highlights SET annotation = ? WHERE id = ?")
-            .bind(annotation)
+            .bind(annotation.filter(|a| !is_blank(a)))
             .bind(highlight_id)
             .execute(self.pool())
             .await?;
@@ -904,8 +871,15 @@ mod tests {
                 (keep, dup, Some(other))
             }
         };
-        s.set_annotation(keep, keep_note).await.unwrap();
-        s.set_annotation(dup, dup_note).await.unwrap();
+        // Stored raw, as an older version or another tool may have left them.
+        for (id, note) in [(keep, keep_note), (dup, dup_note)] {
+            sqlx::query("UPDATE highlights SET annotation = ? WHERE id = ?")
+                .bind(note)
+                .bind(id)
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
         for (id, alts) in [(keep, keep_alts), (dup, dup_alts)] {
             for t in alts {
                 sqlx::query(
@@ -1012,6 +986,48 @@ mod tests {
 
             let (s, keep) = folded(how, None, None, &[], &[]).await;
             assert_eq!(annotation_and_alternatives(&s, keep).await, (None, vec![]));
+        }
+    }
+
+    /// Blank and equal are `annotation_key`'s decision in every fold, Unicode whitespace included.
+    #[tokio::test]
+    async fn a_fold_judges_blank_and_equal_by_one_rule() {
+        for how in [Fold::Rehash, Fold::Merge] {
+            for invisible in ["\u{3000}", " \t\n", "\u{a0}\u{3000} "] {
+                let (s, keep) = folded(how, Some(invisible), Some("real words"), &[], &[]).await;
+                assert_eq!(
+                    annotation_and_alternatives(&s, keep).await,
+                    (Some("real words".into()), vec![]),
+                    "{how:?}: {invisible:?} says nothing, so the words are shown"
+                );
+                let (s, keep) = folded(how, Some("mine"), Some(invisible), &[], &[]).await;
+                assert_eq!(
+                    annotation_and_alternatives(&s, keep).await,
+                    (Some("mine".into()), vec![]),
+                    "{how:?}: nothing is set aside for {invisible:?}"
+                );
+            }
+
+            let (s, keep) = folded(
+                how,
+                Some("mine"),
+                None,
+                &["held "],
+                &["twin", "twin \n", "held"],
+            )
+            .await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("mine".into()), owned(&["held ", "twin"])),
+                "{how:?}: trailing-whitespace twins move once"
+            );
+
+            let (s, keep) = folded(how, Some("café"), Some("cafe\u{301}"), &[], &[]).await;
+            assert_eq!(
+                annotation_and_alternatives(&s, keep).await,
+                (Some("café".into()), owned(&["cafe\u{301}"])),
+                "{how:?}: Unicode forms are not normalised"
+            );
         }
     }
 
