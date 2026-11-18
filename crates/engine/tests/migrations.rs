@@ -1235,3 +1235,60 @@ async fn note_bodies_back_fill_from_the_index_and_only_for_indexed_notes() {
         .unwrap();
     assert_eq!(left, 0, "a body row goes with its note");
 }
+
+const LIST_POSITIONS: i64 = 35;
+
+/// The list queries that used the unique index use the plain one, and a duplicate is accepted.
+#[tokio::test]
+async fn list_positions_keep_their_index_and_stop_refusing_duplicates() {
+    const ORDER: &str = "SELECT book_id FROM book_list_entries WHERE list_id = 1 \
+         ORDER BY position, added_at, book_id";
+    const FACES: &str = "SELECT books.id FROM books \
+         JOIN book_list_entries e ON e.book_id = books.id \
+         WHERE e.list_id = 1 ORDER BY e.position, e.added_at, e.book_id LIMIT 4";
+    const NEXT: &str =
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM book_list_entries WHERE list_id = 1";
+
+    let mut conn = migrated_below(LIST_POSITIONS).await;
+    let mut before = Vec::new();
+    for sql in [ORDER, FACES, NEXT] {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains("idx_book_list_entries_pos"),
+            "before 0035 the unique index serves this, or the test proves nothing: {detail}"
+        );
+        before.push(detail);
+    }
+
+    apply(&mut conn, LIST_POSITIONS).await;
+
+    // Ties on `position` now need sorting, but only ties: the index still orders the rest.
+    for (sql, was) in [ORDER, FACES, NEXT].into_iter().zip(before) {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains("USING INDEX idx_book_list_entries_pos (list_id=?)")
+                || detail.contains("USING COVERING INDEX idx_book_list_entries_pos (list_id=?)"),
+            "expected the index in the plan, got {detail} (was {was})"
+        );
+        assert!(
+            !detail.contains("TEMP B-TREE FOR ORDER BY"),
+            "the whole order is sorted again: {detail}"
+        );
+    }
+
+    let a = plain_book(&mut conn, "Middlemarch").await;
+    let b = plain_book(&mut conn, "Silas Marner").await;
+    sqlx::query("INSERT INTO book_lists (id, name, created_at, updated_at) VALUES (1, 'L', 0, 0)")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO book_list_entries (list_id, book_id, position, added_at)
+         VALUES (1, ?, 0, 0), (1, ?, 0, 0)",
+    )
+    .bind(a)
+    .bind(b)
+    .execute(&mut conn)
+    .await
+    .expect("two entries at one position are allowed");
+}
