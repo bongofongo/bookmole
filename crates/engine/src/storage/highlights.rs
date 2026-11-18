@@ -44,13 +44,22 @@ pub(crate) fn identity_hash_of(
     pos0: Option<&str>,
     text: &str,
 ) -> String {
+    identity_hash_of_bytes(
+        ko_datetime.unwrap_or("").as_bytes(),
+        pos0.unwrap_or("").as_bytes(),
+        text.as_bytes(),
+    )
+}
+
+/// Bytes, so a stored value that is not valid UTF-8 still hashes instead of failing to decode.
+fn identity_hash_of_bytes(ko_datetime: &[u8], pos0: &[u8], text: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"rb-local\0");
-    hasher.update(ko_datetime.unwrap_or("").as_bytes());
+    hasher.update(ko_datetime);
     hasher.update(b"\0");
-    hasher.update(pos0.unwrap_or("").as_bytes());
+    hasher.update(pos0);
     hasher.update(b"\0");
-    hasher.update(text.as_bytes());
+    hasher.update(text);
     format!("{IDENTITY_PREFIX}{:x}", hasher.finalize())
 }
 
@@ -83,8 +92,9 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
         // both reading a batch and then failing to upgrade to a write.
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         let sql = format!(
-            "SELECT id, book_id, ko_datetime, pos0, text FROM highlights
-              WHERE {ON_OLD_FORMULA} ORDER BY id LIMIT ?2"
+            "SELECT id, book_id, CAST(ko_datetime AS BLOB) AS ko_datetime,
+                    CAST(pos0 AS BLOB) AS pos0, CAST(text AS BLOB) AS text
+               FROM highlights WHERE {ON_OLD_FORMULA} ORDER BY id LIMIT ?2"
         );
         let rows = sqlx::query(&sql)
             .bind(IDENTITY_PREFIX)
@@ -97,10 +107,11 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
         for r in &rows {
             let id: i64 = r.try_get("id")?;
             let book_id: i64 = r.try_get("book_id")?;
-            let hash = identity_hash_of(
-                r.try_get::<Option<String>, _>("ko_datetime")?.as_deref(),
-                r.try_get::<Option<String>, _>("pos0")?.as_deref(),
-                &r.try_get::<String, _>("text")?,
+            let hash = identity_hash_of_bytes(
+                &r.try_get::<Option<Vec<u8>>, _>("ko_datetime")?
+                    .unwrap_or_default(),
+                &r.try_get::<Option<Vec<u8>>, _>("pos0")?.unwrap_or_default(),
+                &r.try_get::<Option<Vec<u8>>, _>("text")?.unwrap_or_default(),
             );
             let holder: Option<i64> = sqlx::query_scalar(
                 "SELECT id FROM highlights WHERE book_id = ? AND identity_hash = ?",
@@ -797,6 +808,76 @@ mod tests {
 
         let s = Storage::connect(&url).await.unwrap();
         assert_eq!(hashes(&s).await[0].1, h.identity_hash());
+    }
+
+    async fn file_library() -> (tempfile::TempDir, String, Storage, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        let book = s
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        (dir, url, s, book)
+    }
+
+    /// Text another tool wrote that is not valid UTF-8 still has bytes, and bytes are hashed.
+    #[tokio::test]
+    async fn a_row_that_is_not_utf8_is_rehashed_and_the_library_opens() {
+        let (_dir, url, s, book) = file_library().await;
+        sqlx::query(
+            "INSERT INTO highlights (book_id, text, pos0, ko_datetime, source, origin,
+                                     identity_hash, created_at)
+             VALUES (?, CAST(x'4d6964646c656d61726368ff' AS TEXT), '/p[1]',
+                     '2025-01-01 00:00:00', 'koreader', 'koreader', 'deadbeef', 0)",
+        )
+        .bind(book)
+        .execute(s.pool())
+        .await
+        .unwrap();
+        s.pool().close().await;
+
+        let s = Storage::connect(&url).await.expect("the library opens");
+        let want = identity_hash_of_bytes(b"2025-01-01 00:00:00", b"/p[1]", b"Middlemarch\xff");
+        assert_eq!(hashes(&s).await[0].1, want);
+    }
+
+    #[tokio::test]
+    async fn a_rehash_that_cannot_finish_does_not_keep_the_library_shut() {
+        let (_dir, url, s, book) = file_library().await;
+        let h = hl("a phrase worth keeping");
+        raw_row(&s, book, &h, "koreader", &old_hash(book, &h)).await;
+        sqlx::query(
+            "CREATE TRIGGER refuse BEFORE UPDATE OF identity_hash ON highlights
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+        .execute(s.pool())
+        .await
+        .unwrap();
+        s.pool().close().await;
+
+        let s = Storage::connect(&url)
+            .await
+            .expect("opens although the rehash failed");
+        assert_eq!(hashes(&s).await[0].1, old_hash(book, &h), "left for later");
+        sqlx::query("DROP TRIGGER refuse")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        s.pool().close().await;
+
+        let s = Storage::connect(&url).await.unwrap();
+        assert_eq!(
+            hashes(&s).await[0].1,
+            h.identity_hash(),
+            "the next open finished it"
+        );
     }
 
     #[tokio::test]
