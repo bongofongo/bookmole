@@ -148,8 +148,44 @@ pub(super) fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<R
 
 /// Null-safe "sidecar differs" test: `IS NOT`, not `!=`, so a rating cleared on the device counts
 /// as a change.
-const DEVICE_STATE_DIFFER: &str =
-    "(ko_status IS NOT ?2 OR (?3 IS NOT NULL AND ko_percent IS NOT ?3) OR ko_rating IS NOT ?4)";
+/// The reading a device report lands on: the open one, else the latest (`?1` is the book id).
+const DEVICE_READING: &str = "(SELECT id FROM readings WHERE book_id = ?1
+                         ORDER BY (finished_at IS NULL) DESC,
+                                  COALESCE(started_at, created_at) DESC, id DESC LIMIT 1)";
+
+/// Whether [`DeviceNews`] changes the row: `?2` status, `?3` percent, `?4` rating, `?5` whether the
+/// rating is news.
+const DEVICE_NEWS_DIFFERS: &str = "((?2 IS NOT NULL AND ko_status IS NOT ?2)
+                              OR (?3 IS NOT NULL AND ko_percent IS NOT ?3)
+                              OR (?5 AND ko_rating IS NOT ?4))";
+
+/// The fields of a device report that differ from the book's last report. `None` is "not news";
+/// `rating: Some(None)` is a rating the device cleared.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DeviceNews {
+    pub status: Option<KoStatus>,
+    pub percent: Option<f64>,
+    pub rating: Option<Option<i64>>,
+}
+
+/// Binds `?1`..`?5` of [`DEVICE_NEWS_DIFFERS`] and [`DEVICE_READING`]; a macro because the update and
+/// the preview are different query types.
+macro_rules! bind_news {
+    ($query:expr, $book_id:expr, $news:expr) => {
+        $query
+            .bind($book_id)
+            .bind($news.status.as_ref().map(|s| s.to_string()))
+            .bind($news.percent)
+            .bind($news.rating.flatten())
+            .bind($news.rating.is_some())
+    };
+}
+
+impl DeviceNews {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.status.is_none() && self.percent.is_none() && self.rating.is_none()
+    }
+}
 
 /// The device's last report on a book; see [`Storage::last_device_report`].
 #[derive(Debug, Clone, PartialEq)]
@@ -696,44 +732,49 @@ impl Storage {
             .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
     }
 
-    /// Mirror device status/percent/rating onto the current reading; returns whether anything changed.
-    /// Status and rating assign straight, since an absent rating means the user cleared it. An absent
-    /// percent keeps the last one, which is the position a later sync compares against. Opens no
-    /// reading.
-    pub(crate) async fn set_device_state(
-        &self,
-        book_id: i64,
-        status: Option<&KoStatus>,
-        percent: Option<f64>,
-        rating: Option<i64>,
-    ) -> Result<bool> {
+    /// Writes only what is news onto the reading a device report lands on, so a read opened in the app
+    /// since the last report (a reread) never takes on the device's older status or percent. Returns
+    /// whether the row changed. Opens no reading.
+    pub(crate) async fn set_device_news(&self, book_id: i64, news: &DeviceNews) -> Result<bool> {
         let sql = format!(
-            "UPDATE readings SET ko_status = ?2, ko_percent = COALESCE(?3, ko_percent), ko_rating = ?4,
-                                 last_modified = ?5
-             WHERE id = (SELECT id FROM readings WHERE book_id = ?1
-                         ORDER BY (finished_at IS NULL) DESC,
-                                  COALESCE(started_at, created_at) DESC, id DESC LIMIT 1)
-               AND {DEVICE_STATE_DIFFER}"
+            "UPDATE readings SET ko_status  = COALESCE(?2, ko_status),
+                                 ko_percent = COALESCE(?3, ko_percent),
+                                 ko_rating  = CASE WHEN ?5 THEN ?4 ELSE ko_rating END,
+                                 last_modified = ?6
+              WHERE id = {DEVICE_READING} AND {DEVICE_NEWS_DIFFERS}"
         );
-        let done = sqlx::query(&sql)
-            .bind(book_id)
-            .bind(status.map(|s| s.to_string()))
-            .bind(percent)
-            .bind(rating)
+        let done = bind_news!(sqlx::query(&sql), book_id, news)
             .bind(now_unix())
             .execute(self.pool())
             .await?;
         Ok(done.rows_affected() > 0)
     }
 
-    /// What the device last reported on the book: status and rating from the latest reading that holds a
-    /// report, percent from the latest that holds one. Book-wide, because a read opened in the app (a
-    /// reread) holds none, and the device has not said anything new just because the read is new.
+    /// [`Storage::set_device_news`] without the write; `None` when the book has no reading to land on.
+    pub(crate) async fn device_news_differs(
+        &self,
+        book_id: i64,
+        news: &DeviceNews,
+    ) -> Result<Option<bool>> {
+        let sql = format!("SELECT {DEVICE_NEWS_DIFFERS} FROM readings WHERE id = {DEVICE_READING}");
+        Ok(
+            bind_news!(sqlx::query_scalar::<_, bool>(&sql), book_id, news)
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
+    /// What the device last reported on the book, each field from the latest reading that holds it:
+    /// a read opened in the app holds none until the device says something new, and then only that.
+    /// The rating comes from the latest reading holding any report, because an absent rating there
+    /// is one the device cleared.
     pub(crate) async fn last_device_report(&self, book_id: i64) -> Result<Option<DeviceReportRow>> {
         const LATEST: &str = "ORDER BY (finished_at IS NULL) DESC,
                                        COALESCE(started_at, created_at) DESC, id DESC LIMIT 1";
         let sql = format!(
-            "SELECT ko_status, ko_rating,
+            "SELECT ko_rating,
+                    (SELECT ko_status FROM readings WHERE book_id = ?1 AND ko_status IS NOT NULL
+                     {LATEST}) AS ko_status,
                     (SELECT ko_percent FROM readings WHERE book_id = ?1 AND ko_percent IS NOT NULL
                      {LATEST}) AS ko_percent
                FROM readings
@@ -753,30 +794,6 @@ impl Storage {
             })
         })
         .transpose()
-    }
-
-    pub async fn device_state_differs(
-        &self,
-        book_id: i64,
-        status: Option<&KoStatus>,
-        percent: Option<f64>,
-        rating: Option<i64>,
-    ) -> Result<bool> {
-        let sql = format!(
-            "SELECT count(*) FROM readings
-             WHERE id = (SELECT id FROM readings WHERE book_id = ?1
-                         ORDER BY (finished_at IS NULL) DESC,
-                                  COALESCE(started_at, created_at) DESC, id DESC LIMIT 1)
-               AND {DEVICE_STATE_DIFFER}"
-        );
-        let n: i64 = sqlx::query_scalar(&sql)
-            .bind(book_id)
-            .bind(status.map(|s| s.to_string()))
-            .bind(percent)
-            .bind(rating)
-            .fetch_one(self.pool())
-            .await?;
-        Ok(n > 0)
     }
 
     /// Assigns `highlights.reading_id` by matching `ko_datetime` into reading windows, from scratch.
@@ -1096,62 +1113,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_state_reports_only_a_real_change() {
+    async fn device_news_writes_only_a_real_change_and_the_preview_agrees() {
         let (s, id) = seeded().await;
         s.open_reading(id, Some(1), "koreader").await.unwrap();
 
-        let complete = KoStatus::Complete;
+        let all = DeviceNews {
+            status: Some(KoStatus::Complete),
+            percent: Some(0.5),
+            rating: Some(Some(4)),
+        };
+        assert_eq!(s.device_news_differs(id, &all).await.unwrap(), Some(true));
+        assert!(s.set_device_news(id, &all).await.unwrap());
         assert!(
-            s.device_state_differs(id, Some(&complete), Some(0.5), Some(4))
-                .await
-                .unwrap()
+            !s.set_device_news(id, &all).await.unwrap(),
+            "an identical report is not an update"
         );
-        assert!(
-            s.set_device_state(id, Some(&complete), Some(0.5), Some(4))
-                .await
-                .unwrap()
-        );
-        assert!(
-            !s.set_device_state(id, Some(&complete), Some(0.5), Some(4))
-                .await
-                .unwrap(),
-            "an identical sidecar is not an update"
-        );
-        assert!(
-            !s.device_state_differs(id, Some(&complete), Some(0.5), Some(4))
-                .await
-                .unwrap(),
+        assert_eq!(
+            s.device_news_differs(id, &all).await.unwrap(),
+            Some(false),
             "the preview must agree with the write"
         );
 
+        let cleared = DeviceNews {
+            rating: Some(None),
+            ..Default::default()
+        };
+        assert!(s.set_device_news(id, &cleared).await.unwrap());
         let r = &s.list_readings(id).await.unwrap()[0];
-        assert_eq!(r.ko_status.as_deref(), Some("complete"));
-        assert_eq!(r.ko_percent, Some(0.5));
-        assert_eq!(r.ko_rating, Some(4));
-
-        assert!(s.set_device_state(id, None, None, None).await.unwrap());
-        let r = &s.list_readings(id).await.unwrap()[0];
-        assert_eq!(r.ko_rating, None);
-        assert_eq!(r.ko_status, None);
+        assert_eq!(r.ko_rating, None, "a cleared rating is news");
         assert_eq!(
-            r.ko_percent,
-            Some(0.5),
-            "a report without a percent keeps the last one"
+            r.ko_status.as_deref(),
+            Some("complete"),
+            "absent is not news"
         );
-        assert!(
-            !s.device_state_differs(id, None, None, None).await.unwrap(),
-            "the preview agrees that a missing percent changes nothing"
+        assert_eq!(r.ko_percent, Some(0.5));
+        assert_eq!(
+            s.device_news_differs(id, &DeviceNews::default())
+                .await
+                .unwrap(),
+            Some(false)
         );
     }
 
     #[tokio::test]
-    async fn device_state_with_no_reading_writes_nothing() {
+    async fn device_news_with_no_reading_writes_nothing() {
         let (s, id) = seeded().await;
-        assert!(
-            !s.set_device_state(id, Some(&KoStatus::Reading), Some(0.1), None)
-                .await
-                .unwrap()
-        );
+        let news = DeviceNews {
+            status: Some(KoStatus::Reading),
+            percent: Some(0.1),
+            rating: None,
+        };
+        assert!(!s.set_device_news(id, &news).await.unwrap());
+        assert_eq!(s.device_news_differs(id, &news).await.unwrap(), None);
     }
 
     #[tokio::test]

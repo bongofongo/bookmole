@@ -9,7 +9,7 @@ use crate::diagnostic::Diagnostic;
 use crate::error::{EngineError, Result};
 use crate::flashcards::single_word;
 use crate::matching::{Prepared, Query};
-use crate::storage::{LinkedBy, NewHighlight, Source, Storage, ko_datetime_to_unix};
+use crate::storage::{DeviceNews, LinkedBy, NewHighlight, Source, Storage, ko_datetime_to_unix};
 
 /// Instructions a sidecar chunk may run before it is killed. Kept low so a hostile
 /// `while true do end` trips in milliseconds even under sanitizer instrumentation.
@@ -837,45 +837,34 @@ async fn reader_copy(
     })
 }
 
-/// Mirror the sidecar's reading state onto a reading and attribute the imported highlights.
-/// Opens a reading (at the earliest `datetime`) only when the sidecar carries device state
-/// and the book has none, so re-import stays idempotent. Never called under `dry_run`.
+/// Mirror what is new in the sidecar's reading state onto a reading and attribute the imported
+/// highlights. Opens a reading (at the earliest `datetime`) only when the sidecar carries device
+/// state and the book has none, so re-import stays idempotent. Never called under `dry_run`.
 async fn persist_device_state(
     storage: &Storage,
     book_id: i64,
     sc: &KoSidecar,
     stats: &BookImportStats,
 ) -> Result<()> {
-    if stats.status.is_none() && stats.percent_finished.is_none() && stats.rating.is_none() {
-        return Ok(());
-    }
-
-    let started = sc
-        .highlights
-        .iter()
-        .filter_map(|h| h.ko_datetime.as_deref())
-        .filter_map(ko_datetime_to_unix)
-        .min();
-    storage.ensure_reading(book_id, started, "koreader").await?;
-    let last = last_device_report(storage, book_id).await?;
     let report = DeviceReport {
         status: stats.status.clone(),
         percent: stats.percent_finished,
-        rating: stats.rating,
+        rating: Some(stats.rating),
     };
+    if report.is_silent() {
+        return Ok(());
+    }
 
-    // An unchanged report is not mirrored either: a read the reader opened since (a reread) would
-    // take on a stale status and percent.
-    if is_new(last.as_ref(), &report) {
-        storage
-            .set_device_state(
-                book_id,
-                stats.status.as_ref(),
-                stats.percent_finished,
-                stats.rating,
-            )
-            .await?;
-        match device_effect(&last.unwrap_or_default(), &report) {
+    if let Some((last, news)) = device_news(storage, book_id, &report).await? {
+        let started = sc
+            .highlights
+            .iter()
+            .filter_map(|h| h.ko_datetime.as_deref())
+            .filter_map(ko_datetime_to_unix)
+            .min();
+        storage.ensure_reading(book_id, started, "koreader").await?;
+        storage.set_device_news(book_id, &news).await?;
+        match device_effect(&last, &report) {
             DeviceEffect::Finish => {
                 storage.finish_reading(book_id).await?;
             }
@@ -893,37 +882,64 @@ async fn persist_device_state(
     Ok(())
 }
 
-/// What a device said about a book: the sidecar's status, `percent_finished` and rating.
+/// What a sidecar says about a book. An absent status or percent says nothing, so it keeps the last
+/// one; an absent rating is one the reader cleared. `rating: None` is a rating not known at all
+/// (a device scan's cached facts carry none), which is never news.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct DeviceReport {
     pub(crate) status: Option<KoStatus>,
     pub(crate) percent: Option<f64>,
-    pub(crate) rating: Option<i64>,
+    pub(crate) rating: Option<Option<i64>>,
 }
 
-/// The device's last report on the book, across its readings; see `Storage::last_device_report`.
-pub(crate) async fn last_device_report(
+impl DeviceReport {
+    fn is_silent(&self) -> bool {
+        self.status.is_none() && self.percent.is_none() && self.rating.flatten().is_none()
+    }
+}
+
+/// The device's last report on the book; see `Storage::last_device_report`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct LastReport {
+    status: Option<KoStatus>,
+    percent: Option<f64>,
+    rating: Option<i64>,
+}
+
+/// What a sync of `report` would write, with the last report the write is judged against; `None`
+/// when it would change nothing. The sync acts on it and a device scan asks it, so a scan calls a
+/// row's reading state changed exactly when a sync of that row would write.
+pub(crate) async fn device_news(
     storage: &Storage,
     book_id: i64,
-) -> Result<Option<DeviceReport>> {
-    Ok(storage
+    report: &DeviceReport,
+) -> Result<Option<(LastReport, DeviceNews)>> {
+    if report.is_silent() {
+        return Ok(None);
+    }
+    let last = storage
         .last_device_report(book_id)
         .await?
-        .map(|r| DeviceReport {
+        .map(|r| LastReport {
             status: r.status.as_deref().map(KoStatus::from),
             percent: r.percent,
             rating: r.rating,
-        }))
-}
-
-/// Whether a sync would change anything: a report without a percent keeps the last one.
-pub(crate) fn is_new(last: Option<&DeviceReport>, now: &DeviceReport) -> bool {
-    let Some(last) = last else {
-        return now.status.is_some() || now.percent.is_some() || now.rating.is_some();
+        })
+        .unwrap_or_default();
+    let news = DeviceNews {
+        status: report
+            .status
+            .clone()
+            .filter(|s| last.status.as_ref() != Some(s)),
+        percent: report.percent.filter(|p| last.percent != Some(*p)),
+        rating: report.rating.filter(|r| *r != last.rating),
     };
-    last.status != now.status
-        || last.rating != now.rating
-        || now.percent.is_some_and(|p| last.percent != Some(p))
+    if news.is_empty() {
+        return Ok(None);
+    }
+    // `None`: no reading yet, and the sync opens one for the news to land on.
+    let lands = storage.device_news_differs(book_id, &news).await?;
+    Ok((lands != Some(false)).then_some((last, news)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -937,7 +953,7 @@ enum DeviceEffect {
 /// A sync changes the reading's state only for what is new on the device since its last report, so a
 /// pause, pick-up or reread made in the app stands until the device says something different.
 /// Compared with the device's own last report, never the app's page, which the reader may edit.
-fn device_effect(last: &DeviceReport, now: &DeviceReport) -> DeviceEffect {
+fn device_effect(last: &LastReport, now: &DeviceReport) -> DeviceEffect {
     let was = |s: KoStatus| last.status.as_ref() == Some(&s);
     match &now.status {
         Some(KoStatus::Complete) if was(KoStatus::Complete) => DeviceEffect::Nothing,

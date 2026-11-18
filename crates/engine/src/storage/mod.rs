@@ -60,6 +60,7 @@ pub use reading_events::{
     ReadingEvent, RefillReport, SOURCE_KOREADER, SOURCE_LOCAL, SOURCE_VAULT, day_of_ko_datetime,
     day_of_unix,
 };
+pub(crate) use readings::DeviceNews;
 pub use readings::{
     ReadCount, ReadNumbering, Reading, ReadingRow, ReadingSort, ReadingYears, STATUS_ABANDONED,
     STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
