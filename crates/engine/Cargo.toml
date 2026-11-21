@@ -84,6 +84,11 @@ notify.workspace = true
 # and the copy has to land somewhere private that is cleaned up even when the
 # read fails. It was already a dev-dependency; this promotes it.
 tempfile = "3"
+# Sync: change capture by trigger and the merge of changes from other devices,
+# over the connection sqlx already holds. MIT OR Apache-2.0. It links the same
+# `libsqlite3-sys` 0.30.1 that sqlx does, so the workspace patch below vendors
+# one SQLite for both. Pinned by commit: the kernel is not on crates.io.
+fongo-sync-sqlite = { git = "https://github.com/bongofongo/fongo-sync", rev = "1fa19363cab1a7a751a4eed2515babbb73884a04" }
 
 # Which of this machine's addresses is on a LAN. The route-to-nowhere trick in
 # `plugin::this_lan_address` answers *which address would reach the world*, and
