@@ -46,6 +46,7 @@ pub mod search;
 pub mod sort;
 pub mod spreadsheet;
 pub mod storage;
+pub(crate) mod sync;
 pub(crate) mod volumes;
 pub mod watch;
 pub mod wireless;
