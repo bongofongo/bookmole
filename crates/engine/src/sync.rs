@@ -313,4 +313,148 @@ mod tests {
             }
         }
     }
+
+    /// Sends what `from` wrote to `to`; returns how many changes went.
+    async fn send(
+        from: (&Replica, &mut SqliteConnection),
+        to: (&Replica, &mut SqliteConnection),
+    ) -> usize {
+        let (replica, conn) = from;
+        replica.collect(conn).await.unwrap();
+        let out = replica.outbox(conn, 100_000).await.unwrap();
+        if out.changes.is_empty() {
+            return 0;
+        }
+        let applied = to.0.apply(to.1, &out.changes).await.unwrap();
+        assert!(applied.held.is_empty(), "held back: {:?}", applied.held);
+        replica.acknowledge(conn, out.through).await.unwrap();
+        out.changes.len()
+    }
+
+    async fn exchange(a: (&Replica, &mut SqliteConnection), b: (&Replica, &mut SqliteConnection)) {
+        let (ra, ca) = a;
+        let (rb, cb) = b;
+        for _ in 0..4 {
+            let there = send((ra, &mut *ca), (rb, &mut *cb)).await;
+            let back = send((rb, &mut *cb), (ra, &mut *ca)).await;
+            if there + back == 0 {
+                return;
+            }
+        }
+        panic!("the two libraries kept sending changes");
+    }
+
+    /// What a reader sees, without the local ids that differ between devices.
+    async fn view(conn: &mut SqliteConnection) -> Vec<String> {
+        let mut seen = Vec::new();
+        for sql in [
+            "SELECT 'book ' || title || ' ' || COALESCE(isbn_13, '-') FROM books",
+            "SELECT 'highlight ' || b.title || ' ' || h.text || ' ' || h.identity_hash || ' '
+                    || COALESCE(h.annotation, '-')
+               FROM highlights h JOIN books b ON b.id = h.book_id",
+            "SELECT 'tag ' || b.title || ' ' || t.tag || ' ' || t.source
+               FROM book_tags t JOIN books b ON b.id = t.book_id",
+            "SELECT 'scale ' || name || ' ' || is_default FROM rating_scales",
+            "SELECT 'map ' || s.name || ' ' || m.value || ' ' || m.goodreads
+               FROM rating_map m JOIN rating_scales s ON s.id = m.scale_id",
+        ] {
+            let mut rows: Vec<String> =
+                sqlx::query_scalar(sql).fetch_all(&mut *conn).await.unwrap();
+            rows.sort();
+            seen.extend(rows);
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn two_libraries_exchange_a_book_a_highlight_and_a_tag() {
+        use crate::book::Book;
+        use crate::storage::NewHighlight;
+
+        let (a, b) = (fresh().await, fresh().await);
+        let (ra, rb) = (replica().unwrap(), replica().unwrap());
+        for (s, r) in [(&a, &ra), (&b, &rb)] {
+            r.install(&mut *s.pool().acquire().await.unwrap())
+                .await
+                .unwrap();
+        }
+
+        let book = a
+            .upsert_book(
+                &Book {
+                    title: Some("Middlemarch".into()),
+                    isbn_13: Some("9780141439549".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let passage = "Who can quit young lives after being long in company with them?";
+        a.insert_highlight(
+            book,
+            &NewHighlight {
+                text: passage.into(),
+                chapter: Some("Finale".into()),
+                page: Some(838),
+                pos0: Some("/body/DocFragment[90]/p[1]/text().0".into()),
+                pos1: None,
+                ko_datetime: Some("2026-01-01 10:00:00".into()),
+                ko_datetime_updated: None,
+                color: None,
+                note: None,
+                source: "koreader".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO book_tags (book_id, tag, source) VALUES (?1, 'to-read', 'goodreads')",
+        )
+        .bind(book)
+        .execute(a.pool())
+        .await
+        .unwrap();
+
+        {
+            let (mut ca, mut cb) = (
+                a.pool().acquire().await.unwrap(),
+                b.pool().acquire().await.unwrap(),
+            );
+            exchange((&ra, &mut ca), (&rb, &mut cb)).await;
+        }
+        let on_b: i64 = sqlx::query_scalar("SELECT id FROM highlights WHERE text = ?1")
+            .bind(passage)
+            .fetch_one(b.pool())
+            .await
+            .unwrap();
+        b.set_annotation(on_b, Some("the last page")).await.unwrap();
+
+        let (mut ca, mut cb) = (
+            a.pool().acquire().await.unwrap(),
+            b.pool().acquire().await.unwrap(),
+        );
+        exchange((&ra, &mut ca), (&rb, &mut cb)).await;
+        let seen = view(&mut ca).await;
+        assert_eq!(seen, view(&mut cb).await);
+        assert!(
+            seen.contains(&"book Middlemarch 9780141439549".to_string()),
+            "{seen:#?}"
+        );
+        assert!(
+            seen.iter().any(|row| row.ends_with(" the last page")),
+            "{seen:#?}"
+        );
+        assert!(
+            seen.contains(&"tag Middlemarch to-read goodreads".to_string()),
+            "{seen:#?}"
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|row| row.starts_with("scale default "))
+                .count(),
+            1
+        );
+    }
 }
