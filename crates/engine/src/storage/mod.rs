@@ -323,6 +323,14 @@ async fn open_synced(conn: &mut SqliteConnection) -> Result<()> {
         return Ok(());
     }
     hold_write_lock(conn).await?;
+    // Read again under the lock: another open may have suspended capture and stopped since.
+    let capture_on = match capture_installed(conn).await {
+        Ok(on) => on,
+        Err(error) => {
+            release_write_lock(conn).await?;
+            return Err(error);
+        }
+    };
     let suspended = capture_on && suspend(conn).await;
     let migrated = migrate(conn).await;
     if migrated.is_ok() {
@@ -333,8 +341,9 @@ async fn open_synced(conn: &mut SqliteConnection) -> Result<()> {
     } else if !capture_on {
         resume(conn, Resume::Send).await;
     }
-    release_write_lock(conn).await?;
-    migrated
+    let released = release_write_lock(conn).await;
+    migrated?;
+    released
 }
 
 async fn suspend(conn: &mut SqliteConnection) -> bool {
