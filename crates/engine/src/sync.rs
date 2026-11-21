@@ -15,6 +15,7 @@ use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
 
+#[expect(clippy::too_many_lines)]
 pub(crate) fn registry() -> Result<Registry> {
     Registry::new(vec![
         Collection::minted("books", "books", "id")
@@ -374,7 +375,7 @@ mod tests {
         let (a, b) = (fresh().await, fresh().await);
         let (ra, rb) = (replica().unwrap(), replica().unwrap());
         for (s, r) in [(&a, &ra), (&b, &rb)] {
-            r.install(&mut *s.pool().acquire().await.unwrap())
+            r.install(&mut s.pool().acquire().await.unwrap())
                 .await
                 .unwrap();
         }
