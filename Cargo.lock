@@ -893,7 +893,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -988,7 +988,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "fongo-sync-core"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=1fa19363cab1a7a751a4eed2515babbb73884a04#1fa19363cab1a7a751a4eed2515babbb73884a04"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=c1a993f6035c20e3993874da6e847228adf1ebc6#c1a993f6035c20e3993874da6e847228adf1ebc6"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -996,7 +996,7 @@ dependencies = [
 [[package]]
 name = "fongo-sync-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=1fa19363cab1a7a751a4eed2515babbb73884a04#1fa19363cab1a7a751a4eed2515babbb73884a04"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=c1a993f6035c20e3993874da6e847228adf1ebc6#c1a993f6035c20e3993874da6e847228adf1ebc6"
 dependencies = [
  "fongo-sync-core",
  "libsqlite3-sys",
@@ -1983,7 +1983,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2371,7 +2371,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2681,7 +2681,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2949,7 +2949,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -3280,7 +3280,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -3966,7 +3966,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]

@@ -5,8 +5,7 @@
 //!
 //! Left out for now:
 //! - `settings`: some keys belong to one machine, and the kernel cannot sync only some rows.
-//! - `device_books`, `review_ratings`, `note_bodies`: their key column is not declared NOT NULL,
-//!   which a natural key needs.
+//! - `device_books`: its key column is not declared NOT NULL, which a natural key needs.
 //! - `annotation_alternatives`: not yet decided whether set-aside annotations travel.
 
 use fongo_sync_sqlite::core::Strategy;
@@ -51,8 +50,7 @@ pub(crate) fn registry() -> Result<Registry> {
             .field("step")
             .field("created_at")
             .field("is_default")
-            .identity(&["name"])
-            .local_dependent("review_ratings", "scale_id"),
+            .identity(&["name"]),
         Collection::minted("copies", "copies", "id")
             .owner("book_id", "books")
             .field("form")
@@ -121,10 +119,11 @@ pub(crate) fn registry() -> Result<Registry> {
             .field("created_at")
             .identity(&["file_path"])
             .local_default("last_modified", LocalDefault::Sql("unixepoch()".into()))
-            .local_dependent("note_bodies", "note_id")
-            .local_dependent("review_ratings", "note_id")
             .local_dependent("note_links", "from_note")
             .local_dependent("note_links", "to_note"),
+        Collection::natural("note_bodies", "note_bodies", &["note_id"])
+            .owner("note_id", "notes")
+            .field_reporting_conflicts("body"),
         Collection::minted("flashcards", "flashcards", "id")
             .owner("book_id", "books")
             .owner("highlight_id", "highlights")
@@ -137,6 +136,10 @@ pub(crate) fn registry() -> Result<Registry> {
             .owner("note_id", "notes")
             .owner("highlight_id", "highlights")
             .field("created_at"),
+        Collection::natural("review_ratings", "review_ratings", &["note_id"])
+            .owner("note_id", "notes")
+            .reference("scale_id", "rating_scales")
+            .field("value"),
         Collection::natural("rating_map", "rating_map", &["scale_id", "value"])
             .owner("scale_id", "rating_scales")
             .field("value")
@@ -355,6 +358,12 @@ mod tests {
                FROM highlights h JOIN books b ON b.id = h.book_id",
             "SELECT 'tag ' || b.title || ' ' || t.tag || ' ' || t.source
                FROM book_tags t JOIN books b ON b.id = t.book_id",
+            "SELECT 'note ' || n.file_path || ' ' || n.title || ' ' || b.body
+               FROM notes n JOIN note_bodies b ON b.note_id = n.id",
+            "SELECT 'rating ' || n.file_path || ' ' || s.name || ' ' || r.value
+               FROM review_ratings r
+               JOIN notes n ON n.id = r.note_id
+               JOIN rating_scales s ON s.id = r.scale_id",
             "SELECT 'scale ' || name || ' ' || is_default FROM rating_scales",
             "SELECT 'map ' || s.name || ' ' || m.value || ' ' || m.goodreads
                FROM rating_map m JOIN rating_scales s ON s.id = m.scale_id",
@@ -368,7 +377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_libraries_exchange_a_book_a_highlight_and_a_tag() {
+    async fn two_libraries_exchange_a_book_a_highlight_a_review_and_a_tag() {
         use crate::book::Book;
         use crate::storage::NewHighlight;
 
@@ -410,6 +419,25 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        let review = a
+            .insert_note(
+                crate::storage::NewNoteMeta {
+                    book_id: Some(book),
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: "Middlemarch/review.md",
+                    title: "Middlemarch",
+                    kind: "review",
+                },
+                "Her full nature spent itself in channels which had no great name on the earth.",
+                &[],
+            )
+            .await
+            .unwrap();
+        let scale = a.rating_scale_by_name("default").await.unwrap().unwrap();
+        a.set_review_rating(review, &scale, 4.0).await.unwrap();
         sqlx::query(
             "INSERT INTO book_tags (book_id, tag, source) VALUES (?1, 'to-read', 'goodreads')",
         )
@@ -449,6 +477,18 @@ mod tests {
         );
         assert!(
             seen.contains(&"tag Middlemarch to-read goodreads".to_string()),
+            "{seen:#?}"
+        );
+        assert!(
+            seen.contains(
+                &"note Middlemarch/review.md Middlemarch Her full nature spent itself in channels \
+                  which had no great name on the earth."
+                    .to_string()
+            ),
+            "{seen:#?}"
+        );
+        assert!(
+            seen.contains(&"rating Middlemarch/review.md default 4.0".to_string()),
             "{seen:#?}"
         );
         assert_eq!(
