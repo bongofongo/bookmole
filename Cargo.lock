@@ -224,6 +224,7 @@ dependencies = [
  "csv",
  "epubkit",
  "flate2",
+ "fongo-sync-sqlite",
  "futures",
  "gethostname",
  "getrandom 0.3.4",
@@ -983,6 +984,25 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "fongo-sync-core"
+version = "0.1.0"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=1fa19363cab1a7a751a4eed2515babbb73884a04#1fa19363cab1a7a751a4eed2515babbb73884a04"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "fongo-sync-sqlite"
+version = "0.1.0"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=1fa19363cab1a7a751a4eed2515babbb73884a04#1fa19363cab1a7a751a4eed2515babbb73884a04"
+dependencies = [
+ "fongo-sync-core",
+ "libsqlite3-sys",
+ "sqlx",
+ "thiserror",
+]
 
 [[package]]
 name = "form_urlencoded"

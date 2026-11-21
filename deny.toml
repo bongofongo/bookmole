@@ -85,9 +85,13 @@ deny = [
     { crate = "epubkit", wrappers = ["bookmole"] },
     { crate = "ratatui", wrappers = ["bookmole-tui"] },
     { crate = "crossterm", wrappers = ["bookmole-tui", "ratatui"] },
+    # Sync goes through the engine; a frontend never drives the kernel itself.
+    { crate = "fongo-sync-sqlite", wrappers = ["bookmole"] },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The sync kernel, pinned by commit in crates/engine/Cargo.toml.
+allow-git = ["https://github.com/bongofongo/fongo-sync"]
