@@ -74,8 +74,9 @@ pub use sidecar_seen::SidecarFacts;
 
 use std::str::FromStr;
 
+use fongo_sync_sqlite::Resume;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
 
 use crate::error::Result;
 
@@ -103,6 +104,21 @@ impl Storage {
             .max_connections(max)
             .connect_with(opts)
             .await?;
+        // Rows a migration or the rehash rewrites are the same on every device, so they are not
+        // sent as edits; a row one adds is.
+        let synced = {
+            let mut conn = pool.acquire().await?;
+            if crate::sync::installed(&mut conn).await? && rewrites_pending(&mut conn).await? {
+                let replica = crate::sync::replica()?;
+                replica
+                    .suspend(&mut conn)
+                    .await
+                    .map_err(crate::sync::kernel)?;
+                Some(replica)
+            } else {
+                None
+            }
+        };
         migrate(&pool).await?;
         // Never fatal: a library must open even if the rehash cannot finish. Each batch commits
         // alone, and the next open carries on from the rows still left.
@@ -117,6 +133,13 @@ impl Storage {
                 "could not move every highlight to the book-independent identity hash; \
                  the next open tries again"
             ),
+        }
+        if let Some(replica) = synced {
+            let mut conn = pool.acquire().await?;
+            replica
+                .resume(&mut conn, Resume::Baseline)
+                .await
+                .map_err(crate::sync::kernel)?;
         }
         tracing::info!(max_connections = max, "storage connected and migrated");
         Ok(Storage { pool })
@@ -295,6 +318,25 @@ const AMENDED: &[(i64, &str, &str)] = &[
     ),
 ];
 
+/// Whether opening a synced library will rewrite rows: a migration not yet applied, a highlight
+/// still on the old identity formula, or change capture an earlier open left suspended.
+async fn rewrites_pending(conn: &mut SqliteConnection) -> Result<bool> {
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = 1")
+            .fetch_all(&mut *conn)
+            .await?;
+    if MIGRATOR.iter().any(|m| !applied.contains(&m.version)) {
+        return Ok(true);
+    }
+    let capture_suspended: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM sqlite_master
+                             WHERE type = 'trigger' AND name LIKE 'fongo!_%' ESCAPE '!')",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(capture_suspended || highlights::rehash_pending(&mut *conn).await?)
+}
+
 /// Repairs only the exact listed old checksums; any other mismatch is still refused.
 async fn migrate(pool: &SqlitePool) -> Result<()> {
     repair_amended_checksums(pool).await?;
@@ -454,5 +496,95 @@ mod tests {
             set_checksum(s.pool(), version, &honest).await;
         }
         migrate(s.pool()).await.unwrap();
+    }
+
+    /// Rows a migration or the open-time rehash rewrites are rewritten alike on every device, so
+    /// a synced library sends none of them; a write after the open is still sent.
+    #[tokio::test]
+    async fn opening_a_synced_library_sends_nothing_a_migration_rewrote() {
+        use sqlx::Connection;
+        use sqlx::migrate::Migrate;
+
+        const FIRST_LATER: i64 = 35;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let opts = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let mut conn = SqliteConnection::connect_with(&opts).await.unwrap();
+        conn.ensure_migrations_table().await.unwrap();
+        for m in MIGRATOR.iter().filter(|m| m.version < FIRST_LATER) {
+            conn.apply(m).await.unwrap();
+        }
+        let book: i64 = sqlx::query_scalar(
+            "INSERT INTO books (title, created_at, last_modified)
+             VALUES ('Middlemarch', 0, 0) RETURNING id",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO highlights (book_id, text, source, origin, identity_hash, created_at)
+             VALUES (?1, 'Who can quit young lives after being long in company with them?',
+                     'koreader', 'koreader', 'an earlier formula', 0)",
+        )
+        .bind(book)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let replica = crate::sync::replica().unwrap();
+        replica.install(&mut conn).await.unwrap();
+        replica.collect(&mut conn).await.unwrap();
+        let sent = replica.outbox(&mut conn, 10_000).await.unwrap();
+        assert!(!sent.changes.is_empty());
+        replica.acknowledge(&mut conn, sent.through).await.unwrap();
+        conn.close().await.unwrap();
+
+        let s = Storage::connect(&url).await.unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        let hash: String = sqlx::query_scalar("SELECT identity_hash FROM highlights")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert!(hash.starts_with(highlights::IDENTITY_PREFIX), "{hash}");
+        assert_eq!(replica.collect(&mut conn).await.unwrap(), 0);
+        assert!(
+            replica
+                .outbox(&mut conn, 10)
+                .await
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+
+        sqlx::query("UPDATE books SET title = 'Middlemarch: A Study of Provincial Life'")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(replica.collect(&mut conn).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn change_capture_left_suspended_comes_back_at_the_next_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        let replica = crate::sync::replica().unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        replica.install(&mut conn).await.unwrap();
+        replica.suspend(&mut conn).await.unwrap();
+        drop(conn);
+        s.pool().close().await;
+
+        let s = Storage::connect(&url).await.unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        sqlx::query(
+            "INSERT INTO books (title, created_at, last_modified) VALUES ('Middlemarch', 0, 0)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        assert!(replica.collect(&mut conn).await.unwrap() > 0);
     }
 }
