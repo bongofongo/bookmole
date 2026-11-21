@@ -69,6 +69,15 @@ fn identity_hash_of_bytes(ko_datetime: &[u8], pos0: &[u8], text: &[u8]) -> Strin
 const ON_OLD_FORMULA: &str = "(origin IS NULL OR origin IN ('koreader', 'user'))
      AND substr(identity_hash, 1, length(?1)) <> ?1";
 
+pub(super) async fn rehash_pending(db: impl sqlx::SqliteExecutor<'_>) -> Result<bool> {
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT EXISTS (SELECT 1 FROM highlights WHERE {ON_OLD_FORMULA})"
+    ))
+    .bind(IDENTITY_PREFIX)
+    .fetch_one(db)
+    .await?)
+}
+
 /// Rows rehashed per transaction when the storage opens.
 pub(super) const REHASH_BATCH: i64 = 500;
 
@@ -80,13 +89,7 @@ pub(super) const REHASH_BATCH: i64 = 500;
 /// replace the original's id, `created_at`, copy and reading.
 pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Result<usize> {
     // Read first: once every row is converted, opening a library takes no write lock for this.
-    let pending: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS (SELECT 1 FROM highlights WHERE {ON_OLD_FORMULA})"
-    ))
-    .bind(IDENTITY_PREFIX)
-    .fetch_one(pool)
-    .await?;
-    if !pending {
+    if !rehash_pending(pool).await? {
         return Ok(0);
     }
     let mut touched = 0;
