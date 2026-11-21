@@ -1,5 +1,4 @@
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::SqlitePool;
 use sqlx::{Row, SqliteConnection};
 
 use super::annotation_alternatives::{fold_annotations, is_blank};
@@ -87,9 +86,12 @@ pub(super) const REHASH_BATCH: i64 = 500;
 /// `merge_books` folds a duplicate. The older row (lower id) stays, whichever already holds the new
 /// hash: a holder with a higher id was written while an earlier rehash failed, and keeping it would
 /// replace the original's id, `created_at`, copy and reading.
-pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Result<usize> {
+pub(super) async fn rehash_old_identities(
+    conn: &mut SqliteConnection,
+    batch: i64,
+) -> Result<usize> {
     // Read first: once every row is converted, opening a library takes no write lock for this.
-    if !rehash_pending(pool).await? {
+    if !rehash_pending(&mut *conn).await? {
         return Ok(0);
     }
     let mut touched = 0;
@@ -98,7 +100,7 @@ pub(super) async fn rehash_old_identities(pool: &SqlitePool, batch: i64) -> Resu
     loop {
         // Immediate, so two processes opening one library at once wait for each other instead of
         // both reading a batch and then failing to upgrade to a write.
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = sqlx::Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE").await?;
         let sql = format!(
             "SELECT id, book_id, CAST(ko_datetime AS BLOB) AS ko_datetime,
                     CAST(pos0 AS BLOB) AS pos0, CAST(text AS BLOB) AS text
@@ -735,7 +737,12 @@ mod tests {
         raw_row(&s, book, &mine, "user", &old_hash(book, &mine)).await;
         let imported = raw_row(&s, book, &hl("from a kindle"), "kindle", "an imported hash").await;
 
-        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 2);
+        assert_eq!(
+            rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 1)
+                .await
+                .unwrap(),
+            2
+        );
         let after = hashes(&s).await;
         assert_eq!(after[0].1, ko.identity_hash());
         assert_eq!(after[1].1, mine.identity_hash());
@@ -745,7 +752,12 @@ mod tests {
             "an imported hash is another formula and is left alone"
         );
 
-        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 0);
+        assert_eq!(
+            rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 1)
+                .await
+                .unwrap(),
+            0
+        );
         assert_eq!(hashes(&s).await, after, "a second pass changes nothing");
         assert!(
             s.highlight_exists(book, &ko).await.unwrap(),
@@ -789,7 +801,12 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 2);
+        assert_eq!(
+            rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 1)
+                .await
+                .unwrap(),
+            2
+        );
         assert_eq!(hashes(&s).await, vec![(keep, h.identity_hash())]);
         let survivor = s.get_highlight(keep).await.unwrap().unwrap();
         assert_eq!(survivor.annotation.as_deref(), Some("mine"));
@@ -809,7 +826,12 @@ mod tests {
                 .unwrap();
         assert_eq!(cited, vec![(1, keep), (2, keep)]);
 
-        assert_eq!(rehash_old_identities(s.pool(), 1).await.unwrap(), 0);
+        assert_eq!(
+            rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 1)
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -898,7 +920,9 @@ mod tests {
         }
         match (how, other_book) {
             (Fold::Rehash, _) => {
-                rehash_old_identities(s.pool(), 500).await.unwrap();
+                rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 500)
+                    .await
+                    .unwrap();
             }
             (Fold::Merge, Some(other)) => {
                 s.merge_books(other, book).await.unwrap();
@@ -1046,7 +1070,9 @@ mod tests {
             .await
             .unwrap();
 
-        rehash_old_identities(s.pool(), 1).await.unwrap();
+        rehash_old_identities(&mut s.pool().acquire().await.unwrap(), 1)
+            .await
+            .unwrap();
         assert_eq!(hashes(&s).await.len(), 1);
         assert_eq!(
             annotation_and_alternatives(&s, keep).await,

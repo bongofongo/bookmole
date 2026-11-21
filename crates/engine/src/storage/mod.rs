@@ -104,42 +104,14 @@ impl Storage {
             .max_connections(max)
             .connect_with(opts)
             .await?;
-        // Rows a migration or the rehash rewrites are the same on every device, so they are not
-        // sent as edits; a row one adds is.
-        let synced = {
+        {
             let mut conn = pool.acquire().await?;
-            if crate::sync::installed(&mut conn).await? && rewrites_pending(&mut conn).await? {
-                let replica = crate::sync::replica()?;
-                replica
-                    .suspend(&mut conn)
-                    .await
-                    .map_err(crate::sync::kernel)?;
-                Some(replica)
+            if crate::sync::installed(&mut conn).await? {
+                open_synced(&mut conn).await?;
             } else {
-                None
+                migrate(&mut conn).await?;
+                rehash(&mut conn).await;
             }
-        };
-        migrate(&pool).await?;
-        // Never fatal: a library must open even if the rehash cannot finish. Each batch commits
-        // alone, and the next open carries on from the rows still left.
-        match highlights::rehash_old_identities(&pool, highlights::REHASH_BATCH).await {
-            Ok(0) => {}
-            Ok(rehashed) => tracing::info!(
-                rehashed,
-                "moved highlights to the book-independent identity hash"
-            ),
-            Err(error) => tracing::warn!(
-                %error,
-                "could not move every highlight to the book-independent identity hash; \
-                 the next open tries again"
-            ),
-        }
-        if let Some(replica) = synced {
-            let mut conn = pool.acquire().await?;
-            replica
-                .resume(&mut conn, Resume::Baseline)
-                .await
-                .map_err(crate::sync::kernel)?;
         }
         tracing::info!(max_connections = max, "storage connected and migrated");
         Ok(Storage { pool })
@@ -318,37 +290,119 @@ const AMENDED: &[(i64, &str, &str)] = &[
     ),
 ];
 
-/// Whether opening a synced library will rewrite rows: a migration not yet applied, a highlight
-/// still on the old identity formula, or change capture an earlier open left suspended.
-async fn rewrites_pending(conn: &mut SqliteConnection) -> Result<bool> {
-    let applied: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = 1")
-            .fetch_all(&mut *conn)
-            .await?;
-    if MIGRATOR.iter().any(|m| !applied.contains(&m.version)) {
-        return Ok(true);
+/// Never fatal: a library must open even if the rehash cannot finish. Each batch commits alone, and
+/// the next open carries on from the rows still left.
+async fn rehash(conn: &mut SqliteConnection) {
+    match highlights::rehash_old_identities(conn, highlights::REHASH_BATCH).await {
+        Ok(0) => {}
+        Ok(rehashed) => tracing::info!(
+            rehashed,
+            "moved highlights to the book-independent identity hash"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not move every highlight to the book-independent identity hash; \
+             the next open tries again"
+        ),
     }
-    let capture_suspended: bool = sqlx::query_scalar(
-        "SELECT NOT EXISTS (SELECT 1 FROM sqlite_master
-                             WHERE type = 'trigger' AND name LIKE 'fongo!_%' ESCAPE '!')",
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    Ok(capture_suspended || highlights::rehash_pending(&mut *conn).await?)
 }
 
-/// Repairs only the exact listed old checksums; any other mismatch is still refused.
-async fn migrate(pool: &SqlitePool) -> Result<()> {
-    repair_amended_checksums(pool).await?;
-    MIGRATOR.run(pool).await?;
+/// Opens a library that syncs. Every device runs the same migrations, so the rows they rewrite
+/// are kept as this device's own rather than sent; for that, change capture is suspended around
+/// them while this connection holds the write lock, so no other process writes uncaptured.
+/// Capture an earlier open left suspended resumes sending differences, since anything may have
+/// been written meanwhile. A sync failure is logged, not returned: the library still opens, and
+/// the next open finds capture suspended and tries again.
+async fn open_synced(conn: &mut SqliteConnection) -> Result<()> {
+    let capture_on = capture_installed(conn).await?;
+    if !migrations_pending(conn).await? {
+        rehash(conn).await;
+        if !capture_on {
+            resume(conn, Resume::Send).await;
+        }
+        return Ok(());
+    }
+    hold_write_lock(conn).await?;
+    let suspended = capture_on && suspend(conn).await;
+    let migrated = migrate(conn).await;
+    if migrated.is_ok() {
+        rehash(conn).await;
+    }
+    if suspended {
+        resume(conn, Resume::Baseline).await;
+    } else if !capture_on {
+        resume(conn, Resume::Send).await;
+    }
+    release_write_lock(conn).await?;
+    migrated
+}
+
+async fn suspend(conn: &mut SqliteConnection) -> bool {
+    let done = match crate::sync::replica() {
+        Ok(replica) => replica.suspend(conn).await.map_err(crate::sync::kernel),
+        Err(e) => Err(e),
+    };
+    if let Err(error) = &done {
+        tracing::warn!(%error, "could not suspend sync before migrating; the migration's rewrites will be sent");
+    }
+    done.is_ok()
+}
+
+async fn resume(conn: &mut SqliteConnection, how: Resume) {
+    let done = match crate::sync::replica() {
+        Ok(replica) => replica.resume(conn, how).await.map_err(crate::sync::kernel),
+        Err(e) => Err(e),
+    };
+    if let Err(error) = done {
+        tracing::warn!(%error, "could not resume sync; the next open tries again");
+    }
+}
+
+async fn capture_installed(conn: &mut SqliteConnection) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                         WHERE type = 'trigger' AND name LIKE 'fongo!_%' ESCAPE '!')",
+    )
+    .fetch_one(conn)
+    .await?)
+}
+
+async fn migrations_pending(conn: &mut SqliteConnection) -> Result<bool> {
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = 1")
+            .fetch_all(conn)
+            .await?;
+    Ok(MIGRATOR.iter().any(|m| !applied.contains(&m.version)))
+}
+
+/// Other processes wait on their busy timeout, then fail busy, until [`release_write_lock`].
+async fn hold_write_lock(conn: &mut SqliteConnection) -> Result<()> {
+    sqlx::raw_sql("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;")
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
-async fn repair_amended_checksums(pool: &SqlitePool) -> Result<()> {
+/// The lock goes at the first read after the mode changes back.
+async fn release_write_lock(conn: &mut SqliteConnection) -> Result<()> {
+    sqlx::raw_sql("PRAGMA locking_mode = NORMAL; SELECT count(*) FROM sqlite_master;")
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Repairs only the exact listed old checksums; any other mismatch is still refused.
+async fn migrate(conn: &mut SqliteConnection) -> Result<()> {
+    repair_amended_checksums(conn).await?;
+    MIGRATOR.run(&mut *conn).await?;
+    Ok(())
+}
+
+async fn repair_amended_checksums(conn: &mut SqliteConnection) -> Result<()> {
     let table: Option<(i64,)> = sqlx::query_as(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
     if table.is_none() {
         return Ok(());
@@ -363,7 +417,7 @@ async fn repair_amended_checksums(pool: &SqlitePool) -> Result<()> {
         .bind(current.checksum.as_ref())
         .bind(version)
         .bind(from_hex(old))
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         if done.rows_affected() > 0 {
             tracing::info!(version, "recorded the amended checksum of a migration");
@@ -482,7 +536,9 @@ mod tests {
         for version in [19, 22, 26, 1] {
             let honest = checksum(s.pool(), version).await;
             set_checksum(s.pool(), version, &[0xab; 48]).await;
-            let err = migrate(s.pool()).await.unwrap_err();
+            let err = migrate(&mut s.pool().acquire().await.unwrap())
+                .await
+                .unwrap_err();
             assert!(
                 matches!(
                     err,
@@ -495,7 +551,9 @@ mod tests {
             assert_eq!(checksum(s.pool(), version).await, [0xab; 48]);
             set_checksum(s.pool(), version, &honest).await;
         }
-        migrate(s.pool()).await.unwrap();
+        migrate(&mut s.pool().acquire().await.unwrap())
+            .await
+            .unwrap();
     }
 
     /// Rows a migration or the open-time rehash rewrites are rewritten alike on every device, so
@@ -565,19 +623,10 @@ mod tests {
         assert_eq!(replica.collect(&mut conn).await.unwrap(), 1);
     }
 
-    #[tokio::test]
-    async fn change_capture_left_suspended_comes_back_at_the_next_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite://{}", dir.path().join("app.db").display());
-        let s = Storage::connect(&url).await.unwrap();
+    /// A library whose capture another open suspended: what was written meanwhile is sent.
+    async fn synced_and_suspended(url: &str) -> fongo_sync_sqlite::Replica {
+        let s = Storage::connect(url).await.unwrap();
         let replica = crate::sync::replica().unwrap();
-        let mut conn = s.pool().acquire().await.unwrap();
-        replica.install(&mut conn).await.unwrap();
-        replica.suspend(&mut conn).await.unwrap();
-        drop(conn);
-        s.pool().close().await;
-
-        let s = Storage::connect(&url).await.unwrap();
         let mut conn = s.pool().acquire().await.unwrap();
         sqlx::query(
             "INSERT INTO books (title, created_at, last_modified) VALUES ('Middlemarch', 0, 0)",
@@ -585,6 +634,97 @@ mod tests {
         .execute(&mut *conn)
         .await
         .unwrap();
-        assert!(replica.collect(&mut conn).await.unwrap() > 0);
+        replica.install(&mut conn).await.unwrap();
+        replica.collect(&mut conn).await.unwrap();
+        let sent = replica.outbox(&mut conn, 10_000).await.unwrap();
+        replica.acknowledge(&mut conn, sent.through).await.unwrap();
+        replica.suspend(&mut conn).await.unwrap();
+        sqlx::query("UPDATE books SET title = 'Middlemarch: A Study of Provincial Life'")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+        s.pool().close().await;
+        replica
+    }
+
+    async fn sends_the_new_title(s: &Storage, replica: &fongo_sync_sqlite::Replica) {
+        let mut conn = s.pool().acquire().await.unwrap();
+        replica.collect(&mut conn).await.unwrap();
+        let out = replica.outbox(&mut conn, 10_000).await.unwrap();
+        assert!(
+            out.changes.iter().any(|c| c.field == "title"
+                && c.value
+                    == fongo_sync_sqlite::core::Value::Text(
+                        "Middlemarch: A Study of Provincial Life".into()
+                    )),
+            "{:?}",
+            out.changes
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_made_while_capture_was_suspended_is_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let replica = synced_and_suspended(&url).await;
+        let s = Storage::connect(&url).await.unwrap();
+        sends_the_new_title(&s, &replica).await;
+    }
+
+    /// A schema the registry no longer fits keeps sync off but the library open, and the open
+    /// after the schema fits again sends what was written meanwhile.
+    #[tokio::test]
+    async fn a_sync_failure_at_open_leaves_the_library_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let replica = synced_and_suspended(&url).await;
+        let rename = |from: &str, to: &str| {
+            format!("ALTER TABLE dismissed_shelves RENAME COLUMN {from} TO {to}")
+        };
+        let mut raw = <SqliteConnection as sqlx::Connection>::connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(&rename("dismissed_at", "dismissed_on"))
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        sqlx::Connection::close(raw).await.unwrap();
+
+        let s = Storage::connect(&url).await.unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        assert!(!capture_installed(&mut conn).await.unwrap());
+        sqlx::query(&rename("dismissed_on", "dismissed_at"))
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+        s.pool().close().await;
+
+        let s = Storage::connect(&url).await.unwrap();
+        sends_the_new_title(&s, &replica).await;
+    }
+
+    #[tokio::test]
+    async fn no_other_connection_writes_while_the_lock_is_held() {
+        use sqlx::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        let mut holder = s.pool().acquire().await.unwrap();
+        hold_write_lock(&mut holder).await.unwrap();
+
+        let other = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .busy_timeout(std::time::Duration::from_millis(50));
+        let mut other = SqliteConnection::connect_with(&other).await.unwrap();
+        let write =
+            "INSERT INTO books (title, created_at, last_modified) VALUES ('Middlemarch', 0, 0)";
+        let refused = sqlx::query(write).execute(&mut other).await.unwrap_err();
+        assert!(refused.to_string().contains("locked"), "{refused}");
+
+        release_write_lock(&mut holder).await.unwrap();
+        sqlx::query(write).execute(&mut other).await.unwrap();
     }
 }
