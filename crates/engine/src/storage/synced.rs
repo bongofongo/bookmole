@@ -47,9 +47,9 @@ pub(crate) async fn covers(conn: &mut SqliteConnection) -> Result<Covers> {
 }
 
 /// A row the kernel gave up when two books became one hands its file to the row that stays, as
-/// `merge_books` does, unless that row has its own.
-async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Result<()> {
-    sqlx::query(
+/// `merge_books` does, unless that row has its own. Returns whether it did.
+async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Result<bool> {
+    let carried = sqlx::query(
         "UPDATE books SET cover_path = ?1, cover_thumb_path = ?2, cover_width = ?3,
                 cover_height = ?4, cover_accent = ?5
           WHERE id = ?6 AND cover_path IS NULL",
@@ -62,7 +62,7 @@ async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Res
     .bind(to)
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(carried.rows_affected() > 0)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -74,7 +74,7 @@ pub(crate) struct Repaired {
 }
 
 /// The local ids in a key as the change-capture triggers write it: `[7]`, or `[3,7]`.
-fn ids(key: &str) -> Vec<i64> {
+pub(super) fn ids(key: &str) -> Vec<i64> {
     serde_json::from_str::<Vec<serde_json::Value>>(key)
         .unwrap_or_default()
         .iter()
@@ -136,8 +136,9 @@ pub(crate) async fn repair(
             .iter()
             .filter(|t| t.collection == "books" && t.deleted && ids(&t.key).first() == Some(&id))
             .find_map(|t| kept.get(&t.gid).filter(|&&to| to != id));
-        if let Some(&to) = merged_into {
-            carry_cover(conn, to, &before).await?;
+        if let Some(&to) = merged_into
+            && carry_cover(conn, to, &before).await?
+        {
             continue;
         }
         let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")

@@ -1005,6 +1005,123 @@ mod tests {
         }
     }
 
+    /// Two rows on `b` for the book `a` holds with both ISBNs, one by each.
+    async fn split_book(b: &Storage, title: &str, isbn_10: &str, isbn_13: &str) -> [i64; 2] {
+        use crate::book::Book;
+
+        let mut rows = [0; 2];
+        for (row, book) in rows.iter_mut().zip([
+            Book {
+                title: Some(title.into()),
+                isbn_10: Some(isbn_10.into()),
+                ..Default::default()
+            },
+            Book {
+                title: Some(title.into()),
+                isbn_13: Some(isbn_13.into()),
+                ..Default::default()
+            },
+        ]) {
+            *row = b.upsert_book(&book, None).await.unwrap();
+        }
+        rows
+    }
+
+    async fn cover_of(s: &Storage, title: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT cover_path FROM books WHERE title = ?")
+            .bind(title)
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_row_that_stays_when_two_become_one_keeps_its_own_cover_and_the_other_file_goes() {
+        use crate::book::Book;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        a.upsert_book(
+            &Book {
+                isbn_10: Some("0141439548".into()),
+                ..middlemarch()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let rows = split_book(&b, "Middlemarch", "0141439548", "9780141439549").await;
+        let dir = tempfile::tempdir().unwrap();
+        let files = [dir.path().join("10.jpg"), dir.path().join("13.jpg")];
+        for (row, file) in rows.iter().zip(&files) {
+            std::fs::write(file, b"cover").unwrap();
+            set_cover_path(&b, *row, file).await;
+        }
+
+        let out = outbox((&ra, &a)).await;
+        receive(&b, &rb, &out.changes).await.unwrap();
+        let stays = id_of(&b, "Middlemarch").await;
+        let (kept, gone) = if stays == rows[0] {
+            (&files[0], &files[1])
+        } else {
+            (&files[1], &files[0])
+        };
+        assert_eq!(
+            cover_of(&b, "Middlemarch").await,
+            Some(kept.display().to_string())
+        );
+        assert!(kept.exists());
+        assert!(!gone.exists());
+    }
+
+    #[tokio::test]
+    async fn two_books_that_each_become_one_in_one_apply_keep_their_own_covers() {
+        use crate::book::Book;
+
+        // Which row of each pair is given up depends on random ids, so try until both carry.
+        for _ in 0..64 {
+            let ((ra, a), (rb, b)) = installed_pair().await;
+            let pairs = [
+                ("Middlemarch", "0141439548", "9780141439549"),
+                ("Daniel Deronda", "0140434275", "9780140434279"),
+            ];
+            for (title, isbn_10, isbn_13) in pairs {
+                let book = Book {
+                    title: Some(title.into()),
+                    isbn_10: Some(isbn_10.into()),
+                    isbn_13: Some(isbn_13.into()),
+                    ..Default::default()
+                };
+                a.upsert_book(&book, None).await.unwrap();
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let mut covered = Vec::new();
+            for (title, isbn_10, isbn_13) in pairs {
+                let rows = split_book(&b, title, isbn_10, isbn_13).await;
+                let file = dir.path().join(format!("{isbn_13}.jpg"));
+                std::fs::write(&file, b"cover").unwrap();
+                set_cover_path(&b, rows[0], &file).await;
+                covered.push((title, rows[0], file));
+            }
+
+            let out = outbox((&ra, &a)).await;
+            receive(&b, &rb, &out.changes).await.unwrap();
+            let mut carried = 0;
+            for (title, row, file) in &covered {
+                assert_eq!(
+                    cover_of(&b, title).await,
+                    Some(file.display().to_string()),
+                    "{title}"
+                );
+                assert!(file.exists());
+                carried += usize::from(id_of(&b, title).await != *row);
+            }
+            if carried == covered.len() {
+                return;
+            }
+        }
+        panic!("no apply gave up both covered rows");
+    }
+
     #[tokio::test]
     async fn a_remote_delete_keeps_a_cover_file_another_book_uses() {
         use crate::book::Book;
