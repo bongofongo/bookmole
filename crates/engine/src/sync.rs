@@ -866,4 +866,110 @@ mod tests {
         assert!(!cover.exists());
         assert!(!thumb.exists());
     }
+
+    async fn set_cover_path(s: &Storage, book: i64, path: &std::path::Path) {
+        sqlx::query("UPDATE books SET cover_path = ?, cover_width = 600 WHERE id = ?")
+            .bind(path.display().to_string())
+            .bind(book)
+            .execute(s.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_book_row_given_up_when_two_become_one_hands_on_its_cover() {
+        use crate::book::Book;
+
+        for cover_on_isbn_10 in [true, false] {
+            let ((ra, a), (rb, b)) = installed_pair().await;
+            a.upsert_book(
+                &Book {
+                    isbn_10: Some("0141439548".into()),
+                    ..middlemarch()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            let by_isbn_10 = b
+                .upsert_book(
+                    &Book {
+                        title: Some("Middlemarch".into()),
+                        isbn_10: Some("0141439548".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            let by_isbn_13 = b
+                .upsert_book(
+                    &Book {
+                        title: Some("Middlemarch".into()),
+                        isbn_13: Some("9780141439549".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let cover = dir.path().join("0f3c.jpg");
+            std::fs::write(&cover, b"cover").unwrap();
+            let holder = if cover_on_isbn_10 {
+                by_isbn_10
+            } else {
+                by_isbn_13
+            };
+            set_cover_path(&b, holder, &cover).await;
+
+            let out = outbox((&ra, &a)).await;
+            receive(&b, &rb, &out.changes).await.unwrap();
+            let rows: Vec<(Option<String>, Option<i64>)> =
+                sqlx::query_as("SELECT cover_path, cover_width FROM books")
+                    .fetch_all(b.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                rows,
+                [(Some(cover.display().to_string()), Some(600))],
+                "cover on the isbn-10 row: {cover_on_isbn_10}"
+            );
+            assert!(cover.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_delete_keeps_a_cover_file_another_book_uses() {
+        use crate::book::Book;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let gone = a.upsert_book(&middlemarch(), None).await.unwrap();
+        a.upsert_book(
+            &Book {
+                title: Some("Middlemarch".into()),
+                isbn_13: Some("9780199536757".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cover = dir.path().join("0f3c.jpg");
+        std::fs::write(&cover, b"cover").unwrap();
+        let on_b: Vec<i64> = sqlx::query_scalar("SELECT id FROM books")
+            .fetch_all(b.pool())
+            .await
+            .unwrap();
+        for book in on_b {
+            set_cover_path(&b, book, &cover).await;
+        }
+
+        a.delete_book(gone).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(count(&b, "SELECT count(*) FROM books").await, 1);
+        assert!(cover.exists());
+    }
 }
