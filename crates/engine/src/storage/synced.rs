@@ -1,9 +1,10 @@
 //! What this device derives from synced rows, brought up to date after another device's changes
-//! land, inside the transaction that applied them.
+//! land, inside the transaction that applied them. Nothing here writes a synced column: a write
+//! after the apply would be sent with a newer clock than the changes still on their way.
 
 use std::collections::{BTreeSet, HashMap};
 
-use fongo_sync_sqlite::{Replica, Touched};
+use fongo_sync_sqlite::Touched;
 use sqlx::{Row, SqliteConnection};
 
 use crate::error::Result;
@@ -94,14 +95,10 @@ fn keys_of<'t>(
 /// `before` is [`covers`] read ahead of the apply that wrote `touched`.
 pub(crate) async fn repair(
     conn: &mut SqliteConnection,
-    replica: &Replica,
     touched: &[Touched],
     before: &Covers,
 ) -> Result<Repaired> {
     let books: BTreeSet<i64> = keys_of(touched, &["books"])
-        .filter_map(|k| k.first().copied())
-        .collect();
-    let lists: BTreeSet<i64> = keys_of(touched, &["book_list_entries"])
         .filter_map(|k| k.first().copied())
         .collect();
     let notes: BTreeSet<i64> = keys_of(touched, &["notes", "note_bodies"])
@@ -151,28 +148,8 @@ pub(crate) async fn repair(
             repaired.orphaned_covers.push(path);
         }
     }
-    for &list in &lists {
-        settle_list(conn, replica, list).await?;
-    }
     for &note in &notes {
         super::notes::reindex_stored(conn, note).await?;
     }
     Ok(repaired)
-}
-
-/// Positions back to `0..n`, with ties between devices' entries broken by what every device
-/// agrees on (the book's sync id, not its local one), so each device writes the same order and
-/// none sends a correction back. `updated_at` is left alone: no one edited the list here.
-async fn settle_list(conn: &mut SqliteConnection, replica: &Replica, list_id: i64) -> Result<()> {
-    let mut entries = Vec::new();
-    for (book_id, position, added_at) in super::lists::entries_of(&mut *conn, list_id).await? {
-        let gid = replica
-            .gid_of(&mut *conn, "books", book_id)
-            .await
-            .map_err(crate::sync::kernel)?;
-        entries.push((position, added_at, gid, book_id));
-    }
-    entries.sort_unstable();
-    let order: Vec<i64> = entries.iter().map(|e| e.3).collect();
-    super::lists::renumber(conn, list_id, &order).await
 }
