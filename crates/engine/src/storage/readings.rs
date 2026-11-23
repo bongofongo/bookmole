@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, SqliteConnection};
 
 use super::books::{BOOK_COLUMNS, BOOK_FROM, bind_all, book_current_join, row_to_book};
 use super::query::{Predicate, ReadingFilter, ReadingQuery};
@@ -229,6 +229,20 @@ pub(super) fn reading_age_key(alias: &str) -> String {
 /// take `DESC`.
 pub(super) fn reading_began(alias: &str) -> String {
     format!("COALESCE({alias}.started_at, {alias}.created_at)")
+}
+
+/// Closes an open reading that another open reading of the same book supersedes, so the two can
+/// share a book: put down where it was last touched.
+pub(super) async fn give_up_open_reading(conn: &mut SqliteConnection, id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE readings SET finished_at = last_modified, status = 'abandoned',
+                             put_down_at = last_modified
+          WHERE id = ? AND finished_at IS NULL",
+    )
+    .bind(id)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Three indexed arms; no title sort, since a `books` column cannot use a `readings` index.
