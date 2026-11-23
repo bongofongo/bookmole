@@ -1,7 +1,7 @@
-//! Lists: a book is on a list at most once and positions are exactly `0..n` after every write.
-//! The database does not enforce that (positions may arrive duplicated or gapped), so reads order
-//! by `ENTRY_ORDER` and report a rank, and writes renumber. Deleting a book must renumber its
-//! lists, which the cascade cannot.
+//! Lists: a book is on a list at most once and positions are exactly `0..n` after every write
+//! made here. The database does not enforce that (positions may arrive duplicated or gapped from
+//! another device), so reads order by `ENTRY_ORDER` and report a rank, and writes renumber.
+//! Deleting a book must renumber its lists, which the cascade cannot.
 
 use sqlx::{Row, SqliteConnection};
 
@@ -25,15 +25,24 @@ const IN_LIBRARY_BOOK: &str = "books.id";
 /// The only source whose shelves are offered. Calibre's tags are never suggested.
 const SHELF_SOURCE: &str = "goodreads";
 
-/// The one order of a list's entries. Ends in the book so equal positions still read stably.
-const ENTRY_ORDER: &str = "e.position, e.added_at, e.book_id";
+/// The one order of a list's entries, over `book_list_entries e` joined to `books`. Ties fall to
+/// columns every device holds alike, so devices read one order; the local `e.book_id` only makes it
+/// total, and two books alike in all the rest may read differently on two devices until an edit.
+macro_rules! entry_order {
+    () => {
+        "e.position, e.added_at, books.created_at, books.title, books.authors, e.book_id"
+    };
+}
+const ENTRY_ORDER: &str = entry_order!();
 
 /// Each entry's place in `ENTRY_ORDER`, 0-based: what `position` holds once the list is compact.
 /// Callers narrow it to the lists they read and join it, so the rank always counts a whole list
 /// whatever filter the outer query applies.
-const RANKED: &str = "SELECT list_id, book_id, \
-     row_number() OVER (PARTITION BY list_id ORDER BY position, added_at, book_id) - 1 AS rank \
-     FROM book_list_entries";
+const RANKED: &str = concat!(
+    "SELECT e.list_id, e.book_id, row_number() OVER (PARTITION BY e.list_id ORDER BY ",
+    entry_order!(),
+    ") - 1 AS rank FROM book_list_entries e JOIN books ON books.id = e.book_id"
+);
 
 const LIST_COLUMNS: &str = "id, name, description, source, source_ref, created_at, updated_at";
 
@@ -118,7 +127,7 @@ async fn touch(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
 
 /// `ids` must be every entry of the list, in its new order. A row already in its place is not
 /// written.
-pub(super) async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
+async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
     for (i, book_id) in ids.iter().enumerate() {
         sqlx::query(
             "UPDATE book_list_entries SET position = ?1
@@ -134,8 +143,10 @@ pub(super) async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i
 }
 
 async fn entry_order(conn: &mut SqliteConnection, list_id: i64) -> Result<Vec<i64>> {
-    let sql =
-        format!("SELECT book_id FROM book_list_entries e WHERE list_id = ? ORDER BY {ENTRY_ORDER}");
+    let sql = format!(
+        "SELECT e.book_id FROM book_list_entries e JOIN books ON books.id = e.book_id \
+         WHERE e.list_id = ? ORDER BY {ENTRY_ORDER}"
+    );
     Ok(sqlx::query_scalar(&sql)
         .bind(list_id)
         .fetch_all(conn)
@@ -147,19 +158,6 @@ async fn compact(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     let ids = entry_order(&mut *conn, list_id).await?;
     renumber(&mut *conn, list_id, &ids).await?;
     touch(conn, list_id).await
-}
-
-/// Each entry of a list as `(book_id, position, added_at)`, unordered.
-pub(super) async fn entries_of(
-    conn: &mut SqliteConnection,
-    list_id: i64,
-) -> Result<Vec<(i64, i64, i64)>> {
-    Ok(sqlx::query_as(
-        "SELECT book_id, position, added_at FROM book_list_entries WHERE list_id = ?",
-    )
-    .bind(list_id)
-    .fetch_all(conn)
-    .await?)
 }
 
 /// Read before the delete; the cascade leaves nothing to ask afterwards.
@@ -217,7 +215,17 @@ pub(super) async fn repoint_entries(conn: &mut SqliteConnection, src: i64, dst: 
         let d_pos: i64 = mine.try_get("position")?;
         let d_note: Option<String> = mine.try_get("note")?;
         let d_added: i64 = mine.try_get("added_at")?;
-        let (first, second) = if s_pos < d_pos {
+        let sql = format!(
+            "SELECT e.book_id FROM book_list_entries e JOIN books ON books.id = e.book_id \
+             WHERE e.list_id = ? AND e.book_id IN (?, ?) ORDER BY {ENTRY_ORDER} LIMIT 1"
+        );
+        let leads: i64 = sqlx::query_scalar(&sql)
+            .bind(list_id)
+            .bind(src)
+            .bind(dst)
+            .fetch_one(&mut *conn)
+            .await?;
+        let (first, second) = if leads == src {
             (s_note, d_note)
         } else {
             (d_note, s_note)
@@ -712,8 +720,12 @@ mod tests {
             s.add_to_list(list, id, None).await.unwrap();
             books.push(id);
         }
+        sqlx::query("UPDATE books SET created_at = 1")
+            .execute(s.pool())
+            .await
+            .unwrap();
         // (position, added_at) per book: two ties on position, one broken by added_at and one
-        // only by the book id, and gaps at 1, 2 and 4.
+        // only by the title, and gaps at 1, 2 and 4.
         for (book, (pos, added)) in books
             .iter()
             .zip([(3, 10), (0, 20), (3, 5), (0, 20), (9, 1)])
@@ -736,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_and_gapped_positions_read_in_one_stable_order() {
         let (s, list, b) = scrambled().await;
-        let want = vec![(b[1], 0), (b[3], 1), (b[2], 2), (b[0], 3), (b[4], 4)];
+        let want = vec![(b[3], 0), (b[1], 1), (b[2], 2), (b[0], 3), (b[4], 4)];
         assert_eq!(read_order(&s, list).await, want);
         assert_eq!(read_order(&s, list).await, want, "the same order twice");
 
@@ -747,7 +759,7 @@ mod tests {
             .iter()
             .map(|b| b.id.unwrap())
             .collect();
-        assert_eq!(faces, vec![b[1], b[3]]);
+        assert_eq!(faces, vec![b[3], b[1]]);
         let on = s.lists_for_book(b[0]).await.unwrap();
         assert_eq!(on[0].position, 4, "a rank, not the stored 3");
         assert!(
@@ -766,7 +778,7 @@ mod tests {
         let mut stored = rows(&s, list).await;
         stored.sort_by_key(|&(_, p)| p);
         assert_eq!(stored, read, "stored positions are now the ranks");
-        assert_eq!(stored[0].0, b[1]);
+        assert_eq!(stored[0].0, b[3]);
     }
 
     #[tokio::test]

@@ -239,7 +239,7 @@ pub(crate) async fn receive(
     let mut tx = storage.pool().begin().await?;
     let covers = synced::covers(&mut tx).await?;
     let applied = replica.apply(&mut tx, changes).await.map_err(kernel)?;
-    let repaired = synced::repair(&mut tx, replica, &applied.touched, &covers).await?;
+    let repaired = synced::repair(&mut tx, &applied.touched, &covers).await?;
     tx.commit().await?;
     for cover in &repaired.orphaned_covers {
         let cover = Path::new(cover);
@@ -264,6 +264,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use fongo_sync_sqlite::Key;
+    use fongo_sync_sqlite::core::Change;
     use sqlx::Row;
 
     use super::*;
@@ -650,18 +651,35 @@ mod tests {
         assert_eq!(found.len(), 1);
     }
 
-    /// Titles in list order, after checking the positions are exactly `0..n`.
+    /// Titles in the order a reader is shown.
     async fn list_order(s: &Storage) -> Vec<String> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT b.title, e.position FROM book_list_entries e JOIN books b ON b.id = e.book_id
-              ORDER BY e.position",
-        )
-        .fetch_all(s.pool())
-        .await
-        .unwrap();
-        let positions: Vec<i64> = rows.iter().map(|r| r.1).collect();
-        assert_eq!(positions, (0..rows.len() as i64).collect::<Vec<_>>());
-        rows.into_iter().map(|r| r.0).collect()
+        use crate::lists::{EntryShow, EntrySort};
+
+        let entries = s
+            .list_entries(list_id(s).await, EntryShow::All, EntrySort::Yours)
+            .await
+            .unwrap();
+        assert!(
+            entries
+                .iter()
+                .enumerate()
+                .all(|(i, e)| e.position == i as i64)
+        );
+        entries
+            .into_iter()
+            .map(|e| e.book.title.unwrap_or_default())
+            .collect()
+    }
+
+    async fn stored_positions(s: &Storage) -> Vec<i64> {
+        sqlx::query_scalar("SELECT position FROM book_list_entries ORDER BY position")
+            .fetch_all(s.pool())
+            .await
+            .unwrap()
+    }
+
+    fn dense(positions: &[i64]) -> bool {
+        positions.iter().copied().eq(0..positions.len() as i64)
     }
 
     async fn list_id(s: &Storage) -> i64 {
@@ -671,37 +689,54 @@ mod tests {
             .unwrap()
     }
 
+    const ELIOT: [&str; 6] = [
+        "Middlemarch",
+        "Adam Bede",
+        "Romola",
+        "Silas Marner",
+        "Daniel Deronda",
+        "Felix Holt",
+    ];
+
+    /// Every book of `ELIOT` made on `s`, those in `listed` on one list in that order.
+    async fn eliot_list(s: &Storage, made_elsewhere: &[&str], listed: &[&str]) -> i64 {
+        use crate::book::Book;
+
+        for title in ELIOT.iter().filter(|t| !made_elsewhere.contains(t)) {
+            let book = Book {
+                title: Some((*title).into()),
+                ..Default::default()
+            };
+            s.upsert_book(&book, None).await.unwrap();
+        }
+        let list = s.create_list("Eliot", None).await.unwrap().id;
+        for title in listed {
+            s.add_to_list(list, id_of(s, title).await, None)
+                .await
+                .unwrap();
+        }
+        list
+    }
+
     #[tokio::test]
     async fn two_devices_reordering_one_list_end_in_one_order() {
         use crate::book::Book;
 
         let ((ra, a), (rb, b)) = installed_pair().await;
-        let titles = [
-            "Middlemarch",
-            "Adam Bede",
-            "Romola",
-            "Silas Marner",
-            "Daniel Deronda",
-            "Felix Holt",
-        ];
-        // The last book is made on the other side, so local ids order the two appends oppositely.
-        for (i, title) in titles.iter().enumerate() {
-            let book = Book {
-                title: Some((*title).into()),
+        // Made on the other side, so local ids order the two appends below oppositely.
+        b.upsert_book(
+            &Book {
+                title: Some("Felix Holt".into()),
                 ..Default::default()
-            };
-            let side = if i == titles.len() - 1 { &b } else { &a };
-            side.upsert_book(&book, None).await.unwrap();
-        }
-        let list = a.create_list("Eliot", None).await.unwrap().id;
-        for title in &titles[..4] {
-            a.add_to_list(list, id_of(&a, title).await, None)
-                .await
-                .unwrap();
-        }
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let list = eliot_list(&a, &["Felix Holt"], &ELIOT[..4]).await;
         exchange((&ra, &a), (&rb, &b)).await;
         let list_b = list_id(&b).await;
-        assert_eq!(list_order(&b).await, titles[..4]);
+        assert_eq!(list_order(&b).await, ELIOT[..4]);
 
         a.add_to_list(list, id_of(&a, "Daniel Deronda").await, None)
             .await
@@ -718,13 +753,19 @@ mod tests {
         }
         cross((&ra, &a), (&rb, &b)).await;
         let order = list_order(&a).await;
-        assert_eq!(
-            order,
-            list_order(&b).await,
-            "each settled the same order alone"
-        );
+        assert_eq!(order, list_order(&b).await);
         assert_eq!(order.len(), 6, "{order:?}");
         exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(stored_positions(&b).await, [0, 1, 2, 3, 4, 4]);
+
+        a.move_in_list(list, id_of(&a, "Adam Bede").await, 0)
+            .await
+            .unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert!(dense(&stored_positions(&a).await));
+        assert_eq!(stored_positions(&a).await, stored_positions(&b).await);
+        assert_eq!(list_order(&a).await[0], "Adam Bede");
+        assert_eq!(list_order(&a).await, list_order(&b).await);
 
         a.move_in_list(list, id_of(&a, "Silas Marner").await, 0)
             .await
@@ -734,13 +775,9 @@ mod tests {
             .unwrap();
         cross((&ra, &a), (&rb, &b)).await;
         let order = list_order(&a).await;
-        assert_eq!(
-            order,
-            list_order(&b).await,
-            "each settled the same order alone"
-        );
+        assert_eq!(order, list_order(&b).await);
+        assert_eq!(order.len(), 6, "{order:?}");
         exchange((&ra, &a), (&rb, &b)).await;
-        assert_eq!(list_order(&a).await, order);
         assert_eq!(list_order(&b).await, order);
 
         a.delete_book(id_of(&a, "Romola").await).await.unwrap();
@@ -748,6 +785,35 @@ mod tests {
         let order = list_order(&a).await;
         assert_eq!(order, list_order(&b).await);
         assert_eq!(order.len(), 5, "{order:?}");
+    }
+
+    /// Changes `side` would send, marked as delivered.
+    async fn take(side: Side<'_>) -> Vec<Change> {
+        let out = outbox(side).await;
+        let mut conn = side.1.pool().acquire().await.unwrap();
+        side.0.acknowledge(&mut conn, out.through).await.unwrap();
+        out.changes
+    }
+
+    #[tokio::test]
+    async fn a_move_that_arrives_in_two_parts_ends_as_the_reader_made_it() {
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let list = eliot_list(&a, &[], &ELIOT).await;
+        exchange((&ra, &a), (&rb, &b)).await;
+
+        a.move_in_list(list, id_of(&a, "Daniel Deronda").await, 0)
+            .await
+            .unwrap();
+        let made = list_order(&a).await;
+        let changes = take((&ra, &a)).await;
+        assert!(changes.len() > 1, "{changes:?}");
+        let (first, rest) = changes.split_at(changes.len() / 2);
+        receive(&b, &rb, first).await.unwrap();
+        assert!(take((&rb, &b)).await.is_empty());
+        receive(&b, &rb, rest).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(list_order(&a).await, made);
+        assert_eq!(list_order(&b).await, made);
     }
 
     async fn count(s: &Storage, sql: &str) -> i64 {
