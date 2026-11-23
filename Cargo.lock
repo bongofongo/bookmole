@@ -988,7 +988,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "fongo-sync-core"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=c1a993f6035c20e3993874da6e847228adf1ebc6#c1a993f6035c20e3993874da6e847228adf1ebc6"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=29e3a9accdb57495ce7bbcc225b8117779a08218#29e3a9accdb57495ce7bbcc225b8117779a08218"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -996,7 +996,7 @@ dependencies = [
 [[package]]
 name = "fongo-sync-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=c1a993f6035c20e3993874da6e847228adf1ebc6#c1a993f6035c20e3993874da6e847228adf1ebc6"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=29e3a9accdb57495ce7bbcc225b8117779a08218#29e3a9accdb57495ce7bbcc225b8117779a08218"
 dependencies = [
  "fongo-sync-core",
  "libsqlite3-sys",

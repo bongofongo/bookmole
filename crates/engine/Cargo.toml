@@ -88,7 +88,7 @@ tempfile = "3"
 # over the connection sqlx already holds. MIT OR Apache-2.0. It links the same
 # `libsqlite3-sys` 0.30.1 that sqlx does, so the workspace patch below vendors
 # one SQLite for both. Pinned by commit: the kernel is not on crates.io.
-fongo-sync-sqlite = { git = "https://github.com/bongofongo/fongo-sync", rev = "c1a993f6035c20e3993874da6e847228adf1ebc6" }
+fongo-sync-sqlite = { git = "https://github.com/bongofongo/fongo-sync", rev = "29e3a9accdb57495ce7bbcc225b8117779a08218" }
 
 # Which of this machine's addresses is on a LAN. The route-to-nowhere trick in
 # `plugin::this_lan_address` answers *which address would reach the world*, and
