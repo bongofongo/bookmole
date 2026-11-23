@@ -1239,13 +1239,17 @@ async fn note_bodies_back_fill_from_the_index_and_only_for_indexed_notes() {
 const LIST_POSITIONS: i64 = 35;
 
 /// The list queries that used the unique index use the plain one, and a duplicate is accepted.
+/// The order is the one lists are read in: by position, then by what every device holds alike
+/// of the entry and its book.
 #[tokio::test]
 async fn list_positions_keep_their_index_and_stop_refusing_duplicates() {
-    const ORDER: &str = "SELECT book_id FROM book_list_entries WHERE list_id = 1 \
-         ORDER BY position, added_at, book_id";
+    const ORDER: &str = "SELECT e.book_id FROM book_list_entries e \
+         JOIN books ON books.id = e.book_id WHERE e.list_id = 1 \
+         ORDER BY e.position, e.added_at, books.created_at, books.title, books.authors, e.book_id";
     const FACES: &str = "SELECT books.id FROM books \
-         JOIN book_list_entries e ON e.book_id = books.id \
-         WHERE e.list_id = 1 ORDER BY e.position, e.added_at, e.book_id LIMIT 4";
+         JOIN book_list_entries e ON e.book_id = books.id WHERE e.list_id = 1 \
+         ORDER BY e.position, e.added_at, books.created_at, books.title, books.authors, e.book_id \
+         LIMIT 4";
     const NEXT: &str = "SELECT count(*) FROM book_list_entries WHERE list_id = 1";
 
     let mut conn = migrated_below(LIST_POSITIONS).await;
@@ -1261,18 +1265,20 @@ async fn list_positions_keep_their_index_and_stop_refusing_duplicates() {
 
     apply(&mut conn, LIST_POSITIONS).await;
 
-    // Ties on `position` now need sorting, but only ties: the index still orders the rest.
-    for (sql, was) in [ORDER, FACES, NEXT].into_iter().zip(before) {
+    // A whole list is read by the index and only entries tied on `position` are sorted. The
+    // first few faces are read by the primary key and the list sorted whole: a list is short.
+    let after = [
+        "SEARCH e USING INDEX idx_book_list_entries_pos (list_id=?); \
+         SEARCH books USING INTEGER PRIMARY KEY (rowid=?); \
+         USE TEMP B-TREE FOR LAST 5 TERMS OF ORDER BY",
+        "SEARCH e USING INDEX sqlite_autoindex_book_list_entries_1 (list_id=?); \
+         SEARCH books USING INTEGER PRIMARY KEY (rowid=?); \
+         USE TEMP B-TREE FOR ORDER BY",
+        "SEARCH book_list_entries USING COVERING INDEX idx_book_list_entries_pos (list_id=?)",
+    ];
+    for ((sql, was), expected) in [ORDER, FACES, NEXT].into_iter().zip(before).zip(after) {
         let detail = plan(&mut conn, sql).await;
-        assert!(
-            detail.contains("USING INDEX idx_book_list_entries_pos (list_id=?)")
-                || detail.contains("USING COVERING INDEX idx_book_list_entries_pos (list_id=?)"),
-            "expected the index in the plan, got {detail} (was {was})"
-        );
-        assert!(
-            !detail.contains("TEMP B-TREE FOR ORDER BY"),
-            "the whole order is sorted again: {detail}"
-        );
+        assert_eq!(detail, expected, "(was {was})");
     }
 
     let a = plain_book(&mut conn, "Middlemarch").await;
