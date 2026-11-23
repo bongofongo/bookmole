@@ -2,6 +2,7 @@ mod annotation_alternatives;
 mod book_files;
 mod book_search;
 mod books;
+pub(crate) mod clashes;
 mod copies;
 mod device_books;
 mod field_provenance;

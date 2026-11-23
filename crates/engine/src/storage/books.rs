@@ -1051,21 +1051,21 @@ impl Storage {
         // Two open readings would violate `idx_readings_one_open`: close the older as `abandoned` first,
         // before the
         // move and before `src`'s delete cascades its readings away.
-        sqlx::query(
-            r#"UPDATE readings SET finished_at = last_modified, status = 'abandoned',
-                                   put_down_at = last_modified
-               WHERE id = (
-                   SELECT id FROM readings
-                    WHERE book_id IN (?1, ?2) AND finished_at IS NULL
-                    ORDER BY COALESCE(started_at, created_at) ASC, id ASC
-                    LIMIT 1)
-                 AND (SELECT count(*) FROM readings
-                       WHERE book_id IN (?1, ?2) AND finished_at IS NULL) > 1"#,
+        let older: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM readings
+              WHERE book_id IN (?1, ?2) AND finished_at IS NULL
+                AND (SELECT count(*) FROM readings
+                      WHERE book_id IN (?1, ?2) AND finished_at IS NULL) > 1
+              ORDER BY COALESCE(started_at, created_at) ASC, id ASC
+              LIMIT 1",
         )
         .bind(src)
         .bind(dst)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+        if let Some(older) = older {
+            super::readings::give_up_open_reading(&mut tx, older).await?;
+        }
         report.readings_moved = sqlx::query("UPDATE readings SET book_id = ? WHERE book_id = ?")
             .bind(dst)
             .bind(src)

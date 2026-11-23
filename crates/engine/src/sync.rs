@@ -15,7 +15,7 @@ use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
-use crate::storage::{Storage, synced};
+use crate::storage::{Storage, clashes, synced};
 
 #[expect(clippy::too_many_lines)]
 pub(crate) fn registry() -> Result<Registry> {
@@ -227,18 +227,55 @@ pub(crate) struct Received {
     pub covers_to_fetch: Vec<i64>,
 }
 
+/// How many times one settle gives up rows that keep held rows out and tries those again. What
+/// still waits after that is reported held and tried by the next settle.
+const SETTLE_ROUNDS: usize = 4;
+
 /// Applies changes from another device, and in the same transaction brings up to date what this
-/// device derives from the rows they wrote, so no read sees a remote row without it. Cover files
-/// that only removed books used are deleted once that is committed.
+/// device derives from the rows they wrote, so no read sees a remote row without it. A row held
+/// back by a clash with a row here stays held until [`settle_clashes`]. Cover files that only
+/// removed books used are deleted once that is committed.
 #[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
 pub(crate) async fn receive(
     storage: &Storage,
     replica: &Replica,
     changes: &[Change],
 ) -> Result<Received> {
+    apply_and_repair(storage, replica, changes, false).await
+}
+
+/// Lets in rows held back by a clash with a row here that loses ([`clashes::give_way`]), and
+/// what that changes as [`receive`] does. Must run only after the last page of a pull, never
+/// between pages: a clash decided on part of what another device sent may be one its later
+/// changes already ended.
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
+pub(crate) async fn settle_clashes(storage: &Storage, replica: &Replica) -> Result<Received> {
+    apply_and_repair(storage, replica, &[], true).await
+}
+
+async fn apply_and_repair(
+    storage: &Storage,
+    replica: &Replica,
+    changes: &[Change],
+    give_way: bool,
+) -> Result<Received> {
     let mut tx = storage.pool().begin().await?;
     let covers = synced::covers(&mut tx).await?;
-    let applied = replica.apply(&mut tx, changes).await.map_err(kernel)?;
+    let mut applied = replica.apply(&mut tx, changes).await.map_err(kernel)?;
+    for _ in 0..SETTLE_ROUNDS {
+        if !give_way
+            || applied.held.is_empty()
+            || !clashes::give_way(&mut tx, replica, &applied.held).await?
+        {
+            break;
+        }
+        let again = replica.apply(&mut tx, &[]).await.map_err(kernel)?;
+        applied.accepted += again.accepted;
+        applied.touched.extend(again.touched);
+        applied.conflicts.extend(again.conflicts);
+        applied.waiting = again.waiting;
+        applied.held = again.held;
+    }
     let repaired = synced::repair(&mut tx, &applied.touched, &covers).await?;
     tx.commit().await?;
     for cover in &repaired.orphaned_covers {
@@ -258,6 +295,9 @@ pub(crate) fn kernel(e: fongo_sync_sqlite::Error) -> EngineError {
         other => EngineError::Other(format!("sync: {other}")),
     }
 }
+
+#[cfg(test)]
+mod clash_tests;
 
 #[cfg(test)]
 mod tests {
