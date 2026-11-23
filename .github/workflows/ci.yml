@@ -3,22 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
-    # `paths-ignore`, deliberately, rather than a `paths` allowlist: with branch
-    # protection an allowlist leaves required checks stuck "pending" forever on
-    # a docs-only PR, which is then unmergeable for no reason.
-    # Duplicated below rather than shared via a YAML anchor — the Actions
-    # workflow parser does not support anchors/aliases.
+    # A docs-only push to main skips CI. Pull requests take no path filter at
+    # all: a filter that skips the workflow leaves its required checks
+    # "pending" forever, and the pull request can never merge.
     paths-ignore:
       - "**.md"
       - "docs/**"
       - "perf/**"
       - ".gitignore"
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "perf/**"
-      - ".gitignore"
 
 # No DATABASE_URL anywhere below, and that is correct — this crate uses runtime
 # `sqlx::query()` only (zero `query!` macros, no `.sqlx/`), and the
