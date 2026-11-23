@@ -62,35 +62,22 @@ jobs:
       # Not redundant with lint: see the Makefile's build-check.
       - run: make build-check
 
+  # ubuntu runs the WHOLE workspace. The TUI's suite used to be out of scope
+  # here, on the argument that the engine is what this gates — but that only
+  # held while every TUI change was written and run by hand on the dev machine.
+  # It no longer is, and the suite contains `every_screen_draws_at_every_size`,
+  # which is the one thing standing between a layout bug and a panic in the
+  # user's tmux pane. It is headless (ratatui TestBackend), so it needs nothing
+  # a runner lacks.
+  #
+  # The engine's macOS leg runs nightly in scheduled.yml instead of here: it is
+  # there for the two C dependencies that build differently on macOS, which
+  # change rarely, and macOS runners are often slow enough to start that
+  # waiting on one held up every pull request.
   test:
-    name: tests — ${{ matrix.scope }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: tests — whole workspace (ubuntu-26.04)
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        # Asymmetric on purpose.
-        #
-        # ubuntu runs the WHOLE workspace. The TUI's suite used to be out of
-        # scope here, on the argument that the engine is what this gates — but
-        # that only held while every TUI change was written and run by hand on
-        # the dev machine. It no longer is, and the suite contains
-        # `every_screen_draws_at_every_size`, which is the one thing standing
-        # between a layout bug and a panic in the user's tmux pane. It is
-        # headless (ratatui TestBackend), so it needs nothing a runner lacks.
-        #
-        # macOS stays engine-only. It earns its slot for the two C dependencies
-        # that build differently there (vendored lua54, libsqlite3-sys), not for
-        # layout arithmetic — running the ray tracer twice buys nothing. Free
-        # here because the repo is public; on a private repo these bill at 10x
-        # and should move to the scheduled workflow instead.
-        include:
-          - os: ubuntu-26.04
-            scope: whole workspace
-            target: test
-          - os: macos-latest
-            scope: engine
-            target: test-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,7 +87,7 @@ jobs:
         with:
           tool: nextest
 
-      - run: make ${{ matrix.target }} NEXTEST_PROFILE=ci
+      - run: make test NEXTEST_PROFILE=ci
 
   migrations:
     name: migrations are append-only

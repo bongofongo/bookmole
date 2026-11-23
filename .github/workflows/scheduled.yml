@@ -86,6 +86,27 @@ jobs:
           tool: cargo-deny
       - run: make advisories
 
+  # The engine's suite on macOS, for the two C dependencies that build
+  # differently there (vendored lua54, libsqlite3-sys). Nightly rather than on
+  # pull requests, and a real failure when it fails: a red night is how a
+  # macOS-only regression is seen. Engine only, as the ray tracer and the TUI's
+  # layout arithmetic gain nothing from a second platform.
+  macos-engine:
+    name: engine tests on macOS
+    runs-on: macos-latest
+    if: github.event.schedule != '37 6 * * 1'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: nextest
+
+      - run: make test-engine NEXTEST_PROFILE=ci
+
   # Mutation testing, and deliberately not on the PR gate: a full sweep of the
   # engine is 2566 mutants, measured at ~10 minutes for 34 mutants of one
   # file, which puts the whole thing in the hours range — nobody should be
