@@ -5,9 +5,9 @@ name: Scheduled
 on:
   schedule:
     - cron: "17 6 * * *"
-    # A second entry, Mondays only, at a time nothing else here runs — the
-    # `mutants` job below gates on this exact string so it fires once a week
-    # rather than every night the first cron entry does.
+    # A second entry, Mondays only, for the weekly jobs. Every job gates on
+    # this exact string: `mutants` runs only on it, the daily jobs never do, so
+    # nothing runs twice on a Monday.
     - cron: "37 6 * * 1"
   workflow_dispatch:
 
@@ -39,6 +39,7 @@ jobs:
   corpus:
     name: tier-2 corpus
     runs-on: ubuntu-26.04
+    if: github.event.schedule != '37 6 * * 1'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +67,7 @@ jobs:
   advisories:
     name: security advisories
     runs-on: ubuntu-26.04
+    if: github.event.schedule != '37 6 * * 1'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -136,9 +138,21 @@ jobs:
       - name: mutants against the last 7 days of main
         env:
           PROPTEST_CASES: "32"
+        # A history younger than a week has no commit before the window, so
+        # the root is the base. cargo-mutants exits 0 on an empty diff or one
+        # that touches no engine code, which would read as a clean week.
         run: |
           base=$(git rev-list -1 --before='7 days ago' origin/main)
+          if [ -z "$base" ]; then
+            base=$(git rev-list --max-parents=0 origin/main)
+            echo "::notice::no commit on main is older than 7 days; diffing from the root commit"
+          fi
           git diff "$base...HEAD" > /tmp/week.diff
+          count=$(cargo mutants -p bookmole --in-diff /tmp/week.diff --list | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::the diff since $base has no engine mutants, so nothing was tested"
+            exit 1
+          fi
           set +e
           timeout --signal=INT --kill-after=3m 75m \
             cargo mutants -p bookmole --test-tool nextest --shuffle \
@@ -163,6 +177,7 @@ jobs:
   floating-stable:
     name: clippy on floating stable
     runs-on: ubuntu-26.04
+    if: github.event.schedule != '37 6 * * 1'
     timeout-minutes: 50
     # Advisory only. This exists so a new lint is *visible* before the pinned
     # toolchain in rust-toolchain.toml is bumped — never so it blocks anything.
