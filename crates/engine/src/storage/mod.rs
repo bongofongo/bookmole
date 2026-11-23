@@ -23,6 +23,7 @@ mod readings;
 mod search_cache;
 mod settings;
 mod sidecar_seen;
+pub(crate) mod synced;
 
 pub use annotation_alternatives::AnnotationAlternative;
 pub use book_files::BookFile;

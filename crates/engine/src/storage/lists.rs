@@ -118,7 +118,7 @@ async fn touch(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
 
 /// `ids` must be every entry of the list, in its new order. A row already in its place is not
 /// written.
-async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
+pub(super) async fn renumber(conn: &mut SqliteConnection, list_id: i64, ids: &[i64]) -> Result<()> {
     for (i, book_id) in ids.iter().enumerate() {
         sqlx::query(
             "UPDATE book_list_entries SET position = ?1
@@ -147,6 +147,19 @@ async fn compact(conn: &mut SqliteConnection, list_id: i64) -> Result<()> {
     let ids = entry_order(&mut *conn, list_id).await?;
     renumber(&mut *conn, list_id, &ids).await?;
     touch(conn, list_id).await
+}
+
+/// Each entry of a list as `(book_id, position, added_at)`, unordered.
+pub(super) async fn entries_of(
+    conn: &mut SqliteConnection,
+    list_id: i64,
+) -> Result<Vec<(i64, i64, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT book_id, position, added_at FROM book_list_entries WHERE list_id = ?",
+    )
+    .bind(list_id)
+    .fetch_all(conn)
+    .await?)
 }
 
 /// Read before the delete; the cascade leaves nothing to ask afterwards.
