@@ -164,15 +164,8 @@ pub(crate) fn decode(bytes: &[u8], path: &str) -> Result<String, Error> {
 }
 
 fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| {
-            unit([
-                c.first().copied().unwrap_or(0),
-                c.get(1).copied().unwrap_or(0),
-            ])
-        })
-        .collect();
+    let (pairs, _odd_trailing_byte) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().copied().map(unit).collect();
     String::from_utf16_lossy(&units)
 }
 
