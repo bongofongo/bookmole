@@ -207,6 +207,40 @@ async fn reindex(
     stamp_parts(tx, note_id, body).await
 }
 
+/// Brings the index of a note in line with its stored row and body, as another device left them.
+/// A note whose body has not arrived is indexed by title. Writes nothing that syncs, and leaves
+/// `last_modified` alone because the vault file has not been read.
+pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+    let Some(title) = sqlx::query_scalar::<_, String>("SELECT title FROM notes WHERE id = ?")
+        .bind(note_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(());
+    };
+    let body: String = sqlx::query_scalar("SELECT body FROM note_bodies WHERE note_id = ?")
+        .bind(note_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or_default();
+    sqlx::query("INSERT INTO notes_fts (rowid, title, body) VALUES (?, ?, ?)")
+        .bind(note_id)
+        .bind(&title)
+        .bind(&body)
+        .execute(&mut *tx)
+        .await?;
+    stamp_parts(tx, note_id, &body).await?;
+    sqlx::query("DELETE FROM note_links WHERE from_note = ?")
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+    write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
+}
+
 /// An unchanged body must not write the row at all, because a write to `note_bodies` is taken to
 /// mean the body changed. Trailing whitespace is no change, as in `reindex_from_body`. The promise
 /// holds for AFTER triggers only: a BEFORE INSERT trigger fires ahead of the conflict check.

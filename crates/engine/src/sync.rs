@@ -8,11 +8,14 @@
 //! - `device_books`: its key column is not declared NOT NULL, which a natural key needs.
 //! - `annotation_alternatives`: not yet decided whether set-aside annotations travel.
 
-use fongo_sync_sqlite::core::Strategy;
-use fongo_sync_sqlite::{Collection, LocalDefault, Registry, Replica};
+use std::path::Path;
+
+use fongo_sync_sqlite::core::{Change, Strategy};
+use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
+use crate::storage::{Storage, synced};
 
 #[expect(clippy::too_many_lines)]
 pub(crate) fn registry() -> Result<Registry> {
@@ -215,6 +218,40 @@ pub(crate) async fn installed(conn: &mut SqliteConnection) -> Result<bool> {
     Ok(found.is_some())
 }
 
+/// What arrived from another device that is still to be done outside the database.
+#[derive(Debug)]
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
+pub(crate) struct Received {
+    pub applied: Applied,
+    /// Books whose cover URL changed; their covers are fetched after the apply, never during it.
+    pub covers_to_fetch: Vec<i64>,
+}
+
+/// Applies changes from another device, and in the same transaction brings up to date what this
+/// device derives from the rows they wrote, so no read sees a remote row without it. Cover files
+/// that only removed books used are deleted once that is committed.
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
+pub(crate) async fn receive(
+    storage: &Storage,
+    replica: &Replica,
+    changes: &[Change],
+) -> Result<Received> {
+    let mut tx = storage.pool().begin().await?;
+    let covers = synced::covers(&mut tx).await?;
+    let applied = replica.apply(&mut tx, changes).await.map_err(kernel)?;
+    let repaired = synced::repair(&mut tx, replica, &applied.touched, &covers).await?;
+    tx.commit().await?;
+    for cover in &repaired.orphaned_covers {
+        let cover = Path::new(cover);
+        std::fs::remove_file(crate::images::thumb_path_of(cover)).ok();
+        std::fs::remove_file(cover).ok();
+    }
+    Ok(Received {
+        applied,
+        covers_to_fetch: repaired.covers_to_fetch,
+    })
+}
+
 pub(crate) fn kernel(e: fongo_sync_sqlite::Error) -> EngineError {
     match e {
         fongo_sync_sqlite::Error::Sql(e) => EngineError::Db(e),
@@ -318,30 +355,69 @@ mod tests {
         }
     }
 
-    /// Sends what `from` wrote to `to`; returns how many changes went.
-    async fn send(
-        from: (&Replica, &mut SqliteConnection),
-        to: (&Replica, &mut SqliteConnection),
-    ) -> usize {
-        let (replica, conn) = from;
-        replica.collect(conn).await.unwrap();
-        let out = replica.outbox(conn, 100_000).await.unwrap();
-        if out.changes.is_empty() {
-            return 0;
+    type Side<'a> = (&'a Replica, &'a Storage);
+
+    async fn installed_pair() -> ((Replica, Storage), (Replica, Storage)) {
+        let (a, b) = (fresh().await, fresh().await);
+        let (ra, rb) = (replica().unwrap(), replica().unwrap());
+        for (s, r) in [(&a, &ra), (&b, &rb)] {
+            r.install(&mut s.pool().acquire().await.unwrap())
+                .await
+                .unwrap();
         }
-        let applied = to.0.apply(to.1, &out.changes).await.unwrap();
-        assert!(applied.held.is_empty(), "held back: {:?}", applied.held);
-        replica.acknowledge(conn, out.through).await.unwrap();
-        out.changes.len()
+        ((ra, a), (rb, b))
     }
 
-    async fn exchange(a: (&Replica, &mut SqliteConnection), b: (&Replica, &mut SqliteConnection)) {
-        let (ra, ca) = a;
-        let (rb, cb) = b;
-        for _ in 0..4 {
-            let there = send((ra, &mut *ca), (rb, &mut *cb)).await;
-            let back = send((rb, &mut *cb), (ra, &mut *ca)).await;
-            if there + back == 0 {
+    /// What `side` would send now.
+    async fn outbox(side: Side<'_>) -> fongo_sync_sqlite::Outbox {
+        let mut conn = side.1.pool().acquire().await.unwrap();
+        side.0.collect(&mut conn).await.unwrap();
+        side.0.outbox(&mut conn, 100_000).await.unwrap()
+    }
+
+    /// Sends what `from` wrote to `to`, through [`receive`]. A side with nothing of its own to
+    /// send has nothing after receiving either: no repair of what arrived is sent back.
+    async fn send(from: Side<'_>, to: Side<'_>) -> Option<Received> {
+        let out = outbox(from).await;
+        if out.changes.is_empty() {
+            return None;
+        }
+        let idle = outbox(to).await.changes.is_empty();
+        let received = receive(to.1, to.0, &out.changes).await.unwrap();
+        assert!(
+            received.applied.held.is_empty(),
+            "held back: {:?}",
+            received.applied.held
+        );
+        if idle {
+            let back = outbox(to).await.changes;
+            assert!(back.is_empty(), "sent back: {back:#?}");
+        }
+        let mut conn = from.1.pool().acquire().await.unwrap();
+        from.0.acknowledge(&mut conn, out.through).await.unwrap();
+        Some(received)
+    }
+
+    /// Each side receives what the other wrote before either has seen anything from the other.
+    async fn cross(a: Side<'_>, b: Side<'_>) {
+        let (to_b, to_a) = (outbox(a).await, outbox(b).await);
+        for (from, to, out) in [(a, b, to_b), (b, a, to_a)] {
+            let received = receive(to.1, to.0, &out.changes).await.unwrap();
+            assert!(received.applied.held.is_empty());
+            let mut conn = from.1.pool().acquire().await.unwrap();
+            from.0.acknowledge(&mut conn, out.through).await.unwrap();
+        }
+    }
+
+    /// Sends both ways until neither side has anything to send, then checks that one more collect
+    /// on each finds nothing: what a repair wrote is either local or already agreed.
+    async fn exchange(a: Side<'_>, b: Side<'_>) {
+        for _ in 0..6 {
+            let there = send(a, b).await;
+            let back = send(b, a).await;
+            if there.is_none() && back.is_none() {
+                assert!(outbox(a).await.changes.is_empty());
+                assert!(outbox(b).await.changes.is_empty());
                 return;
             }
         }
@@ -381,13 +457,7 @@ mod tests {
         use crate::book::Book;
         use crate::storage::NewHighlight;
 
-        let (a, b) = (fresh().await, fresh().await);
-        let (ra, rb) = (replica().unwrap(), replica().unwrap());
-        for (s, r) in [(&a, &ra), (&b, &rb)] {
-            r.install(&mut s.pool().acquire().await.unwrap())
-                .await
-                .unwrap();
-        }
+        let ((ra, a), (rb, b)) = installed_pair().await;
 
         let book = a
             .upsert_book(
@@ -446,13 +516,7 @@ mod tests {
         .await
         .unwrap();
 
-        {
-            let (mut ca, mut cb) = (
-                a.pool().acquire().await.unwrap(),
-                b.pool().acquire().await.unwrap(),
-            );
-            exchange((&ra, &mut ca), (&rb, &mut cb)).await;
-        }
+        exchange((&ra, &a), (&rb, &b)).await;
         let on_b: i64 = sqlx::query_scalar("SELECT id FROM highlights WHERE text = ?1")
             .bind(passage)
             .fetch_one(b.pool())
@@ -460,13 +524,9 @@ mod tests {
             .unwrap();
         b.set_annotation(on_b, Some("the last page")).await.unwrap();
 
-        let (mut ca, mut cb) = (
-            a.pool().acquire().await.unwrap(),
-            b.pool().acquire().await.unwrap(),
-        );
-        exchange((&ra, &mut ca), (&rb, &mut cb)).await;
-        let seen = view(&mut ca).await;
-        assert_eq!(seen, view(&mut cb).await);
+        exchange((&ra, &a), (&rb, &b)).await;
+        let seen = view(&mut a.pool().acquire().await.unwrap()).await;
+        assert_eq!(seen, view(&mut b.pool().acquire().await.unwrap()).await);
         assert!(
             seen.contains(&"book Middlemarch 9780141439549".to_string()),
             "{seen:#?}"
@@ -497,5 +557,313 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    async fn id_of(s: &Storage, title: &str) -> i64 {
+        sqlx::query_scalar("SELECT id FROM books WHERE title = ?")
+            .bind(title)
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn sort_keys(s: &Storage, book: i64) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT sort_title, sort_author FROM books WHERE id = ?")
+            .bind(book)
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    }
+
+    fn middlemarch() -> crate::book::Book {
+        crate::book::Book {
+            title: Some("Middlemarch".into()),
+            authors: vec!["George Eliot".into()],
+            isbn_13: Some("9780141439549".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_book_files_and_searches_as_one_made_here() {
+        use crate::book::Book;
+        use crate::storage::{BookFilter, LibraryScope, NewHighlight, SearchSource, Source};
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let on_a = a.upsert_book(&middlemarch(), None).await.unwrap();
+        a.insert_highlight(
+            on_a,
+            &NewHighlight {
+                text: "Who can quit young lives after being long in company with them?".into(),
+                chapter: Some("Finale".into()),
+                page: Some(838),
+                pos0: None,
+                pos1: None,
+                ko_datetime: None,
+                ko_datetime_updated: None,
+                color: None,
+                note: None,
+                source: "koreader".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+
+        let on_b = id_of(&b, "Middlemarch").await;
+        let here = fresh().await;
+        let made_here = here.upsert_book(&middlemarch(), None).await.unwrap();
+        let keys = sort_keys(&b, on_b).await;
+        assert_eq!(keys, sort_keys(&here, made_here).await);
+        assert!(keys.0.is_some(), "{keys:?}");
+
+        let found = b
+            .search_books("middlemarch", &BookFilter::default(), LibraryScope::All, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.iter().map(|m| m.book_id).collect::<Vec<_>>(), [on_b]);
+        let marks = b
+            .search_marks("young lives", Some(SearchSource::Highlight), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(marks.len(), 1);
+
+        a.enrich_book(
+            on_a,
+            &Book {
+                title: Some("The Annotated Middlemarch".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let moved = sort_keys(&b, on_b).await;
+        assert_ne!(moved, keys);
+        assert_eq!(moved, sort_keys(&a, on_a).await);
+        let found = b
+            .search_books("annotated", &BookFilter::default(), LibraryScope::All, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    /// Titles in list order, after checking the positions are exactly `0..n`.
+    async fn list_order(s: &Storage) -> Vec<String> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT b.title, e.position FROM book_list_entries e JOIN books b ON b.id = e.book_id
+              ORDER BY e.position",
+        )
+        .fetch_all(s.pool())
+        .await
+        .unwrap();
+        let positions: Vec<i64> = rows.iter().map(|r| r.1).collect();
+        assert_eq!(positions, (0..rows.len() as i64).collect::<Vec<_>>());
+        rows.into_iter().map(|r| r.0).collect()
+    }
+
+    async fn list_id(s: &Storage) -> i64 {
+        sqlx::query_scalar("SELECT id FROM book_lists")
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn two_devices_reordering_one_list_end_in_one_order() {
+        use crate::book::Book;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let titles = [
+            "Middlemarch",
+            "Adam Bede",
+            "Romola",
+            "Silas Marner",
+            "Daniel Deronda",
+            "Felix Holt",
+        ];
+        // The last book is made on the other side, so local ids order the two appends oppositely.
+        for (i, title) in titles.iter().enumerate() {
+            let book = Book {
+                title: Some((*title).into()),
+                ..Default::default()
+            };
+            let side = if i == titles.len() - 1 { &b } else { &a };
+            side.upsert_book(&book, None).await.unwrap();
+        }
+        let list = a.create_list("Eliot", None).await.unwrap().id;
+        for title in &titles[..4] {
+            a.add_to_list(list, id_of(&a, title).await, None)
+                .await
+                .unwrap();
+        }
+        exchange((&ra, &a), (&rb, &b)).await;
+        let list_b = list_id(&b).await;
+        assert_eq!(list_order(&b).await, titles[..4]);
+
+        a.add_to_list(list, id_of(&a, "Daniel Deronda").await, None)
+            .await
+            .unwrap();
+        b.add_to_list(list_b, id_of(&b, "Felix Holt").await, None)
+            .await
+            .unwrap();
+        // Both appends take the last place in the same second; only the tie-break orders them.
+        for s in [&a, &b] {
+            sqlx::query("UPDATE book_list_entries SET added_at = 1700000000 WHERE position = 4")
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
+        cross((&ra, &a), (&rb, &b)).await;
+        let order = list_order(&a).await;
+        assert_eq!(
+            order,
+            list_order(&b).await,
+            "each settled the same order alone"
+        );
+        assert_eq!(order.len(), 6, "{order:?}");
+        exchange((&ra, &a), (&rb, &b)).await;
+
+        a.move_in_list(list, id_of(&a, "Silas Marner").await, 0)
+            .await
+            .unwrap();
+        b.move_in_list(list_b, id_of(&b, "Middlemarch").await, 5)
+            .await
+            .unwrap();
+        cross((&ra, &a), (&rb, &b)).await;
+        let order = list_order(&a).await;
+        assert_eq!(
+            order,
+            list_order(&b).await,
+            "each settled the same order alone"
+        );
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(list_order(&a).await, order);
+        assert_eq!(list_order(&b).await, order);
+
+        a.delete_book(id_of(&a, "Romola").await).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let order = list_order(&a).await;
+        assert_eq!(order, list_order(&b).await);
+        assert_eq!(order.len(), 5, "{order:?}");
+    }
+
+    async fn count(s: &Storage, sql: &str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(s.pool()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_remote_note_is_found_by_title_then_by_its_body_and_leaves_no_index_when_removed() {
+        use crate::storage::SearchSource;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let note: i64 = sqlx::query_scalar(
+            "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+             VALUES ('Middlemarch/prelude.md', 'Prelude', 'note', 1, 1) RETURNING id",
+        )
+        .fetch_one(a.pool())
+        .await
+        .unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let found = b
+            .search_marks("prelude", Some(SearchSource::Note), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+
+        let body = "Who that cares much to know the history of man has not dwelt on the life of \
+                    Saint Theresa? See [[Finale]].";
+        a.refresh_note_body(note, "Prelude", body).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let found = b
+            .search_marks("saint theresa", Some(SearchSource::Note), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        let on_b: i64 = count(&b, "SELECT id FROM notes").await;
+        let parts = "SELECT parts || ' ' || latest_part_at FROM notes";
+        let stamps: (String, String) = (
+            sqlx::query_scalar(parts).fetch_one(a.pool()).await.unwrap(),
+            sqlx::query_scalar(parts).fetch_one(b.pool()).await.unwrap(),
+        );
+        assert_eq!(stamps.0, stamps.1);
+        let links: Vec<String> =
+            sqlx::query_scalar("SELECT target_title FROM note_links WHERE from_note = ?")
+                .bind(on_b)
+                .fetch_all(b.pool())
+                .await
+                .unwrap();
+        assert_eq!(links, ["Finale"]);
+
+        a.delete_note(note).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(count(&b, "SELECT count(*) FROM notes").await, 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM notes_fts").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_changed_cover_url_is_handed_back_and_a_removed_books_cover_file_goes() {
+        use crate::book::Book;
+        use crate::storage::Source;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let on_a = a
+            .upsert_book(
+                &Book {
+                    cover_url: Some("https://covers.example/1.jpg".into()),
+                    ..middlemarch()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let got = send((&ra, &a), (&rb, &b)).await.unwrap();
+        let on_b = id_of(&b, "Middlemarch").await;
+        assert_eq!(got.covers_to_fetch, [on_b]);
+        exchange((&ra, &a), (&rb, &b)).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cover = dir.path().join("0f3c.jpg");
+        let thumb = crate::images::thumb_path_of(&cover);
+        std::fs::write(&cover, b"cover").unwrap();
+        std::fs::write(&thumb, b"thumb").unwrap();
+        sqlx::query("UPDATE books SET cover_path = ? WHERE id = ?")
+            .bind(cover.display().to_string())
+            .bind(on_b)
+            .execute(b.pool())
+            .await
+            .unwrap();
+
+        let edit = |book: Book| {
+            let a = &a;
+            async move {
+                a.enrich_book(on_a, &book, Some(Source::User))
+                    .await
+                    .unwrap()
+            }
+        };
+        edit(Book {
+            publisher: Some("Blackwood".into()),
+            ..Default::default()
+        })
+        .await;
+        let got = send((&ra, &a), (&rb, &b)).await.unwrap();
+        assert!(got.covers_to_fetch.is_empty());
+        edit(Book {
+            cover_url: Some("https://covers.example/2.jpg".into()),
+            ..Default::default()
+        })
+        .await;
+        let got = send((&ra, &a), (&rb, &b)).await.unwrap();
+        assert_eq!(got.covers_to_fetch, [on_b]);
+        exchange((&ra, &a), (&rb, &b)).await;
+
+        a.delete_book(on_a).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        assert_eq!(count(&b, "SELECT count(*) FROM books").await, 0);
+        assert!(!cover.exists());
+        assert!(!thumb.exists());
     }
 }
