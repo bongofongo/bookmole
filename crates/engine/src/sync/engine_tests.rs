@@ -522,16 +522,22 @@ async fn writes_at_once(d: &Device) -> bool {
     wrote
 }
 
-/// Writes through the engine's pool, which waits up to five seconds for the lock, and says how
-/// long that took.
-async fn pool_write(d: &Device) -> std::time::Duration {
-    let started = std::time::Instant::now();
-    add_book(d, "Felix Holt").await;
-    sqlx::query("DELETE FROM books WHERE title = 'Felix Holt'")
-        .execute(d.engine.storage().pool())
-        .await
-        .unwrap();
-    started.elapsed()
+/// Whether another connection gets the write lock within a second, trying without waiting:
+/// a dropped sync's connection is closed on its worker straight away, not when the next sync
+/// comes, and the engine's own writes then go through.
+async fn released(d: &Device) -> bool {
+    for _ in 0..100 {
+        if writes_at_once(d).await {
+            add_book(d, "Felix Holt").await;
+            sqlx::query("DELETE FROM books WHERE title = 'Felix Holt'")
+                .execute(d.engine.storage().pool())
+                .await
+                .unwrap();
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
 }
 
 #[tokio::test]
@@ -547,7 +553,6 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
         add_book(&a, title).await;
         sync(&a, &server).await;
     }
-    let prompt = std::time::Duration::from_secs(3);
 
     let mut hanging = Receiver::default();
     hanging.faults.hang = true;
@@ -557,7 +562,7 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
     )
     .await;
     assert!(dropped.is_err(), "the apply did not hang");
-    assert!(pool_write(&b).await < prompt);
+    assert!(released(&b).await);
 
     let mut panicking = Receiver::default();
     panicking.faults.panic = true;
@@ -565,7 +570,7 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
         .catch_unwind()
         .await;
     assert!(caught.is_err(), "the apply did not panic");
-    assert!(pool_write(&b).await < prompt);
+    assert!(released(&b).await);
 
     for n in 1..=8 {
         server.hang_at(Some(n));
@@ -575,7 +580,7 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
         )
         .await;
         server.hang_at(None);
-        assert!(pool_write(&b).await < prompt, "dropped at request {n}");
+        assert!(released(&b).await, "dropped at request {n}");
     }
 
     let opened = b.engine.sync.held.lock().await.opened;
@@ -1207,6 +1212,56 @@ async fn a_connection_closed_after_holding_the_write_lock_lets_the_next_writer_i
         held, 0,
         "the write lock outlived the sync {held} times in 40"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn two_notes_whose_paths_the_key_tells_apart_but_the_disk_does_not_share_nothing() {
+    let a = device().await;
+    let mut notes = Vec::new();
+    for path in ["notes/a.md", "notes/b.md"] {
+        let id = a
+            .engine
+            .storage()
+            .insert_note(
+                NewNoteMeta {
+                    book_id: None,
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: path,
+                    title: "Prelude",
+                    kind: "note",
+                },
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+        notes.push(a.engine.storage().get_note(id).await.unwrap().unwrap());
+    }
+    let owner = a.engine.note_path(&notes[0]).unwrap();
+    std::fs::create_dir_all(owner.parent().unwrap()).unwrap();
+    std::fs::write(&owner, "the first note's words\n").unwrap();
+    std::fs::hard_link(&owner, a.engine.note_path(&notes[1]).unwrap()).unwrap();
+
+    assert!(
+        a.engine
+            .update_note_body(&notes[1], "overwritten")
+            .await
+            .is_err()
+    );
+    assert!(a.engine.refresh_note_from_disk(&notes[1]).await.is_err());
+    a.engine.delete_note(&notes[1]).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&owner).unwrap(),
+        "the first note's words\n"
+    );
+    a.engine
+        .update_note_body(&notes[0], "the first note, edited")
+        .await
+        .unwrap();
 }
 
 #[cfg(unix)]

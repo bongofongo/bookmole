@@ -68,6 +68,10 @@ regex.workspace = true
 # marks dropped) so `cafe` finds *Café*. Already resolved in
 # `Cargo.lock` through `idna`; MIT/Apache-2.0, so `cargo deny` is unaffected.
 unicode-normalization = "0.1.24"
+# Full Unicode case folding, which lowercasing is not (`ß`, `ﬁ`, final sigma): two note paths a
+# case-insensitive file system takes for one name must get one key. MIT; it depends only on
+# unicode-normalization, which is already here.
+caseless = "0.2"
 csv.workspace = true
 tracing.workspace = true
 # The offline index ships as one gzip (`data/wellknown.tsv.gz`) and is read

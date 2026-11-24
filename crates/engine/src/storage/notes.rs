@@ -241,14 +241,21 @@ pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64
     write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
 }
 
-/// The name a file system that ignores case and Unicode normalisation, as macOS's does by
-/// default, gives `path`: canonically decomposed, each character lowercased by Unicode's default
-/// mapping, decomposed again. Paths with one key are one file there. Full case folding is not
-/// applied, so `ß` and `ss`, or the two lowercase sigmas, keep different keys.
+/// The name a file system that ignores case and Unicode normalisation gives `path`: its
+/// canonical caseless form (Unicode's D145), canonically decomposed, fully case folded, and
+/// decomposed again. Full folding maps `ß`, `ẞ` and `SS` together, both sigmas, and `ﬁ` with
+/// `fi`; it leaves the dotless `ı` apart from `i`, and `İ` folds to `i` with a combining dot, as
+/// Unicode's default (not Turkish) folding does. This groups at least what macOS's file systems
+/// treat as one name (they ignore normalisation and fold case) and what NTFS does (it folds
+/// case only, by a table of simple mappings); where it groups more, a note is refused that a
+/// given file system would have kept apart, which is the safe side. Because no key can be shown
+/// to match every file system, writes also compare the files themselves (see
+/// `Engine::owned_note_file`).
 pub(crate) fn path_key(path: &str) -> String {
+    use caseless::Caseless;
     use unicode_normalization::UnicodeNormalization;
 
-    path.nfd().flat_map(char::to_lowercase).nfd().collect()
+    path.chars().nfd().default_case_fold().nfd().collect()
 }
 
 /// Of the notes in `members`, which all share one key, the one whose file it is: the first by
@@ -897,6 +904,41 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_one_file_system_takes_for_one_get_one_key() {
+        for same in [
+            [
+                "Stra\u{df}e.md",
+                "STRASSE.md",
+                "Stra\u{1e9e}e.md",
+                "strasse.md",
+            ],
+            [
+                "\u{3c3}\u{3bf}\u{3c6}\u{3b9}\u{3b1}\u{3c2}.md",
+                "\u{3a3}\u{39f}\u{3a6}\u{399}\u{391}\u{3a3}.md",
+                "\u{3c3}\u{3bf}\u{3c6}\u{3b9}\u{3b1}\u{3c3}.md",
+                "\u{3c3}\u{3bf}\u{3c6}\u{3b9}\u{3b1}\u{3c3}.md",
+            ],
+            ["\u{fb01}le.md", "file.md", "FILE.md", "File.md"],
+            [
+                "\u{c9}t\u{e9}.md",
+                "E\u{301}te\u{301}.md",
+                "\u{e9}T\u{c9}.md",
+                "e\u{301}t\u{e9}.md",
+            ],
+        ] {
+            let key = path_key(same[0]);
+            for path in &same[1..] {
+                assert_eq!(path_key(path), key, "{} and {path}", same[0]);
+            }
+        }
+        // Unicode's default folding keeps the dotless i apart, and gives the dotted capital a
+        // combining dot.
+        assert_ne!(path_key("\u{131}.md"), path_key("i.md"));
+        assert_ne!(path_key("\u{130}.md"), path_key("i.md"));
+        assert_ne!(path_key("a.md"), path_key("b.md"));
+    }
 
     /// Reads the generated SQL because the bundled SQLite's higher parameter limit hides a missing
     /// split.

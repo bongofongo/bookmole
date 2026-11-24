@@ -867,6 +867,21 @@ pub fn note_path_is_plain(file_path: &str) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
+/// Which file `path` is, as the file system tells files apart: device and inode on Unix, the
+/// canonical path elsewhere. `None` when nothing is there.
+pub(crate) fn file_identity(path: &Path) -> Option<(u64, u64, PathBuf)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.dev(), meta.ino(), PathBuf::new()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some((0, 0, std::fs::canonicalize(path).ok()?))
+    }
+}
+
 /// One name of a note's path that any platform can hold.
 fn portable_name(part: &str) -> bool {
     !part.is_empty()
@@ -1034,6 +1049,51 @@ mod tests {
         ] {
             assert!(note_path_is_plain(path), "{path:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_vault_sweep_never_reads_a_note_that_owns_a_path_through_a_link_out() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = root.path().join("vault");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("x.md"), "a sentence from outside").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(outside.join("x.md"))
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, vault.join("away")).unwrap();
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .insert_note(
+                crate::storage::NewNoteMeta {
+                    book_id: None,
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: "away/x.md",
+                    title: "Prelude",
+                    kind: "note",
+                },
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+        let report = reconcile_vault(&s, &vault).await.unwrap();
+        assert_eq!((report.checked, report.absent, report.reindexed), (1, 1, 0));
+        assert_eq!(s.indexed_body(id).await.unwrap().as_deref(), Some(""));
+        let bodies: Vec<String> = sqlx::query_scalar("SELECT body FROM note_bodies")
+            .fetch_all(s.pool())
+            .await
+            .unwrap();
+        assert!(bodies.iter().all(|b| !b.contains("outside")), "{bodies:?}");
     }
 
     #[cfg(unix)]
