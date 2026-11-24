@@ -472,6 +472,8 @@ pub(crate) fn kernel(e: fongo_sync_sqlite::Error) -> EngineError {
 
 #[expect(dead_code, reason = "nothing syncs yet")]
 pub(crate) mod http;
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
+pub(crate) mod identity;
 
 #[cfg(test)]
 mod clash_tests;

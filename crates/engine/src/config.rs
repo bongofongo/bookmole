@@ -15,6 +15,9 @@ pub struct EngineConfig {
     /// Files written for other software (the Anki export). Beside the vault, not in it, or exports
     /// show up as notes.
     pub exports_dir: PathBuf,
+    /// The synced library's credentials and server, kept out of the database so a copy of it
+    /// carries no secret.
+    pub sync_identity: PathBuf,
     /// Without a key Google Books is not asked at all: keyless requests are refused with a 429.
     pub google_api_key: Option<String>,
     /// Searched before `PATH` and the known install dirs; lets tests use fake binaries without
@@ -43,6 +46,7 @@ impl EngineConfig {
             vault_dir: root.join("vault"),
             log_dir: root.join("logs"),
             exports_dir: root.join("exports"),
+            sync_identity: root.join(crate::sync::identity::FILE_NAME),
             google_api_key,
             calibre_bin_dir: None,
         }
@@ -62,6 +66,7 @@ mod tests {
         assert_eq!(c.vault_dir, PathBuf::from("/tmp/rb/vault"));
         assert_eq!(c.log_dir, PathBuf::from("/tmp/rb/logs"));
         assert_eq!(c.exports_dir, PathBuf::from("/tmp/rb/exports"));
+        assert_eq!(c.sync_identity, PathBuf::from("/tmp/rb/sync-identity"));
     }
 
     #[test]
