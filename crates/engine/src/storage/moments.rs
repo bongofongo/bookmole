@@ -418,7 +418,7 @@ mod tests {
     }
 
     async fn note_on(s: &Storage, book: i64, title: &str, kind: &str, at: i64) -> i64 {
-        let path = format!("vault/{title}.md");
+        let path = format!("vault/{}.md", crate::notes::slugify(title));
         let id = s
             .insert_note(
                 NewNoteMeta {

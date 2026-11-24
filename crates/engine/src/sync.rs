@@ -236,6 +236,8 @@ const SETTLE_ROUNDS: usize = 4;
 /// rollback starts from what the database holds.
 #[derive(Default)]
 pub(crate) struct Receiver {
+    /// The vault, to check received notes' file paths against; without one, only their text is.
+    pub(crate) vault: Option<std::path::PathBuf>,
     #[cfg(test)]
     pub(crate) faults: Faults,
 }
@@ -257,7 +259,8 @@ impl Apply for Receiver {
         replica: &Replica,
         changes: &[Change],
     ) -> std::result::Result<Applied, ClientError> {
-        let applied = apply_and_repair(conn, replica, changes, false).await?;
+        let vault = self.vault.as_deref();
+        let applied = apply_and_repair(conn, replica, changes, false, vault).await?;
         #[cfg(test)]
         self.suffer(conn, !changes.is_empty()).await?;
         Ok(applied)
@@ -268,7 +271,9 @@ impl Apply for Receiver {
         conn: &mut SqliteConnection,
         replica: &Replica,
     ) -> std::result::Result<Option<Applied>, ClientError> {
-        apply_and_repair(conn, replica, &[], true).await.map(Some)
+        apply_and_repair(conn, replica, &[], true, self.vault.as_deref())
+            .await
+            .map(Some)
     }
 }
 
@@ -305,6 +310,7 @@ async fn apply_and_repair(
     replica: &Replica,
     changes: &[Change],
     give_way: bool,
+    vault: Option<&Path>,
 ) -> std::result::Result<Applied, ClientError> {
     let covers = synced::covers(conn).await.map_err(application)?;
     let mut applied = replica.apply(conn, changes).await?;
@@ -322,7 +328,7 @@ async fn apply_and_repair(
         touched.extend(again.touched.iter().cloned());
         merge_applied(&mut applied, again);
     }
-    let repaired = synced::repair(conn, &touched, &covers)
+    let repaired = synced::repair(conn, &touched, &covers, vault)
         .await
         .map_err(application)?;
     keep_for_after(conn, &repaired).await.map_err(application)?;
@@ -331,10 +337,14 @@ async fn apply_and_repair(
 
 const AFTER_TABLE: &str = "CREATE TEMP TABLE IF NOT EXISTS bookmole_sync_after (
     cover_file TEXT,
-    cover_fetch INTEGER)";
+    cover_fetch INTEGER,
+    refused_note INTEGER)";
 
 async fn keep_for_after(conn: &mut SqliteConnection, repaired: &synced::Repaired) -> Result<()> {
-    if repaired.orphaned_covers.is_empty() && repaired.covers_to_fetch.is_empty() {
+    if repaired.orphaned_covers.is_empty()
+        && repaired.covers_to_fetch.is_empty()
+        && repaired.refused_notes.is_empty()
+    {
         return Ok(());
     }
     sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
@@ -350,13 +360,28 @@ async fn keep_for_after(conn: &mut SqliteConnection, repaired: &synced::Repaired
             .execute(&mut *conn)
             .await?;
     }
+    for note in &repaired.refused_notes {
+        sqlx::query("INSERT INTO temp.bookmole_sync_after (refused_note) VALUES (?)")
+            .bind(note)
+            .execute(&mut *conn)
+            .await?;
+    }
     Ok(())
 }
 
+/// What committed applies on a connection left for after the sync.
+#[derive(Debug, Default)]
+pub(crate) struct After {
+    /// Books whose cover URL changed and still has one.
+    pub covers_to_fetch: Vec<i64>,
+    /// Notes whose file path was refused, and which are still here.
+    pub refused_notes: Vec<i64>,
+}
+
 /// What committed applies on a connection left to do outside the database: cover files deleted
-/// here, and the books whose covers to fetch returned. Reads and clears the record in one
-/// transaction; `conn` must have none open. A file is deleted only if no book uses it now.
-pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<Vec<i64>> {
+/// here, the rest returned. Reads and clears the record in one transaction; `conn` must have
+/// none open. A file is deleted only if no book uses it now.
+pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<After> {
     use sqlx::Connection;
 
     sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
@@ -375,6 +400,13 @@ pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<Vec<i64>> 
     )
     .fetch_all(&mut *tx)
     .await?;
+    let refused_notes: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT refused_note FROM temp.bookmole_sync_after
+          WHERE refused_note IN (SELECT id FROM notes)
+          ORDER BY refused_note",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM temp.bookmole_sync_after")
         .execute(&mut *tx)
         .await?;
@@ -384,7 +416,10 @@ pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<Vec<i64>> 
         std::fs::remove_file(crate::images::thumb_path_of(cover)).ok();
         std::fs::remove_file(cover).ok();
     }
-    Ok(fetch)
+    Ok(After {
+        covers_to_fetch: fetch,
+        refused_notes,
+    })
 }
 
 fn application(e: EngineError) -> ClientError {
@@ -452,7 +487,7 @@ async fn in_transaction(
         }
     };
     tx.commit().await?;
-    let covers_to_fetch = take_after(&mut conn).await?;
+    let covers_to_fetch = take_after(&mut conn).await?.covers_to_fetch;
     Ok(Received {
         applied,
         covers_to_fetch,
@@ -1366,7 +1401,13 @@ mod tests {
             .await
             .unwrap();
         tx.rollback().await.unwrap();
-        assert_eq!(take_after(&mut conn).await.unwrap(), Vec::<i64>::new());
+        assert!(
+            take_after(&mut conn)
+                .await
+                .unwrap()
+                .covers_to_fetch
+                .is_empty()
+        );
         drop(conn);
         assert!(cover.exists());
         assert_eq!(count(&b, "SELECT count(*) FROM books").await, 1);

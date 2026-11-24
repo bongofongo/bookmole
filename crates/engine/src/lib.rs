@@ -1989,8 +1989,10 @@ impl Engine {
         self.storage.note_for_reading(reading_id, kind).await
     }
 
-    pub fn note_path(&self, note: &NoteRecord) -> PathBuf {
-        self.config.vault_dir.join(&note.file_path)
+    /// The note's file in the vault. Refused, touching nothing, for a stored path that is not a
+    /// markdown file inside the vault ([`notes::note_file`]), as another device may have sent.
+    pub fn note_path(&self, note: &NoteRecord) -> Result<PathBuf> {
+        notes::note_file(&self.config.vault_dir, &note.file_path)
     }
 
     /// Each `[[wikilink]]` this note's body wrote and the note it resolves to, if any.
@@ -2062,7 +2064,7 @@ impl Engine {
     }
 
     pub fn note_body(&self, note: &NoteRecord) -> Result<String> {
-        let file = self.note_path(note);
+        let file = self.note_path(note)?;
         let content = std::fs::read_to_string(&file)?;
         let (_, body) = notes::frontmatter_and_body(&content);
         Ok(body.trim_end().to_string())
@@ -2070,7 +2072,7 @@ impl Engine {
 
     /// Replaces a note's body, keeping its frontmatter, and reindexes FTS and wikilink edges.
     pub async fn update_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
-        let file = self.note_path(note);
+        let file = self.note_path(note)?;
         let content = std::fs::read_to_string(&file)?;
         let (header, _) = notes::frontmatter_and_body(&content);
         let body = body.trim_end();
@@ -2081,13 +2083,15 @@ impl Engine {
             .await
     }
 
-    /// Removes the markdown file, then the row and FTS entry; a missing file is not an error.
+    /// Removes the markdown file, then the row and FTS entry; a missing file is not an error, and
+    /// a row whose path is refused loses its row alone.
     pub async fn delete_note(&self, note: &NoteRecord) -> Result<()> {
-        let file = self.note_path(note);
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        if let Ok(file) = self.note_path(note) {
+            match std::fs::remove_file(&file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
         self.storage.delete_note(note.id).await
     }
@@ -2095,7 +2099,7 @@ impl Engine {
     /// Re-reads one note file and reindexes FTS and wikilink edges, since an outside edit may add a
     /// link.
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {
-        let file = self.note_path(note);
+        let file = self.note_path(note)?;
         let content = std::fs::read_to_string(&file)?;
         let (_, body) = notes::frontmatter_and_body(&content);
         notes::reindex_from_body(&self.storage, note.id, &note.title, body).await?;
@@ -2211,10 +2215,11 @@ impl Engine {
                 .into_iter()
                 .map(|(target, _)| target)
                 .collect();
+            let file = self.note_path(&existing)?;
             return Ok(CreatedNote {
                 id: existing.id,
                 title: existing.title,
-                file: self.config.vault_dir.join(&existing.file_path),
+                file,
                 links,
             });
         }

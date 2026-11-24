@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 use super::highlights::{HIGHLIGHT_COLUMNS, row_to_highlight};
 use super::{Highlight, Storage, now_unix};
-use crate::error::Result;
+use crate::error::{EngineError, Result};
 
 #[derive(Debug, Clone, Copy)]
 pub struct NewNoteMeta<'a> {
@@ -241,6 +241,18 @@ pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64
     write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
 }
 
+/// Takes a note out of the index: what [`reindex_stored`] does for a note that is gone, for one
+/// whose stored file path is refused. It stays listed, unsearchable and unlinked.
+pub(super) async fn unindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64) -> Result<()> {
+    for sql in [
+        "DELETE FROM notes_fts WHERE rowid = ?",
+        "DELETE FROM note_links WHERE from_note = ?",
+    ] {
+        sqlx::query(sql).bind(note_id).execute(&mut *tx).await?;
+    }
+    Ok(())
+}
+
 /// An unchanged body must not write the row at all, because a write to `note_bodies` is taken to
 /// mean the body changed. Trailing whitespace is no change, as in `reindex_from_body`. The promise
 /// holds for AFTER triggers only: a BEFORE INSERT trigger fires ahead of the conflict check.
@@ -302,6 +314,11 @@ impl Storage {
             title,
             kind,
         } = meta;
+        if !crate::notes::note_path_is_plain(file_path) {
+            return Err(EngineError::InvalidInput(
+                "a note's file is not a markdown file inside the vault".into(),
+            ));
+        }
         let mut tx = self.pool().begin().await?;
         let now = now_unix();
         let note_id: i64 = sqlx::query_scalar(

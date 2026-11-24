@@ -4557,7 +4557,10 @@ mod tests {
         app.clamp_tab_selection();
         let before = app.view.as_ref().unwrap().notes.len();
         assert_eq!(before, 1);
-        let path = app.engine.note_path(&app.view.as_ref().unwrap().notes[0]);
+        let path = app
+            .engine
+            .note_path(&app.view.as_ref().unwrap().notes[0])
+            .unwrap();
         assert!(path.exists());
 
         app.handle(Action::Delete).await.expect("ask");

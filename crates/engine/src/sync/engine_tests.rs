@@ -648,3 +648,134 @@ async fn a_library_never_synced_is_as_it_was_and_refuses_what_needs_sync() {
     assert!(matches!(refused, Err(EngineError::InvalidInput(_))));
     assert_eq!(memory.sync_status().await.unwrap(), SyncStatus::Off);
 }
+
+const SENTINEL: &str = "the contents of a file outside the vault";
+
+/// Notes `d` writes straight into its tables, as a device with another idea of paths might.
+async fn raw_note(d: &Device, file_path: &str, body: &str) -> i64 {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+         VALUES (?, 'Prelude', 'note', 1, 1) RETURNING id",
+    )
+    .bind(file_path)
+    .fetch_one(d.engine.storage().pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO note_bodies (note_id, body) VALUES (?, ?)")
+        .bind(id)
+        .bind(body)
+        .execute(d.engine.storage().pool())
+        .await
+        .unwrap();
+    id
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("x.md"), SENTINEL).unwrap();
+    std::fs::write(b.root.join("x.md"), SENTINEL).unwrap();
+    let vault = b.engine.vault_dir().to_path_buf();
+    std::os::unix::fs::symlink(outside.path(), vault.join("outside")).unwrap();
+    let sentinels = [outside.path().join("x.md"), b.root.join("x.md")];
+
+    let mut hostile = crate::notes::hostile_note_paths();
+    hostile.push("outside/x.md".into());
+    for path in &hostile {
+        raw_note(&a, path, "a body that came with the row").await;
+    }
+    raw_note(
+        &a,
+        "notes/eliot/middlemarch.md",
+        "Miss Brooke had that kind of beauty",
+    )
+    .await;
+    sync(&a, &server).await;
+    let got = sync(&b, &server).await;
+    assert!(got.held.is_empty(), "{:?}", got.held);
+    assert_eq!(got.refused_notes.len(), hostile.len(), "{got:?}");
+
+    let good = b
+        .engine
+        .storage()
+        .note_by_path("notes/eliot/middlemarch.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        b.engine.note_path(&good).unwrap(),
+        vault.join("notes/eliot/middlemarch.md")
+    );
+    let found = b
+        .engine
+        .search_marks("beauty", Some(SearchSource::Note), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    let none = b
+        .engine
+        .search_marks("came with the row", Some(SearchSource::Note), None, 10)
+        .await
+        .unwrap();
+    assert!(none.is_empty(), "{none:?}");
+
+    for &id in &got.refused_notes {
+        let note = b.engine.storage().get_note(id).await.unwrap().unwrap();
+        assert!(b.engine.note_path(&note).is_err());
+        assert!(b.engine.note_body(&note).is_err());
+        assert!(b.engine.refresh_note_from_disk(&note).await.is_err());
+        assert!(
+            b.engine
+                .update_note_body(&note, "overwritten")
+                .await
+                .is_err()
+        );
+    }
+    b.engine.reconcile_vault().await.unwrap();
+    let first = b
+        .engine
+        .storage()
+        .get_note(got.refused_notes[0])
+        .await
+        .unwrap()
+        .unwrap();
+    b.engine.delete_note(&first).await.unwrap();
+    for sentinel in &sentinels {
+        assert_eq!(std::fs::read_to_string(sentinel).unwrap(), SENTINEL);
+    }
+
+    let refused = b
+        .engine
+        .storage()
+        .insert_note(
+            NewNoteMeta {
+                book_id: None,
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "../x.md",
+                title: "Prelude",
+                kind: "note",
+            },
+            "",
+            &[],
+        )
+        .await;
+    assert!(matches!(refused, Err(EngineError::InvalidInput(_))));
+
+    converge(&[&a, &b], &server).await;
+    for d in [&a, &b] {
+        let bodies = rows(d, "SELECT body FROM note_bodies").await;
+        assert!(
+            bodies.iter().all(|body| !body.contains(SENTINEL)),
+            "{bodies:?}"
+        );
+    }
+}

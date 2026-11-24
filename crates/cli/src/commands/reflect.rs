@@ -122,7 +122,7 @@ async fn show_only(
         "#{} “{}” -> {}",
         record.id,
         record.title,
-        engine.vault_dir().join(&record.file_path).display()
+        engine.note_path(&record)?.display()
     );
     print_body(&body);
     Ok(())

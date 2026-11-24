@@ -475,7 +475,7 @@ async fn a_note_continues_in_parts_and_an_outside_edit_can_unpart_it() {
     };
     assert_eq!(count(&engine).await, 3);
 
-    let path = engine.note_path(&rec);
+    let path = engine.note_path(&rec).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
     let kept: String = content
         .lines()

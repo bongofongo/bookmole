@@ -726,6 +726,8 @@ pub async fn create_note(
     let book_dir = book
         .map(|b| slugify(b.display_title()))
         .unwrap_or_else(|| "unsorted".to_string());
+    std::fs::create_dir_all(vault_dir)?;
+    note_file(vault_dir, &format!("{book_dir}/untitled.md"))?;
     let dir = vault_dir.join(&book_dir);
     std::fs::create_dir_all(&dir)?;
 
@@ -740,8 +742,8 @@ pub async fn create_note(
         n += 1;
         file_name = format!("{base}-{n}.md");
     }
-    let file = dir.join(&file_name);
     let rel_path = format!("{book_dir}/{file_name}");
+    let file = note_file(vault_dir, &rel_path)?;
 
     let created_str = now.format(&time::format_description::well_known::Rfc3339)?;
     let content = format!(
@@ -834,6 +836,56 @@ pub(crate) async fn reindex_from_body(
     Ok(true)
 }
 
+/// The longest `notes.file_path` the engine accepts, in bytes.
+pub const NOTE_PATH_MAX: usize = 1024;
+
+/// Whether `file_path` can name a note: a relative, `/`-separated path of plain names (no root,
+/// drive, `.`, `..`, backslash, colon or control character), at most [`NOTE_PATH_MAX`] bytes,
+/// ending in `.md`. Reads the text only. A row from another device that fails this is never
+/// resolved to a file.
+pub fn note_path_is_plain(file_path: &str) -> bool {
+    let path = Path::new(file_path);
+    !file_path.is_empty()
+        && file_path.len() <= NOTE_PATH_MAX
+        && !file_path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\\' | ':'))
+        && path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        && file_path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && part.len() <= 255)
+        && path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// The file a note lives in: `file_path` under `vault`, the one way a note's row becomes a path.
+/// Refused unless the path is plain ([`note_path_is_plain`]) and stays inside the vault with
+/// symlinks followed: the deepest part of it that exists must resolve inside the vault (what
+/// does not exist yet is plain names below it), and the file itself, if it is a symlink, must
+/// point inside too. Reads metadata only; a refusal touches nothing.
+pub fn note_file(vault: &Path, file_path: &str) -> Result<PathBuf> {
+    let refuse = || {
+        EngineError::InvalidInput("a note's file is not a markdown file inside the vault".into())
+    };
+    if !note_path_is_plain(file_path) {
+        return Err(refuse());
+    }
+    let root = std::fs::canonicalize(vault).map_err(|_| refuse())?;
+    let path = vault.join(file_path);
+    let mut existing = path.as_path();
+    while std::fs::symlink_metadata(existing).is_err() {
+        existing = existing.parent().ok_or_else(refuse)?;
+    }
+    let resolved = std::fs::canonicalize(existing).map_err(|_| refuse())?;
+    if !resolved.starts_with(&root) {
+        return Err(refuse());
+    }
+    Ok(path)
+}
+
 /// A path under the vault as `notes.file_path` spells it, joined with `/` on every platform;
 /// `None` for anything that is not a markdown file inside the vault.
 pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
@@ -859,8 +911,11 @@ pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
 pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<VaultReconcile> {
     let mut report = VaultReconcile::default();
     for note in storage.note_files().await? {
-        let path = vault.join(&note.file_path);
         report.checked += 1;
+        let Ok(path) = note_file(vault, &note.file_path) else {
+            report.absent += 1;
+            continue;
+        };
 
         let Ok(meta) = std::fs::metadata(&path) else {
             // Absent, unreadable or a directory is not a deletion.
@@ -894,9 +949,85 @@ pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<V
 }
 
 #[cfg(test)]
+/// Paths another device could send that must never name a file.
+pub(crate) fn hostile_note_paths() -> Vec<String> {
+    vec![
+        "../x.md".into(),
+        "/etc/x.md".into(),
+        "a/../../x.md".into(),
+        "C:\\x.md".into(),
+        "C:/x.md".into(),
+        "x.txt".into(),
+        String::new(),
+        "a\0b.md".into(),
+        "a\nb.md".into(),
+        format!("{}.md", "x".repeat(10_000)),
+        "./x.md".into(),
+        "a//b.md".into(),
+        ".md/..".into(),
+    ]
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::NoteScope;
+
+    #[test]
+    fn only_a_plain_markdown_path_names_a_note() {
+        for path in hostile_note_paths() {
+            assert!(!note_path_is_plain(&path), "{path:?}");
+        }
+        for path in [
+            "x.md",
+            "notes/eliot/middlemarch.md",
+            "Middlemarch/review.MD",
+            "unsorted/20260101-prelude.md",
+        ] {
+            assert!(note_path_is_plain(path), "{path:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_note_file_stays_inside_the_vault_with_symlinks_followed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let vault = root.path().join("vault");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(vault.join("notes")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("x.md"), "outside").unwrap();
+        symlink(&outside, vault.join("away")).unwrap();
+        symlink(outside.join("x.md"), vault.join("notes/away.md")).unwrap();
+        std::fs::write(vault.join("notes/here.md"), "here").unwrap();
+        symlink(vault.join("notes/here.md"), vault.join("notes/alias.md")).unwrap();
+        symlink(root.path().join("nowhere"), vault.join("dangling")).unwrap();
+
+        for refused in [
+            "away/x.md",
+            "away/new/deeper.md",
+            "notes/away.md",
+            "dangling/x.md",
+            "../outside/x.md",
+        ] {
+            assert!(note_file(&vault, refused).is_err(), "{refused}");
+        }
+        for (accepted, at) in [
+            ("notes/here.md", vault.join("notes/here.md")),
+            ("notes/alias.md", vault.join("notes/alias.md")),
+            (
+                "notes/eliot/middlemarch.md",
+                vault.join("notes/eliot/middlemarch.md"),
+            ),
+            ("new/folder/x.md", vault.join("new/folder/x.md")),
+        ] {
+            assert_eq!(note_file(&vault, accepted).unwrap(), at, "{accepted}");
+        }
+        assert!(!vault.join("new").exists());
+        assert!(note_file(&root.path().join("no-vault"), "x.md").is_err());
+    }
 
     #[test]
     fn slugs_are_obsidian_safe() {
