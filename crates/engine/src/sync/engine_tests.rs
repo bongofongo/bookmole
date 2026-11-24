@@ -140,9 +140,20 @@ async fn highlight(d: &Device, book: i64) {
 
 /// A cover file `d` holds for `book`, as a download would have left it.
 async fn cover_file(d: &Device, book: i64) -> PathBuf {
+    cover_file_from(d, book, crate::images::CoverOrigin::File).await
+}
+
+/// A cover file `d` holds for `book`, as storing it from a file or a download would have left
+/// it, and old enough for a sweep.
+async fn cover_file_from(d: &Device, book: i64, origin: crate::images::CoverOrigin) -> PathBuf {
     let images = d.root.join("database/images");
     std::fs::create_dir_all(&images).unwrap();
-    let file = images.join(format!("{}.jpg", format!("{:02x}", book as u8).repeat(32)));
+    let prefix = match origin {
+        crate::images::CoverOrigin::File => "",
+        crate::images::CoverOrigin::Url => crate::images::DOWNLOADED,
+    };
+    let hash = format!("{:02x}", book as u8).repeat(32);
+    let file = images.join(format!("{prefix}{hash}.jpg"));
     std::fs::write(&file, b"cover").unwrap();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 60 * 60);
     std::fs::File::options()
@@ -576,6 +587,85 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
     );
 }
 
+#[tokio::test]
+async fn a_cover_from_a_file_here_outlasts_a_cover_url_from_elsewhere() {
+    use crate::storage::Source;
+
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    let isbn = "9780141439549";
+    let middlemarch = Book {
+        title: Some("Middlemarch".into()),
+        isbn_13: Some(isbn.into()),
+        ..Default::default()
+    };
+    let on_a = a
+        .engine
+        .storage()
+        .upsert_book(&middlemarch, None)
+        .await
+        .unwrap();
+    a.engine
+        .storage()
+        .enrich_book(
+            on_a,
+            &Book {
+                cover_url: Some("https://covers.example.test/1.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+    add_book(&a, "Romola").await;
+    sync(&a, &server).await;
+
+    // b's own copy of the book has its EPUB's cover, and another book a downloaded one.
+    let on_b = b
+        .engine
+        .storage()
+        .upsert_book(&middlemarch, None)
+        .await
+        .unwrap();
+    let epub_cover = cover_file(&b, on_b).await;
+    join(&b, &server, &code).await;
+    let first = sync(&b, &server).await;
+    converge(&[&a, &b], &server).await;
+    let kept = book(&b, "Middlemarch").await;
+    assert_eq!(
+        scalar::<Option<String>>(
+            &b,
+            &format!("SELECT cover_path FROM books WHERE id = {kept}")
+        )
+        .await,
+        Some(epub_cover.display().to_string())
+    );
+    assert!(epub_cover.exists());
+    assert!(!first.covers_to_fetch.contains(&kept), "{first:?}");
+
+    // A downloaded cover is still replaced when the URL moves elsewhere.
+    let romola = book(&b, "Romola").await;
+    let downloaded = cover_file_from(&b, romola, crate::images::CoverOrigin::Url).await;
+    a.engine
+        .storage()
+        .enrich_book(
+            book(&a, "Romola").await,
+            &Book {
+                cover_url: Some("https://covers.example.test/2.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+    sync(&a, &server).await;
+    let got = sync(&b, &server).await;
+    assert!(!downloaded.exists());
+    assert!(got.covers_to_fetch.contains(&romola), "{got:?}");
+    assert!(epub_cover.exists());
+}
+
 async fn reopen(d: Device) -> Device {
     let Device { _dir, root, engine } = d;
     drop(engine);
@@ -607,7 +697,12 @@ async fn what_a_failed_sync_left_to_do_is_done_after_a_restart() {
         .unwrap();
     converge(&[&a, &b], &server).await;
     let files = [
-        cover_file(&b, book(&b, "Middlemarch").await).await,
+        cover_file_from(
+            &b,
+            book(&b, "Middlemarch").await,
+            crate::images::CoverOrigin::Url,
+        )
+        .await,
         cover_file(&b, book(&b, "Romola").await).await,
     ];
 
@@ -952,6 +1047,168 @@ async fn a_device_cannot_write_a_note_path_others_would_refuse() {
     }
 }
 
+/// One file on macOS: É precomposed, E with a combining accent, é. By bytes the second sorts
+/// first, then the first.
+const ONE_FILE: [(&str, &str); 3] = [
+    ("notes/\u{c9}.md", "alpha"),
+    ("notes/E\u{301}.md", "beta"),
+    ("notes/\u{e9}.md", "gamma"),
+];
+
+async fn indexed(d: &Device, words: &str) -> usize {
+    d.engine
+        .search_marks(words, Some(SearchSource::Note), None, 10)
+        .await
+        .unwrap()
+        .len()
+}
+
+#[tokio::test]
+async fn notes_that_are_one_file_have_one_owner_whatever_order_they_arrive_in() {
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for order in orders {
+        let server = TestServer::default();
+        let (a, b) = (device().await, device().await);
+        let code = create(&a, &server).await;
+        join(&b, &server, &code).await;
+        let mut last = SyncOutcome::default();
+        for &i in &order {
+            let (path, words) = ONE_FILE[i];
+            raw_note(&a, path, words).await;
+            sync(&a, &server).await;
+            last = sync(&b, &server).await;
+        }
+        let owner_b = b
+            .engine
+            .storage()
+            .note_by_path(ONE_FILE[1].0)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut others_b = Vec::new();
+        for i in [0, 2] {
+            others_b.push(
+                b.engine
+                    .storage()
+                    .note_by_path(ONE_FILE[i].0)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let mut expected: Vec<i64> = others_b.iter().map(|n| n.id).collect();
+        expected.sort_unstable();
+        assert_eq!(last.refused_notes, expected, "order {order:?}");
+        assert_eq!(
+            (
+                indexed(&b, "alpha").await,
+                indexed(&b, "beta").await,
+                indexed(&b, "gamma").await
+            ),
+            (0, 1, 0),
+            "order {order:?}"
+        );
+        let on_a = sync(&a, &server).await;
+        assert_eq!(on_a.refused_notes.len(), 2, "order {order:?}");
+
+        let file = b.engine.note_path(&owner_b).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "beta\n").unwrap();
+        for other in &others_b {
+            assert!(
+                b.engine
+                    .update_note_body(other, "overwritten")
+                    .await
+                    .is_err()
+            );
+        }
+        b.engine.delete_note(&others_b[1]).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
+        assert!(matches!(
+            b.engine
+                .storage()
+                .insert_note(
+                    NewNoteMeta {
+                        book_id: None,
+                        reading_id: None,
+                        highlight_id: None,
+                        page: None,
+                        location: None,
+                        file_path: "Notes/E\u{301}.MD",
+                        title: "Prelude",
+                        kind: "note",
+                    },
+                    "",
+                    &[],
+                )
+                .await,
+            Err(EngineError::InvalidInput(_))
+        ));
+
+        // Deleting the owner hands the file to the next, everywhere.
+        let owner_a = a
+            .engine
+            .storage()
+            .note_by_path(ONE_FILE[1].0)
+            .await
+            .unwrap()
+            .unwrap();
+        a.engine.delete_note(&owner_a).await.unwrap();
+        converge(&[&a, &b], &server).await;
+        for d in [&a, &b] {
+            assert_eq!(indexed(d, "alpha").await, 1, "order {order:?}");
+            assert_eq!(indexed(d, "beta").await + indexed(d, "gamma").await, 0);
+        }
+        assert!(
+            sync(&b, &server).await.refused_notes.is_empty(),
+            "order {order:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_connection_closed_after_holding_the_write_lock_lets_the_next_writer_in_at_once() {
+    let server = TestServer::default();
+    let a = device().await;
+    create(&a, &server).await;
+    let mut probe = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(a.root.join("database/app.db"))
+        .busy_timeout(std::time::Duration::ZERO)
+        .connect()
+        .await
+        .unwrap();
+    let mut held = 0;
+    for _ in 0..40 {
+        let mut holding = Receiver::default();
+        holding.faults.hold_write_lock = true;
+        let result = sync_with(&a, &server, holding).await;
+        assert!(
+            matches!(result, Err(EngineError::Sync(SyncError::Interrupted))),
+            "{result:?}"
+        );
+        if sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut probe)
+            .await
+            .is_ok()
+        {
+            sqlx::query("ROLLBACK").execute(&mut probe).await.unwrap();
+        } else {
+            held += 1;
+        }
+    }
+    assert_eq!(
+        held, 0,
+        "the write lock outlived the sync {held} times in 40"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
@@ -1067,7 +1324,16 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
 
 /// How a large first sync shares the database with the reader's writes: a device joins a
 /// library of `n` books and syncs while another task writes through the engine's pool every
-/// 20 ms. A measurement, not a check. In a release build:
+/// 20 ms. A measurement, not a check.
+///
+/// What it found (release build, a loaded machine): at 10,000 books the joining sync took 15 s
+/// over 3 applies, the longest 9.1 s in the kernel and 0.48 s in the repair, and the writer's
+/// worst wait was 5.4 s with 2 of 10 writes failing "database is locked"; at 50,000, 23 s over 9
+/// applies, the longest 2.7 s, worst wait 5.4 s, 3 of 11 failed. A second run with 2.5 s applies
+/// at 10,000 books still kept the writer waiting 4.2 s: consecutive applies and appends retake
+/// the write lock before the pool's busy handler gets in, so the wait spans the whole sync, not
+/// one apply. A fix has to open gaps between the sync's transactions that a waiting writer can
+/// take (or move to WAL), not only shrink each apply. In a release build:
 /// `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000 cargo test -p bookmole --release --lib --
 /// --ignored --nocapture a_large_first_sync`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -381,7 +381,7 @@ impl VaultWatcher {
         };
         if self
             .storage
-            .note_is_case_twin(note.id, &note.file_path)
+            .note_shares_a_file(note.id, &note.file_path)
             .await?
         {
             return Ok(Decision::Settled(None));
@@ -934,6 +934,33 @@ mod vault_tests {
             .await
             .unwrap();
         assert!(bodies.iter().all(|b| !b.contains("outside")), "{bodies:?}");
+    }
+
+    #[tokio::test]
+    async fn a_file_two_notes_name_is_read_only_for_the_note_that_owns_it() {
+        let v = Vault::new().await;
+        for path in ["x/A.md", "x/a.md"] {
+            sqlx::query(
+                "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+                 VALUES (?, 'Prelude', 'note', 1, 1)",
+            )
+            .bind(path)
+            .execute(v.storage.pool())
+            .await
+            .unwrap();
+        }
+        std::fs::create_dir_all(v.root.join("x")).unwrap();
+        std::fs::write(v.root.join("x/a.md"), "words only the owner may take").unwrap();
+
+        let (tx, mut watcher) = v.watcher();
+        tx.send(VaultStir(v.root.join("x/a.md"))).await.unwrap();
+        assert!(
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
+            "a note that does not own its file was indexed from it"
+        );
+        assert!(v.finds("owner").await.is_empty());
     }
 
     #[tokio::test]

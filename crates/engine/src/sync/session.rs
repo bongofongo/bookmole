@@ -162,10 +162,11 @@ pub(crate) struct Held {
     pub(crate) busy_retries: usize,
 }
 
-/// A connection of a sync's own, opened from the pool's options and never one of the pool's.
-/// [`SyncConnection::close`] closes it and waits until it is closed. Dropped unclosed, as when
-/// the future running a sync is dropped or panics, it is closed on the runtime without waiting,
-/// so a transaction it holds ends without another sync having to come.
+/// A connection of a sync's own, opened from the pool's options and never one of the pool's,
+/// fresh for every attempt, so it never carries a transaction in. [`SyncConnection::close`]
+/// closes it and waits until it is closed, which is what lets the next writer in at once.
+/// Dropped unclosed, as when the future running a sync is dropped or panics, sqlx closes it on
+/// its worker thread straight away, ending any transaction it held; nothing waits for that.
 struct SyncConnection(Option<SqliteConnection>);
 
 impl SyncConnection {
@@ -192,17 +193,6 @@ impl SyncConnection {
     async fn close(mut self) {
         if let Some(conn) = self.0.take() {
             conn.close().await.ok();
-        }
-    }
-}
-
-impl Drop for SyncConnection {
-    fn drop(&mut self) {
-        let Some(conn) = self.0.take() else { return };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                conn.close().await.ok();
-            });
         }
     }
 }
@@ -445,7 +435,6 @@ impl Engine {
         loop {
             let mut conn = SyncConnection::open(self, held).await?;
             let round = async {
-                fongo_sync_client::check_connection(conn.get()).await?;
                 prepare(conn.get(), &replica).await?;
                 fongo_sync_client::sync_with(
                     conn.get(),

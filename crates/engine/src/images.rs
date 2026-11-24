@@ -49,13 +49,17 @@ pub fn thumb_path_of(cover: &Path) -> PathBuf {
     p
 }
 
-fn filename_for(bytes: &[u8]) -> Result<String> {
+fn filename_for(bytes: &[u8], origin: CoverOrigin) -> Result<String> {
     let hash = hex(Sha256::digest(bytes).as_slice());
     let ext = image::guess_format(bytes)
         .ok()
         .and_then(|f| f.extensions_str().first().copied())
         .unwrap_or("img");
-    let fname = format!("{hash}.{ext}");
+    let prefix = match origin {
+        CoverOrigin::File => "",
+        CoverOrigin::Url => DOWNLOADED,
+    };
+    let fname = format!("{prefix}{hash}.{ext}");
 
     let p = Path::new(&fname);
     let plain = p.components().count() == 1 && p.file_name().is_some_and(|n| n == fname.as_str());
@@ -71,13 +75,44 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Where a stored cover's bytes came from. A downloaded cover's name starts with
+/// [`DOWNLOADED`]; any other cover came from a file on this device (an EPUB, calibre, or chosen
+/// by hand), which a cover URL synced from another device never replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoverOrigin {
+    File,
+    Url,
+}
+
+/// The name prefix of a cover downloaded from its URL. Covers downloaded before it existed carry
+/// none, and are kept as file covers.
+pub(crate) const DOWNLOADED: &str = "url-";
+
+/// Whether the cover file `path` was downloaded from a URL by this device.
+pub(crate) fn downloaded(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with(DOWNLOADED))
+}
+
+/// Stores a cover that came from a file on this device.
 pub fn store_cover(bytes: &[u8], images_dir: &Path) -> Result<CoverFile> {
+    store_cover_from(bytes, images_dir, CoverOrigin::File)
+}
+
+pub(crate) fn store_cover_from(
+    bytes: &[u8],
+    images_dir: &Path,
+    origin: CoverOrigin,
+) -> Result<CoverFile> {
     if bytes.is_empty() {
         return Err(EngineError::InvalidInput("empty image bytes".into()));
     }
-    let fname = filename_for(bytes)?;
+    let fname = filename_for(bytes, origin)?;
     std::fs::create_dir_all(images_dir)?;
     let path = images_dir.join(fname);
+    written(&path);
     if let Ok(meta) = std::fs::metadata(&path) {
         // An old file reused is made fresh, so `sweep_unused` cannot take it before a row points
         // at it; a recent one is left alone, so storing twice writes nothing.
@@ -117,12 +152,15 @@ pub fn store_cover(bytes: &[u8], images_dir: &Path) -> Result<CoverFile> {
 /// and Kindle's recommended jacket is 1,600 by 2,560; print-resolution EPUB covers reach about
 /// 3,000 by 4,500. Anything past that is refused rather than decoded.
 pub const COVER_SIDE_MAX: u32 = 4_500;
-/// At most 12 megapixels whatever the sides (3,000 by 4,000), so decoding and thumbnailing the
-/// largest cover takes a fraction of a second in a release build.
-pub const COVER_PIXELS_MAX: u64 = 12_000_000;
-/// What a decoder may allocate for one cover: 12 megapixels at four bytes with room to spare. A
-/// 16-bit image of the largest size is refused here, though its header passes.
-pub const COVER_ALLOC_MAX: u64 = 64 << 20;
+/// At most 16 megapixels whatever the sides: the 3,000 by 4,500 print cover (13.5) passes, as
+/// does a 2:3 cover 4,500 high, and decoding and thumbnailing the largest stays well under a
+/// second in a release build. A cover past it is stored as it came, with no measurements and no
+/// thumbnail, as an undecodable one always was.
+pub const COVER_PIXELS_MAX: u64 = 16_000_000;
+/// What a decoder may allocate for one cover: 16 megapixels at four bytes (64 MB) with room to
+/// spare. A 16-bit image of more than about 10 megapixels is refused here, though its header
+/// passes.
+pub const COVER_ALLOC_MAX: u64 = 80 << 20;
 
 fn limits() -> image::Limits {
     let mut limits = image::Limits::default();
@@ -212,6 +250,7 @@ fn write_thumb(img: &RgbImage, cover: &Path) -> Result<Option<PathBuf>> {
         .encode(small.as_raw(), w, h, image::ExtendedColorType::Rgb8)
         .map_err(|e| EngineError::Other(format!("encoding cover thumbnail: {e}")))?;
     std::fs::write(&dest, &out)?;
+    written(&dest);
     Ok(Some(dest))
 }
 
@@ -258,11 +297,42 @@ pub fn accent_channels(accent: i64) -> [u8; 3] {
 /// the hour a sweep leaves a fresh file alone.
 const REUSE_FRESHEN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// Files put in the covers folder by this process, and when by the monotonic clock: a sweep
+/// leaves them alone for its whole margin even if the wall clock jumps forward, which a file's
+/// modification time alone could not promise. Another process writing into the same folder is
+/// protected by modification time only.
+static WRITTEN: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Records that `path` was just put in the covers folder.
+pub(crate) fn written(path: &Path) {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        WRITTEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_owned(), std::time::Instant::now());
+    }
+}
+
+/// Copies a file into the covers folder as written now: a copy can keep its source's
+/// modification time, which would make a cover just copied look old to a sweep.
+pub(crate) fn copy_in(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::copy(src, dst)?;
+    std::fs::File::options()
+        .write(true)
+        .open(dst)?
+        .set_modified(std::time::SystemTime::now())?;
+    written(dst);
+    Ok(())
+}
+
 /// Whether `name` is one this module gives a cover or its thumbnail: a sha256 in hex with an
-/// image extension, or a calibre copy.
+/// image extension, downloaded or not, or a calibre copy.
 fn generated_name(name: &str) -> bool {
     let (stem, ext) = name.split_once('.').unwrap_or((name, ""));
-    let hashed = stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit());
+    let hash = stem.strip_prefix(DOWNLOADED).unwrap_or(stem);
+    let hashed = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
     let calibre = stem.strip_prefix("calibre-").is_some_and(|rest| {
         !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     });
@@ -287,11 +357,18 @@ pub(crate) fn sweep_unused(
     let cutoff = std::time::SystemTime::now()
         .checked_sub(settled)
         .unwrap_or(std::time::UNIX_EPOCH);
+    let recent: std::collections::HashSet<String> = {
+        let mut written = WRITTEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        written.retain(|_, at| at.elapsed() < settled);
+        written.keys().cloned().collect()
+    };
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if used.contains(name) || !generated_name(name) {
+        if used.contains(name) || recent.contains(name) || !generated_name(name) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -392,12 +469,17 @@ mod tests {
     #[test]
     fn a_name_is_the_hash_and_the_real_format() {
         let bytes = png(8, 8, 7);
-        let name = filename_for(&bytes).unwrap();
+        let name = filename_for(&bytes, CoverOrigin::File).unwrap();
         let (stem, ext) = name.split_once('.').unwrap();
         assert_eq!(stem.len(), 64, "{name}");
         assert!(stem.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
         assert_eq!(ext, "png");
-        assert_eq!(filename_for(b"not an image at all").unwrap().len(), 64 + 4);
+        assert_eq!(
+            filename_for(b"not an image at all", CoverOrigin::File)
+                .unwrap()
+                .len(),
+            64 + 4
+        );
     }
 
     #[test]
@@ -411,7 +493,7 @@ mod tests {
             "https://books.google.com/books/content?id=../../../etc/passwd",
         ] {
             assert!(Url::parse(u).is_ok());
-            let name = filename_for(&png(4, 4, 1)).unwrap();
+            let name = filename_for(&png(4, 4, 1), CoverOrigin::File).unwrap();
             let joined = dir.join(&name);
             assert_eq!(joined.parent(), Some(dir), "{u} produced {name:?}");
             assert!(!name.contains('/'), "{u} produced a separator: {name:?}");
@@ -599,15 +681,77 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_print_cover_is_measured_and_thumbnailed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = png(3_000, 4_500, 3);
+        assert!(within_limits(dimensions(&bytes).unwrap()));
+        let stored = store_cover(&bytes, dir.path()).unwrap();
+        let metrics = stored.metrics.unwrap();
+        assert_eq!((metrics.width, metrics.height), (3_000, 4_500));
+        let thumb = image::open(stored.thumb_path.unwrap()).unwrap();
+        assert_eq!(thumb.height(), THUMB_MAX);
+    }
+
+    fn age(path: &Path, by: std::time::Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - by)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_cover_put_in_the_folder_is_never_old_to_a_sweep() {
+        let hour = std::time::Duration::from_secs(3600);
+        let dir = tempfile::tempdir().unwrap();
+        let images = dir.path().join("images");
+        let bytes = png(8, 8, 9);
+        let first = store_cover(&bytes, &images).unwrap();
+        age(&first.path, 30 * 24 * hour);
+        let again = store_cover(&bytes, &images).unwrap();
+        assert_eq!(again.path, first.path);
+        let modified = std::fs::metadata(&again.path).unwrap().modified().unwrap();
+        assert!(
+            modified + hour > std::time::SystemTime::now(),
+            "a reused cover stayed old"
+        );
+
+        let source = dir.path().join("cover.jpg");
+        std::fs::write(&source, &bytes).unwrap();
+        age(&source, 30 * 24 * hour);
+        let copied = images.join("calibre-0f3c-11aa.jpg");
+        copy_in(&source, &copied).unwrap();
+        let modified = std::fs::metadata(&copied).unwrap().modified().unwrap();
+        assert!(
+            modified + hour > std::time::SystemTime::now(),
+            "the copy kept its source's age"
+        );
+        sweep_unused(&images, &std::collections::HashSet::new(), hour).unwrap();
+        assert!(copied.exists() && again.path.exists());
+    }
+
+    #[test]
+    fn a_cover_written_by_this_process_survives_a_clock_that_jumps() {
+        let hour = std::time::Duration::from_secs(3600);
+        let dir = tempfile::tempdir().unwrap();
+        let stored = store_cover(&png(8, 8, 11), dir.path()).unwrap();
+        // As if the wall clock had jumped a day ahead since the file was written.
+        age(&stored.path, 24 * hour);
+        sweep_unused(dir.path(), &std::collections::HashSet::new(), hour).unwrap();
+        assert!(stored.path.exists());
+    }
+
+    #[test]
     fn each_bound_refuses_what_the_other_lets_through() {
-        // Sides within, 16 megapixels: the decoder would need 48 MB, which its limits allow.
+        // Sides within, 18 megapixels: the decoder would need 54 MB, which its limits allow.
         assert_eq!(
-            decode_checked(&png_claiming(4_000, 4_000)),
+            decode_checked(&png_claiming(4_500, 4_000)),
             Err(Undecoded::Oversized)
         );
-        // 9 megapixels, as its header allows, but 16-bit RGBA: 72 MB, past the decoder's limit.
+        // 12.25 megapixels, as its header allows, but 16-bit RGBA: 98 MB, past the decoder's limit.
         assert_eq!(
-            decode_checked(&png_header(3_000, 3_000, Some((16, 6)))),
+            decode_checked(&png_header(3_500, 3_500, Some((16, 6)))),
             Err(Undecoded::OverLimits)
         );
         assert_eq!(decode_checked(b"not an image"), Err(Undecoded::Unknown));
@@ -646,7 +790,7 @@ mod tests {
                 png_claiming(COVER_SIDE_MAX + 1, 10),
                 (COVER_SIDE_MAX + 1, 10),
             ),
-            (png_claiming(4_000, 3_001), (4_000, 3_001)),
+            (png_claiming(4_500, 3_600), (4_500, 3_600)),
             (gif(u16::MAX, u16::MAX, 1), (65_535, 65_535)),
         ] {
             assert!(bytes.len() < 1_000);

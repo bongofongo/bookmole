@@ -13,7 +13,7 @@ use std::time::Duration;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use url::{Host, Url};
 
-use super::{CoverFile, store_cover};
+use super::{CoverFile, store_cover_from};
 use crate::error::{EngineError, Result};
 
 /// Larger than any cover a provider serves.
@@ -222,9 +222,11 @@ impl CoverClient {
     pub(crate) async fn fetch(&self, url: &str, images_dir: &Path) -> Result<CoverFile> {
         let bytes = self.bytes(url).await?;
         let images_dir = images_dir.to_owned();
-        tokio::task::spawn_blocking(move || store_cover(&bytes, &images_dir))
-            .await
-            .map_err(|e| EngineError::Other(format!("storing a cover: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            store_cover_from(&bytes, &images_dir, super::CoverOrigin::Url)
+        })
+        .await
+        .map_err(|e| EngineError::Other(format!("storing a cover: {e}")))?
     }
 
     async fn bytes(&self, url: &str) -> Result<Vec<u8>> {

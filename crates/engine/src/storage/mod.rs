@@ -49,6 +49,7 @@ pub use imported_highlights::imported_identity_hash;
 pub(crate) use moments::run_cutoff;
 pub use moments::{Moment, MomentKind, RUN_MIN_DAYS, runs_of_days};
 pub use note_rows::{LinkEdge, NoteRowFacts, NoteRowFilter, NoteStamp};
+pub(crate) use notes::file_owners;
 pub use notes::{
     NewNoteMeta, NoteCitations, NoteFile, NoteRecord, NoteScope, OutgoingLink, RESURFACE_REST_DAYS,
     ResurfaceReason, Resurfaced, ResurfacedPassage, parse_local_date,
