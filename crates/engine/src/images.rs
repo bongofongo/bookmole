@@ -102,8 +102,54 @@ pub fn store_cover(bytes: &[u8], images_dir: &Path) -> Result<CoverFile> {
     })
 }
 
+/// The widest or tallest cover decoded. Print-resolution jackets from stores run to about
+/// 3,000 px on the long side; this leaves room for a scan and refuses a header that claims more.
+pub const COVER_SIDE_MAX: u32 = 8_000;
+/// At most 36 megapixels (6,000 by 6,000), whatever the sides: about 108 MB as RGB.
+pub const COVER_PIXELS_MAX: u64 = 36_000_000;
+/// What a decoder may allocate for one cover: 36 megapixels at four bytes, with room to spare,
+/// and refused for a 16-bit image of that size.
+pub const COVER_ALLOC_MAX: u64 = 256 << 20;
+
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(COVER_SIDE_MAX);
+    limits.max_image_height = Some(COVER_SIDE_MAX);
+    limits.max_alloc = Some(COVER_ALLOC_MAX);
+    limits
+}
+
+/// A cover's width and height as its header states them, read without decoding a pixel; `None`
+/// for bytes that are not an image this build reads.
+pub(crate) fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+/// Whether stated dimensions are within what a cover may be.
+pub(crate) fn within_limits((width, height): (u32, u32)) -> bool {
+    width > 0
+        && height > 0
+        && width <= COVER_SIDE_MAX
+        && height <= COVER_SIDE_MAX
+        && u64::from(width) * u64::from(height) <= COVER_PIXELS_MAX
+}
+
+/// The only place a cover is decoded: refused unless its header is within the limits, and then
+/// decoded under [`limits`], so a small file claiming enormous dimensions allocates nothing large.
+/// An animated image is its first frame.
 fn decode(bytes: &[u8]) -> Option<RgbImage> {
-    let img = image::load_from_memory(bytes).ok()?.to_rgb8();
+    if !dimensions(bytes).is_some_and(within_limits) {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.limits(limits());
+    let img = reader.decode().ok()?.to_rgb8();
     (img.width() > 0 && img.height() > 0).then_some(img)
 }
 
@@ -388,5 +434,92 @@ mod tests {
         assert_eq!(measured.path, legacy, "the stored path must not move");
         assert_eq!(measured.metrics.unwrap().width, 500);
         assert!(measured.thumb_path.unwrap().exists());
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &b in bytes {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A one-pixel PNG whose header claims `width` by `height`.
+    fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = png(1, 1, 7);
+        let ihdr = 8 + 4;
+        bytes[ihdr + 4..ihdr + 8].copy_from_slice(&width.to_be_bytes());
+        bytes[ihdr + 8..ihdr + 12].copy_from_slice(&height.to_be_bytes());
+        let crc = crc32(&bytes[ihdr..ihdr + 4 + 13]);
+        bytes[ihdr + 4 + 13..ihdr + 4 + 17].copy_from_slice(&crc.to_be_bytes());
+        bytes
+    }
+
+    /// A GIF of `frames` 2x2 frames, its screen then made to claim `width` by `height`.
+    fn gif(width: u16, height: u16, frames: usize) -> Vec<u8> {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame, RgbaImage};
+
+        let mut out = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut out);
+            for n in 0..frames {
+                let shade = 40 * n as u8;
+                let frame = Frame::from_parts(
+                    RgbaImage::from_pixel(2, 2, image::Rgba([shade, 0, 0, 255])),
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(100, 1),
+                );
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        out[6..8].copy_from_slice(&width.to_le_bytes());
+        out[8..10].copy_from_slice(&height.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_small_file_claiming_huge_dimensions_is_never_decoded() {
+        let dir = tempfile::tempdir().unwrap();
+        for (bytes, claimed) in [
+            (png_claiming(100_000, 100_000), (100_000, 100_000)),
+            (
+                png_claiming(COVER_SIDE_MAX + 1, 10),
+                (COVER_SIDE_MAX + 1, 10),
+            ),
+            (png_claiming(7_000, 7_000), (7_000, 7_000)),
+            (gif(u16::MAX, u16::MAX, 1), (65_535, 65_535)),
+        ] {
+            assert!(bytes.len() < 1_000);
+            assert_eq!(dimensions(&bytes), Some(claimed));
+            assert!(!within_limits(claimed));
+            assert!(decode(&bytes).is_none());
+            let stored = store_cover(&bytes, dir.path()).unwrap();
+            assert!(stored.metrics.is_none() && stored.thumb_path.is_none());
+        }
+    }
+
+    #[test]
+    fn an_animated_cover_is_its_first_frame_within_the_limits() {
+        let bytes = gif(2, 2, 3);
+        assert_eq!(dimensions(&bytes), Some((2, 2)));
+        let img = decode(&bytes).unwrap();
+        assert_eq!((img.width(), img.height()), (2, 2));
+    }
+
+    #[test]
+    fn a_cover_within_the_limits_decodes_as_it_always_did() {
+        for bytes in [png(800, 1200, 2), png(60, 90, 0)] {
+            let before = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert_eq!(decode(&bytes).unwrap(), before);
+        }
     }
 }
