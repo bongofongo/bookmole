@@ -100,6 +100,18 @@ impl TestServer {
         self.with(|s| s.endpoints.clone())
     }
 
+    /// Appends `n` copies of the last envelope of every library's log, as if its device had sent
+    /// the same changes again and again.
+    pub(crate) fn repeat_last(&self, n: usize) {
+        self.with(|s| {
+            for library in s.libraries.values_mut() {
+                if let Some(last) = library.log.last().cloned() {
+                    library.log.extend(std::iter::repeat_n(last, n));
+                }
+            }
+        });
+    }
+
     /// Reads see only the first `horizon` envelopes of a log, or all of it.
     pub(crate) fn lag_reads(&self, horizon: Option<usize>) {
         self.with(|s| s.horizon = horizon);
