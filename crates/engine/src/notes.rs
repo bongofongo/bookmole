@@ -944,7 +944,7 @@ pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
 pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<VaultReconcile> {
     let mut report = VaultReconcile::default();
     let mut notes = storage.note_files().await?;
-    notes.sort_by_key(|n| n.id);
+    notes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
     let mut seen = std::collections::HashSet::new();
     for note in notes {
         report.checked += 1;

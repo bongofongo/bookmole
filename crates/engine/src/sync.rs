@@ -242,12 +242,17 @@ pub(crate) struct Receiver {
 /// Failures a test makes the receiver suffer.
 #[cfg(test)]
 #[derive(Default)]
-#[expect(clippy::struct_excessive_bools, reason = "each fault is switched on alone")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each fault is switched on alone"
+)]
 pub(crate) struct Faults {
     /// Fail this many applies that were given changes, after doing their work.
     pub(crate) fail_applies: usize,
     /// End the client's transaction inside a savepoint of the receiver's own, once.
     pub(crate) end_transaction: bool,
+    /// As `end_transaction`, then take the write lock in a transaction nothing will end, once.
+    pub(crate) hold_write_lock: bool,
     /// Never return from an apply that was given changes, once its writes are made.
     pub(crate) hang: bool,
     /// Panic in an apply that was given changes, once its writes are made.
@@ -294,10 +299,14 @@ impl Receiver {
     ) -> std::result::Result<(), ClientError> {
         use sqlx::Connection;
 
-        if std::mem::take(&mut self.faults.end_transaction) {
+        let hold = std::mem::take(&mut self.faults.hold_write_lock);
+        if std::mem::take(&mut self.faults.end_transaction) || hold {
             let mut own = conn.begin().await?;
             sqlx::query("ROLLBACK").execute(&mut *own).await?;
             std::mem::forget(own);
+        }
+        if hold {
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
         }
         if received && self.faults.hang {
             std::future::pending::<()>().await;
@@ -383,9 +392,9 @@ pub(crate) async fn after_sync(
 }
 
 /// Notes whose path is never resolved to a file: not plain, outside the vault, or the same as
-/// an older note's but for ASCII case.
+/// another note's but for ASCII case and sorting after it.
 fn refused_notes(vault: &Path, mut notes: Vec<crate::storage::NoteFile>) -> Vec<i64> {
-    notes.sort_by_key(|n| n.id);
+    notes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
     let mut seen = std::collections::HashSet::new();
     notes
         .into_iter()
@@ -394,6 +403,8 @@ fn refused_notes(vault: &Path, mut notes: Vec<crate::storage::NoteFile>) -> Vec<
             twin || crate::notes::note_file(vault, &n.file_path).is_err()
         })
         .map(|n| n.id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 

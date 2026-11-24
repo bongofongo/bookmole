@@ -2015,8 +2015,8 @@ impl Engine {
     }
 
     /// The note's file, for writing or for reading into the index: [`Engine::note_path`], and
-    /// refused too when an older note has the same path but for ASCII case, since on a
-    /// case-insensitive file system that file is the older note's.
+    /// refused too when another note has the same path but for ASCII case and sorts first, since
+    /// on a case-insensitive file system that file is the other note's.
     pub(crate) async fn owned_note_file(&self, note: &NoteRecord) -> Result<PathBuf> {
         let file = self.note_path(note)?;
         if self
@@ -2025,7 +2025,7 @@ impl Engine {
             .await?
         {
             return Err(EngineError::InvalidInput(
-                "a note's file belongs to an older note whose path differs only in case".into(),
+                "a note's file belongs to another note whose path differs only in case".into(),
             ));
         }
         Ok(file)
@@ -2120,7 +2120,7 @@ impl Engine {
     }
 
     /// Removes the markdown file, then the row and FTS entry; a missing file is not an error, and
-    /// a row whose path is refused, or whose file is an older note's, loses its row alone.
+    /// a row whose path is refused, or whose file is another note's, loses its row alone.
     pub async fn delete_note(&self, note: &NoteRecord) -> Result<()> {
         if let Ok(file) = self.owned_note_file(note).await {
             match std::fs::remove_file(&file) {
