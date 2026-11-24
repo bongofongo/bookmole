@@ -220,6 +220,7 @@ pub(crate) async fn repair(
         .iter()
         .map(|p| super::notes::path_key(p))
         .collect();
+    let mut titles = super::notes::Titles::read();
     for &note in &notes {
         let path: Option<String> = sqlx::query_scalar("SELECT file_path FROM notes WHERE id = ?")
             .bind(note)
@@ -229,11 +230,12 @@ pub(crate) async fn repair(
             Some(path) => {
                 keys.insert(super::notes::path_key(&path));
             }
-            None => super::notes::reindex_stored(conn, note).await?,
+            None => super::notes::reindex_stored(conn, note, &mut titles).await?,
         }
     }
     let refused_notes =
-        super::notes::settle_groups(conn, &keys, |path| acceptable(vault, path)).await?;
+        super::notes::settle_groups(conn, &keys, |path| acceptable(vault, path), &mut titles)
+            .await?;
     Ok(Repaired { refused_notes })
 }
 

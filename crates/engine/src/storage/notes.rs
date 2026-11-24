@@ -147,6 +147,56 @@ pub(super) fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> Result<NoteRecord> {
 /// BY id` fixes ties.
 pub(super) const RESOLVE_TITLE: &str = "title = ? COLLATE NOCASE ORDER BY id LIMIT 1";
 
+/// How [`write_links`] finds the note a link names, by [`RESOLVE_TITLE`]'s rule: a query per
+/// link, or, where many notes are reindexed at once, one read of every title, made when first
+/// needed and valid while no title changes. `notes.title` has no index, so each query reads the
+/// table.
+pub(crate) enum Titles {
+    Each,
+    Read(Option<std::collections::HashMap<String, i64>>),
+}
+
+impl Titles {
+    pub(crate) fn read() -> Titles {
+        Titles::Read(None)
+    }
+
+    async fn resolve(
+        &mut self,
+        tx: &mut sqlx::SqliteConnection,
+        target: &str,
+    ) -> Result<Option<i64>> {
+        let read = match self {
+            Titles::Each => {
+                let sql = format!("SELECT id FROM notes WHERE {RESOLVE_TITLE}");
+                return Ok(sqlx::query_scalar(&sql)
+                    .bind(target)
+                    .fetch_optional(&mut *tx)
+                    .await?);
+            }
+            Titles::Read(read) => read,
+        };
+        if read.is_none() {
+            let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, title FROM notes")
+                .fetch_all(&mut *tx)
+                .await?;
+            let mut titles = std::collections::HashMap::with_capacity(rows.len());
+            // NOCASE folds ASCII letters alone.
+            for (id, title) in rows {
+                titles
+                    .entry(title.to_ascii_lowercase())
+                    .and_modify(|first: &mut i64| *first = (*first).min(id))
+                    .or_insert(id);
+            }
+            *read = Some(titles);
+        }
+        Ok(read
+            .as_ref()
+            .and_then(|titles| titles.get(&target.to_ascii_lowercase()))
+            .copied())
+    }
+}
+
 /// Shared by insert and reindex so both resolve links alike; also back-resolves older dangling
 /// links to this title.
 async fn write_links(
@@ -154,13 +204,10 @@ async fn write_links(
     note_id: i64,
     title: &str,
     links: &[String],
+    titles: &mut Titles,
 ) -> Result<()> {
     for target in links {
-        let sql = format!("SELECT id FROM notes WHERE {RESOLVE_TITLE}");
-        let to_note: Option<i64> = sqlx::query_scalar(&sql)
-            .bind(target)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let to_note = titles.resolve(tx, target).await?;
         sqlx::query(
             r#"INSERT INTO note_links (from_note, to_note, target_title) VALUES (?, ?, ?)
                ON CONFLICT(from_note, target_title) DO UPDATE SET to_note = excluded.to_note"#,
@@ -210,7 +257,11 @@ async fn reindex(
 /// Brings the index of a note in line with its stored row and body, as another device left them.
 /// A note whose body has not arrived is indexed by title. Writes nothing that syncs, and leaves
 /// `last_modified` alone because the vault file has not been read.
-pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64) -> Result<()> {
+pub(super) async fn reindex_stored(
+    tx: &mut sqlx::SqliteConnection,
+    note_id: i64,
+    titles: &mut Titles,
+) -> Result<()> {
     sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
         .bind(note_id)
         .execute(&mut *tx)
@@ -238,7 +289,8 @@ pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64
         .bind(note_id)
         .execute(&mut *tx)
         .await?;
-    write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
+    let links = crate::notes::extract_wikilinks(&body);
+    write_links(tx, note_id, &title, &links, titles).await
 }
 
 /// The name a file system that ignores case and Unicode normalisation gives `path`: its
@@ -269,8 +321,10 @@ pub(crate) fn owner_of<'a>(members: impl IntoIterator<Item = (i64, &'a str)>) ->
         .map(|(id, _)| id)
 }
 
-/// Every note, grouped by [`path_key`], for the keys in `keys` only. One read of every note's
-/// path: about 10,000 short strings on a large vault.
+/// Every note, grouped by [`path_key`], for the keys in `keys` only. The key of a path of ASCII
+/// alone is its ASCII lowercase, which is SQLite's `lower`, so of those only the paths matching a
+/// key are read; a path with any other character (or a NUL, which `length` stops at) is read and
+/// keyed here. Still one scan of every note's path, in SQLite.
 pub(crate) async fn groups(
     conn: &mut sqlx::SqliteConnection,
     keys: &std::collections::BTreeSet<String>,
@@ -280,9 +334,14 @@ pub(crate) async fn groups(
     if keys.is_empty() {
         return Ok(out);
     }
-    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, file_path FROM notes")
-        .fetch_all(&mut *conn)
-        .await?;
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, file_path FROM notes
+          WHERE lower(file_path) IN (SELECT value FROM json_each(?1))
+             OR length(CAST(file_path AS BLOB)) <> length(file_path)",
+    )
+    .bind(serde_json::to_string(keys)?)
+    .fetch_all(&mut *conn)
+    .await?;
     for (id, path) in rows {
         if let Some(group) = out.get_mut(&path_key(&path)) {
             group.push((id, path));
@@ -322,13 +381,14 @@ pub(crate) async fn settle_groups(
     conn: &mut sqlx::SqliteConnection,
     keys: &std::collections::BTreeSet<String>,
     acceptable: impl Fn(&str) -> bool,
+    titles: &mut Titles,
 ) -> Result<Vec<i64>> {
     let mut refused = Vec::new();
     for members in groups(conn, keys).await?.into_values() {
         let owner = owner_of(members.iter().map(|(id, p)| (*id, p.as_str())));
         for (id, path) in &members {
             if Some(*id) == owner && acceptable(path) {
-                reindex_stored(conn, *id).await?;
+                reindex_stored(conn, *id, titles).await?;
             } else {
                 unindex_stored(conn, *id).await?;
                 refused.push(*id);
@@ -453,7 +513,7 @@ impl Storage {
             .await?;
 
         put_body(&mut tx, note_id, body).await?;
-        write_links(&mut tx, note_id, title, links).await?;
+        write_links(&mut tx, note_id, title, links, &mut Titles::Each).await?;
         stamp_parts(&mut tx, note_id, body).await?;
 
         tx.commit().await?;
@@ -467,7 +527,7 @@ impl Storage {
             .bind(note_id)
             .execute(&mut *tx)
             .await?;
-        write_links(&mut tx, note_id, title, links).await?;
+        write_links(&mut tx, note_id, title, links, &mut Titles::Each).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -494,7 +554,7 @@ impl Storage {
             .bind(note_id)
             .execute(&mut *tx)
             .await?;
-        write_links(&mut tx, note_id, title, links).await?;
+        write_links(&mut tx, note_id, title, links, &mut Titles::Each).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -566,7 +626,13 @@ impl Storage {
             .await?;
         if let Some(path) = path {
             let keys = [path_key(&path)].into();
-            settle_groups(&mut tx, &keys, crate::notes::note_path_is_plain).await?;
+            settle_groups(
+                &mut tx,
+                &keys,
+                crate::notes::note_path_is_plain,
+                &mut Titles::Each,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -938,6 +1004,113 @@ mod tests {
         assert_ne!(path_key("\u{131}.md"), path_key("i.md"));
         assert_ne!(path_key("\u{130}.md"), path_key("i.md"));
         assert_ne!(path_key("a.md"), path_key("b.md"));
+    }
+
+    #[tokio::test]
+    async fn titles_read_at_once_resolve_a_link_as_a_query_does() {
+        let s = crate::storage::Storage::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let titles = [
+            "Prelude",
+            "PRELUDE",
+            "prelude",
+            "\u{c9}tude",
+            "\u{e9}tude",
+            "\u{c9}TUDE",
+            "Stra\u{df}e",
+            "Finale",
+            "a\0B",
+        ];
+        let mut conn = s.pool().acquire().await.unwrap();
+        for (n, title) in titles.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+                 VALUES (?, ?, 'note', 1, 1)",
+            )
+            .bind(format!("notes/{n}.md"))
+            .bind(title)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+        let mut read = Titles::read();
+        for target in titles.iter().copied().chain([
+            "pRELUDE",
+            "\u{e9}TUDE",
+            "STRASSE",
+            "Middlemarch",
+            "A\0b",
+            "",
+        ]) {
+            let each = Titles::Each.resolve(&mut conn, target).await.unwrap();
+            assert_eq!(
+                read.resolve(&mut conn, target).await.unwrap(),
+                each,
+                "{target:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_group_holds_every_note_whose_path_has_its_key() {
+        let s = crate::storage::Storage::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let paths = [
+            "notes/Prelude.md",
+            "NOTES/prelude.MD",
+            "notes/Stra\u{df}e.md",
+            "notes/STRASSE.md",
+            "notes/strasse.md",
+            "Notes/File.md",
+            "notes/\u{fb01}le.md",
+            "notes/\u{c9}t\u{e9}.md",
+            "notes/e\u{301}t\u{e9}.md",
+            "notes/K.md",
+            "notes/\u{212a}.md",
+            "notes/a\0B.md",
+            "notes/A\0b.md",
+            "notes/Finale.md",
+        ];
+        let mut conn = s.pool().acquire().await.unwrap();
+        for path in paths {
+            sqlx::query(
+                "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+                 VALUES (?, 'Middlemarch', 'note', 1, 1)",
+            )
+            .bind(path)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+        let every: Vec<(i64, String)> =
+            sqlx::query_as("SELECT id, file_path FROM notes ORDER BY id")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        let mut asked: Vec<std::collections::BTreeSet<String>> =
+            paths.iter().map(|p| [path_key(p)].into()).collect();
+        asked.push(paths.iter().map(|p| path_key(p)).collect());
+        asked.push(["notes/no such note.md".to_string()].into());
+        for keys in asked {
+            let expected: std::collections::BTreeMap<String, Vec<(i64, String)>> = keys
+                .iter()
+                .map(|k| {
+                    let members = every
+                        .iter()
+                        .filter(|(_, p)| path_key(p) == *k)
+                        .cloned()
+                        .collect();
+                    (k.clone(), members)
+                })
+                .collect();
+            let mut found = groups(&mut conn, &keys).await.unwrap();
+            for members in found.values_mut() {
+                members.sort();
+            }
+            assert_eq!(found, expected, "{keys:?}");
+        }
     }
 
     /// Reads the generated SQL because the bundled SQLite's higher parameter limit hides a missing
