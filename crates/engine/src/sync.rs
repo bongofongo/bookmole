@@ -235,7 +235,6 @@ const SETTLE_ROUNDS: usize = 4;
 /// The receiver itself keeps nothing between calls, so an apply the client repeats after a
 /// rollback starts from what the database holds.
 #[derive(Default)]
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
 pub(crate) struct Receiver {
     #[cfg(test)]
     pub(crate) faults: Faults,
@@ -301,7 +300,6 @@ impl Receiver {
 /// ([`clashes::give_way`]) and the held rows tried again; that must happen only once a pull has
 /// read the whole log, never between pages, because a clash decided on part of what another
 /// device sent may be one its later changes already ended.
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
 async fn apply_and_repair(
     conn: &mut SqliteConnection,
     replica: &Replica,
@@ -358,7 +356,6 @@ async fn keep_for_after(conn: &mut SqliteConnection, repaired: &synced::Repaired
 /// What committed applies on a connection left to do outside the database: cover files deleted
 /// here, and the books whose covers to fetch returned. Reads and clears the record in one
 /// transaction; `conn` must have none open. A file is deleted only if no book uses it now.
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
 pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<Vec<i64>> {
     use sqlx::Connection;
 
@@ -395,7 +392,6 @@ fn application(e: EngineError) -> ClientError {
 }
 
 /// The engine's error inside a client error a step returned, or the client error as it is.
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
 pub(crate) fn unwrap_application(e: ClientError) -> std::result::Result<EngineError, ClientError> {
     match e {
         ClientError::Application(inner) => match inner.downcast::<EngineError>() {
@@ -470,13 +466,21 @@ pub(crate) fn kernel(e: fongo_sync_sqlite::Error) -> EngineError {
     }
 }
 
-#[expect(dead_code, reason = "nothing syncs yet")]
 pub(crate) mod http;
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
 pub(crate) mod identity;
+mod session;
+
+pub(crate) use session::Slot;
+pub use session::{
+    RecoveryCode, SyncConflict, SyncError, SyncOutcome, SyncRow, SyncState, SyncStatus,
+};
 
 #[cfg(test)]
 mod clash_tests;
+#[cfg(test)]
+mod engine_tests;
+#[cfg(test)]
+mod test_server;
 
 #[cfg(test)]
 mod tests {

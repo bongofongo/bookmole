@@ -369,7 +369,7 @@ async fn resume(conn: &mut SqliteConnection, how: Resume) {
     }
 }
 
-async fn capture_installed(conn: &mut SqliteConnection) -> Result<bool> {
+pub(crate) async fn capture_installed(conn: &mut SqliteConnection) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master
                          WHERE type = 'trigger' AND name LIKE 'fongo!_%' ESCAPE '!')",
