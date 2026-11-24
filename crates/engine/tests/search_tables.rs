@@ -28,7 +28,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `src` with comments and every `#[cfg(test)]` item removed.
+/// `src` with comments and every `#[cfg(test)]` item, field or block removed.
 fn shipped(src: &str) -> String {
     let code: String = src
         .lines()
@@ -44,7 +44,11 @@ fn shipped(src: &str) -> String {
         let mut end = item.len();
         for (i, c) in item.char_indices() {
             match c {
-                '{' => depth += 1,
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' if depth == 0 => {
+                    end = i;
+                    break;
+                }
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
@@ -52,7 +56,8 @@ fn shipped(src: &str) -> String {
                         break;
                     }
                 }
-                ';' if depth == 0 => {
+                ')' | ']' => depth -= 1,
+                ';' | ',' if depth == 0 => {
                     end = i + 1;
                     break;
                 }
