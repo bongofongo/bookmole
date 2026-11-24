@@ -153,7 +153,17 @@ pub(super) const RESOLVE_TITLE: &str = "title = ? COLLATE NOCASE ORDER BY id LIM
 /// table.
 pub(crate) enum Titles {
     Each,
-    Read(Option<std::collections::HashMap<String, i64>>),
+    Read(Option<std::collections::HashMap<(usize, Vec<u8>), i64>>),
+}
+
+/// What `NOCASE` compares of a text: two are equal when they have the same length in bytes and
+/// agree, ASCII letters folded, up to and including the first NUL; bytes after it are not read.
+fn nocase_key(text: &[u8]) -> (usize, Vec<u8>) {
+    let compared = text
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(text.len(), |at| at + 1);
+    (text.len(), text[..compared].to_ascii_lowercase())
 }
 
 impl Titles {
@@ -177,14 +187,17 @@ impl Titles {
             Titles::Read(read) => read,
         };
         if read.is_none() {
-            let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, title FROM notes")
-                .fetch_all(&mut *tx)
-                .await?;
+            // Read as bytes, since a title need not be valid UTF-8; one stored as a BLOB never
+            // equals a link's text.
+            let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+                "SELECT id, CAST(title AS BLOB) FROM notes WHERE typeof(title) = 'text'",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
             let mut titles = std::collections::HashMap::with_capacity(rows.len());
-            // NOCASE folds ASCII letters alone.
             for (id, title) in rows {
                 titles
-                    .entry(title.to_ascii_lowercase())
+                    .entry(nocase_key(&title))
                     .and_modify(|first: &mut i64| *first = (*first).min(id))
                     .or_insert(id);
             }
@@ -192,7 +205,7 @@ impl Titles {
         }
         Ok(read
             .as_ref()
-            .and_then(|titles| titles.get(&target.to_ascii_lowercase()))
+            .and_then(|titles| titles.get(&nocase_key(target.as_bytes())))
             .copied())
     }
 }
@@ -1021,19 +1034,37 @@ mod tests {
             "Stra\u{df}e",
             "Finale",
             "a\0B",
+            "\0\u{1}Z ",
+            "\0abc",
+            "x\0",
         ];
         let mut conn = s.pool().acquire().await.unwrap();
+        let insert = "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+                      VALUES (?, ?, 'note', 1, 1) RETURNING id";
+        let mut ids = Vec::new();
         for (n, title) in titles.iter().enumerate() {
-            sqlx::query(
+            let id: i64 = sqlx::query_scalar(insert)
+                .bind(format!("notes/{n}.md"))
+                .bind(title)
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        // A title that is not UTF-8, and one stored as a BLOB holding a title's bytes.
+        for (path, title) in [
+            ("notes/invalid.md", "CAST(x'ff41' AS TEXT)"),
+            ("notes/blob.md", "CAST('Middlemarch' AS BLOB)"),
+        ] {
+            sqlx::query(&format!(
                 "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
-                 VALUES (?, ?, 'note', 1, 1)",
-            )
-            .bind(format!("notes/{n}.md"))
-            .bind(title)
+                 VALUES ('{path}', {title}, 'note', 1, 1)"
+            ))
             .execute(&mut *conn)
             .await
             .unwrap();
         }
+
         let mut read = Titles::read();
         for target in titles.iter().copied().chain([
             "pRELUDE",
@@ -1041,6 +1072,11 @@ mod tests {
             "STRASSE",
             "Middlemarch",
             "A\0b",
+            "a\0c",
+            "\0xyz",
+            "\0\u{1}z ",
+            "X\0",
+            "\u{fffd}A",
             "",
         ]) {
             let each = Titles::Each.resolve(&mut conn, target).await.unwrap();
@@ -1050,6 +1086,31 @@ mod tests {
                 "{target:?}"
             );
         }
+
+        let note = ids[0];
+        sqlx::query("INSERT INTO note_bodies (note_id, body) VALUES (?, ?)")
+            .bind(note)
+            .bind("See [[finale]] and [[Middlemarch]].")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        reindex_stored(&mut conn, note, &mut Titles::read())
+            .await
+            .unwrap();
+        let links: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT target_title, to_note FROM note_links WHERE from_note = ? ORDER BY target_title",
+        )
+        .bind(note)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            links,
+            [
+                ("Middlemarch".to_string(), None),
+                ("finale".to_string(), Some(ids[7]))
+            ]
+        );
     }
 
     #[tokio::test]

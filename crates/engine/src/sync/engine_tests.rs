@@ -1424,7 +1424,8 @@ async fn a_long_pull_takes_turns_with_the_readers_writes() {
         ["Written while syncing"]
     );
 
-    let limit = Receiver::default().pace().apply;
+    let limit = super::PACE_APPLY;
+    assert_eq!(Receiver::default().pace().apply, limit);
     let sizes: Vec<usize> = timings
         .lock()
         .unwrap()
@@ -1447,25 +1448,10 @@ async fn a_long_pull_takes_turns_with_the_readers_writes() {
 /// `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000 BOOKMOLE_SYNC_BENCH_RUNS=5 cargo test -p bookmole
 /// --release --lib -- --ignored --nocapture a_large_first_sync`.
 ///
-/// What it found on a laptop, in rollback-journal mode, as ranges over runs (five, except two
-/// before at 50,000). Before: one transaction per 50,000 changes, and each link in a note's body
-/// resolved by reading every note. After: transactions of 2,000 changes with the client's pauses
-/// between them, and the titles read once per apply.
-///
-/// | | 10,000 before | 10,000 after | 50,000 before | 50,000 after |
-/// |---|---|---|---|---|
-/// | sync | 20 s, 6 applies | 33-34 s, 131 | 135 s, 27 | 219-226 s, 651 |
-/// | longest hold | 6.0-6.1 s | 0.40-0.42 s | 26.9 s | 0.63-0.71 s |
-/// | repair's share, longest | 17%, 1.65 s | 10%, 0.08 s | 33%, 19.6 s | 10%, 0.19 s |
-/// | writer: worst, failed | 5.4 s, 1-3 | 0.93-1.61 s, 0 | 5.5 s, 18-20 | 1.24-1.81 s, 0 |
-/// | reader | 3.0 s, 0 | 0.18-0.22 s, 0 | 5.5 s, 7 | 0.40-0.50 s, 0 |
-/// | second engine | 5.4-5.5 s, 1-3 | 0.63-1.05 s, 0 | 5.5 s, 17-20 | 1.26-1.48 s, 0 |
-///
-/// Nothing fails any more. A writer still waits up to about a second at 10,000 books (1.6 s once
-/// in five runs) and up to 1.8 s at 50,000: the client holds the lock for 250 ms before it
-/// pauses, plus the apply that crosses that mark, and SQLite's busy handler, once it has waited
-/// 0.3 s, tries only every 100 ms. Applies of 1,000 changes did not shorten that wait; the kernel's time per apply,
-/// which grows with the library and with rows rather than changes, sets the longest hold.
+/// Each run prints how long the sync took over how many applies, its longest hold on the write
+/// lock (an apply and its commit, less any pause the client took before the next write), the
+/// kernel's and the repair's shares of the holds, and for each party its worst wait and its
+/// failures.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "a measurement; run in a release build"]
 #[expect(clippy::too_many_lines, reason = "one measurement, read top to bottom")]
