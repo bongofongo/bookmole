@@ -1,7 +1,8 @@
 //! The kernel client's requests, carried to a sync server over HTTP.
 //!
 //! A request's target carries the library's id and the log position being read, and its headers
-//! a signature, so neither appears in an error or a log line: those name the endpoint only.
+//! a signature, so neither appears in an error or a log line: those name the endpoint only. Nor
+//! does anything of a response's body.
 
 use std::time::Duration;
 
@@ -12,8 +13,31 @@ use url::Url;
 use crate::error::{EngineError, Result};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// A page of the log can be large, and a slow link should finish it.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A server that stops sending mid-answer is given up on after this long without a byte.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// A whole request, answer included: long enough for a page at [`PAGE_LIMIT`] over a slow link,
+/// short enough that a server trickling bytes cannot hold a sync for ever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The largest answer to a read of the log. A page's size is bounded only by capabilities a
+/// server may leave out (`max_page_batches`, `max_batch_bytes`, `max_page_bytes`; absent means
+/// unlimited), so no legitimate maximum is knowable here: this is a fixed ceiling, far above what
+/// a page of a real library reaches. A page over it fails the sync rather than exhaust memory.
+const PAGE_LIMIT: usize = 128 << 20;
+/// The largest answer to anything else: capabilities, a device list, an append's sequence
+/// number, an error. All are small JSON.
+const JSON_LIMIT: usize = 1 << 20;
+
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    page: usize,
+    json: usize,
+}
+
+const LIMITS: Limits = Limits {
+    page: PAGE_LIMIT,
+    json: JSON_LIMIT,
+};
 
 /// The server's origin, `scheme://host[:port]`, which the client's targets are appended to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,26 +80,49 @@ impl Origin {
 pub(crate) struct HttpTransport {
     client: reqwest::Client,
     origin: Origin,
+    limits: Limits,
 }
 
 impl HttpTransport {
     pub(crate) fn new(origin: Origin) -> Result<HttpTransport> {
-        let client = builder(CONNECT_TIMEOUT, REQUEST_TIMEOUT).build()?;
-        Ok(HttpTransport { client, origin })
+        let client = builder(CONNECT_TIMEOUT, READ_TIMEOUT, REQUEST_TIMEOUT).build()?;
+        Ok(HttpTransport {
+            client,
+            origin,
+            limits: LIMITS,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_limits(origin: Origin, page: usize, json: usize) -> HttpTransport {
+        HttpTransport {
+            limits: Limits { page, json },
+            ..HttpTransport::with_timeout(origin, Duration::from_secs(5))
+        }
     }
 
     #[cfg(test)]
     fn with_timeout(origin: Origin, timeout: Duration) -> HttpTransport {
-        let client = builder(timeout, timeout).no_proxy().build().unwrap();
-        HttpTransport { client, origin }
+        let client = builder(timeout, timeout, timeout)
+            .no_proxy()
+            .build()
+            .unwrap();
+        HttpTransport {
+            client,
+            origin,
+            limits: LIMITS,
+        }
     }
 }
 
-/// A redirect would send a signed request to a target it was not signed for, so none is followed.
-fn builder(connect: Duration, request: Duration) -> reqwest::ClientBuilder {
+/// A redirect would carry the signed headers to a target they were not signed for, perhaps on
+/// another host, so none is followed: a 3xx is handed to the client as the answer. Responses are
+/// never decompressed (reqwest is built without gzip), so a body's size on the wire is its size.
+fn builder(connect: Duration, read: Duration, request: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("bookmole/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(connect)
+        .read_timeout(read)
         .timeout(request)
         .redirect(reqwest::redirect::Policy::none())
 }
@@ -91,6 +138,8 @@ pub(crate) enum HttpFailure {
     Request,
     #[error("the sync server's answer could not be read")]
     Body,
+    #[error("the sync server's answer is larger than any it should send")]
+    TooLarge,
 }
 
 impl HttpFailure {
@@ -117,6 +166,27 @@ fn endpoint(target: &str) -> &'static str {
         Some((Route::Notifications(_), _)) => "notifications",
         None => "unknown",
     }
+}
+
+/// The body, refused once it passes `limit` bytes whatever its `Content-Length` said.
+async fn read_body(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, HttpFailure> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > limit as u64)
+    {
+        return Err(HttpFailure::TooLarge);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| HttpFailure::of(&e))? {
+        if chunk.len() > limit - body.len() {
+            return Err(HttpFailure::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 impl Transport for HttpTransport {
@@ -150,7 +220,15 @@ impl Transport for HttpTransport {
                 Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
             })
             .collect();
-        let body = response.bytes().await.map_err(fail)?.to_vec();
+        let limit = if endpoint == "batches" && request.method == Method::Get {
+            self.limits.page
+        } else {
+            self.limits.json
+        };
+        let body = read_body(response, limit).await.map_err(|failure| {
+            tracing::debug!(endpoint, status, %failure, "sync server's answer was not read");
+            TransportError::new(failure)
+        })?;
         if !(200..300).contains(&status) {
             tracing::debug!(endpoint, status, "sync server refused a request");
         }
@@ -314,6 +392,130 @@ mod tests {
         assert_eq!(refused.body, br#"{"code":"library_exists"}"#);
         assert_eq!(t.send(read(0)).await.unwrap().status, 307);
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    const PAGE: usize = 64 << 10;
+    const JSON: usize = 1 << 10;
+
+    fn capabilities() -> Request {
+        Request {
+            method: Method::Get,
+            target: "/v1/capabilities".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    fn too_large(result: std::result::Result<Response, TransportError>) -> bool {
+        result.is_err_and(|e| {
+            let text = e.to_string();
+            assert!(!text.contains("after=") && !text.contains("xxxx"), "{text}");
+            e.into_inner().downcast_ref::<HttpFailure>() == Some(&HttpFailure::TooLarge)
+        })
+    }
+
+    /// A server that answers one request with `response` exactly as given, whatever it says.
+    fn answering_with(response: Vec<u8>) -> Origin {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = Origin::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match socket.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = socket.write_all(&response);
+        });
+        origin
+    }
+
+    fn chunked(total: usize) -> Vec<u8> {
+        let mut out =
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+        let mut left = total;
+        while left > 0 {
+            let n = left.min(1000);
+            out.extend_from_slice(format!("{n:x}\r\n").as_bytes());
+            out.extend(std::iter::repeat_n(b'x', n));
+            out.extend_from_slice(b"\r\n");
+            left -= n;
+        }
+        out.extend_from_slice(b"0\r\n\r\n");
+        out
+    }
+
+    #[tokio::test]
+    async fn an_answer_at_its_limit_is_read_and_one_past_it_is_refused() {
+        let server = MockServer::start().await;
+        for (size, at) in [(PAGE, 1), (PAGE + 1, 2)] {
+            Mock::given(method("GET"))
+                .and(path(format!("/v1/libraries/{LIBRARY}/batches")))
+                .and(query_param("after", at.to_string()))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; size]))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(path("/v1/capabilities"))
+            .respond_with(ResponseTemplate::new(500).set_body_bytes(vec![b'x'; JSON + 1]))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; JSON]))
+            .mount(&server)
+            .await;
+        let t = HttpTransport::with_limits(Origin::parse(&server.uri()).unwrap(), PAGE, JSON);
+        assert_eq!(t.send(read(1)).await.unwrap().body.len(), PAGE);
+        assert!(too_large(t.send(read(2)).await));
+        assert!(too_large(t.send(capabilities()).await));
+        let appended = t
+            .send(Request {
+                method: Method::Post,
+                target: format!("/v1/libraries/{LIBRARY}/batches"),
+                headers: Vec::new(),
+                body: vec![1],
+            })
+            .await
+            .unwrap();
+        assert_eq!(appended.body.len(), JSON);
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_no_length_is_refused_once_it_passes_its_limit() {
+        let t = |origin| HttpTransport::with_limits(origin, PAGE, JSON);
+        assert!(too_large(
+            t(answering_with(chunked(PAGE + 1))).send(read(0)).await
+        ));
+        assert!(too_large(
+            t(answering_with(chunked(JSON + 1)))
+                .send(capabilities())
+                .await
+        ));
+        let at_limit = t(answering_with(chunked(PAGE))).send(read(0)).await;
+        assert_eq!(at_limit.unwrap().body.len(), PAGE);
+    }
+
+    #[tokio::test]
+    async fn an_answer_whose_length_understates_is_read_no_further_than_it_says() {
+        let mut lying = b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n".to_vec();
+        lying.extend(std::iter::repeat_n(b'x', PAGE * 4));
+        let got = HttpTransport::with_limits(answering_with(lying), PAGE, JSON)
+            .send(read(0))
+            .await
+            .unwrap();
+        assert_eq!(got.body.len(), 10);
+
+        let mut overstating = b"HTTP/1.1 200 OK\r\ncontent-length: 1000000000\r\n\r\n".to_vec();
+        overstating.extend(std::iter::repeat_n(b'x', 10));
+        let refused = HttpTransport::with_limits(answering_with(overstating), PAGE, JSON)
+            .send(read(0))
+            .await;
+        assert!(too_large(refused));
     }
 
     #[derive(Clone, Default)]
