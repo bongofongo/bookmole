@@ -8,12 +8,11 @@ use sqlx::{ConnectOptions, Connection};
 use super::Receiver;
 use super::http::Origin;
 use super::test_server::TestServer;
-use crate::book::Book;
 use crate::config::EngineConfig;
 use crate::error::EngineError;
 use crate::lists::{EntryShow, EntrySort};
 use crate::storage::{NewHighlight, NewNoteMeta, SearchSource};
-use crate::{Engine, RecoveryCode, SyncError, SyncOutcome, SyncStatus};
+use crate::{Book, Engine, RecoveryCode, SyncError, SyncOutcome, SyncStatus};
 
 struct Device {
     _dir: tempfile::TempDir,
@@ -143,8 +142,15 @@ async fn highlight(d: &Device, book: i64) {
 async fn cover_file(d: &Device, book: i64) -> PathBuf {
     let images = d.root.join("database/images");
     std::fs::create_dir_all(&images).unwrap();
-    let file = images.join(format!("{book}.jpg"));
+    let file = images.join(format!("{}.jpg", format!("{:02x}", book as u8).repeat(32)));
     std::fs::write(&file, b"cover").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
     sqlx::query("UPDATE books SET cover_path = ? WHERE id = ?")
         .bind(file.display().to_string())
         .bind(book)
@@ -345,10 +351,24 @@ async fn two_syncs_at_once_take_turns_and_both_succeed() {
     let a = device().await;
     create(&a, &server).await;
     add_book(&a, "Middlemarch").await;
+    let before = server.endpoints().len();
     let (first, second) = tokio::join!(sync(&a, &server), sync(&a, &server));
-    assert!(first.sent || second.sent);
-    assert!(!(first.sent && second.sent));
+    assert!(first.sent != second.sent, "{first:?} {second:?}");
     assert_eq!(server.most_in_flight(), 1);
+    // Each sync asks for the capabilities first; the second may ask only once the first has
+    // appended what it had, and nothing is appended twice.
+    let seen = &server.endpoints()[before..];
+    let at = |what| {
+        seen.iter()
+            .enumerate()
+            .filter(move |(_, e)| **e == what)
+            .map(|(i, _)| i)
+    };
+    let asked: Vec<usize> = at("capabilities").collect();
+    let appended: Vec<usize> = at("append").collect();
+    assert_eq!(asked.len(), 2, "{seen:?}");
+    assert_eq!(appended.len(), 1, "{seen:?}");
+    assert!(asked[0] < appended[0] && appended[0] < asked[1], "{seen:?}");
 }
 
 #[tokio::test]
@@ -464,6 +484,150 @@ async fn a_pull_that_fails_part_way_keeps_nothing_it_did_not_commit_and_the_next
     }
 }
 
+/// Whether another connection can take the write lock at once, without waiting.
+async fn writes_at_once(d: &Device) -> bool {
+    let mut conn = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(d.root.join("database/app.db"))
+        .busy_timeout(std::time::Duration::ZERO)
+        .connect()
+        .await
+        .unwrap();
+    let wrote = sqlx::raw_sql("BEGIN IMMEDIATE; COMMIT;")
+        .execute(&mut conn)
+        .await
+        .is_ok();
+    conn.close().await.unwrap();
+    wrote
+}
+
+/// Writes through the engine's pool, which waits up to five seconds for the lock, and says how
+/// long that took.
+async fn pool_write(d: &Device) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    add_book(d, "Felix Holt").await;
+    sqlx::query("DELETE FROM books WHERE title = 'Felix Holt'")
+        .execute(d.engine.storage().pool())
+        .await
+        .unwrap();
+    started.elapsed()
+}
+
+#[tokio::test]
+async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
+    use futures::FutureExt;
+
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    converge(&[&a, &b], &server).await;
+    for title in ["Middlemarch", "Romola", "Adam Bede"] {
+        add_book(&a, title).await;
+        sync(&a, &server).await;
+    }
+    let prompt = std::time::Duration::from_secs(2);
+
+    let mut hanging = Receiver::default();
+    hanging.faults.hang = true;
+    let dropped = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        sync_with(&b, &server, hanging),
+    )
+    .await;
+    assert!(dropped.is_err(), "the apply did not hang");
+    assert!(pool_write(&b).await < prompt);
+
+    let mut panicking = Receiver::default();
+    panicking.faults.panic = true;
+    let caught = std::panic::AssertUnwindSafe(sync_with(&b, &server, panicking))
+        .catch_unwind()
+        .await;
+    assert!(caught.is_err(), "the apply did not panic");
+    assert!(pool_write(&b).await < prompt);
+
+    for n in 1..=8 {
+        server.hang_at(Some(n));
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            sync_with(&b, &server, Receiver::default()),
+        )
+        .await;
+        server.hang_at(None);
+        assert!(pool_write(&b).await < prompt, "dropped at request {n}");
+    }
+
+    let opened = b.engine.sync.held.lock().await.opened;
+    sync(&b, &server).await;
+    assert!(b.engine.sync.held.lock().await.opened > opened);
+    assert_eq!(
+        rows(&b, "SELECT title FROM books ORDER BY title").await,
+        ["Adam Bede", "Middlemarch", "Romola"]
+    );
+}
+
+async fn reopen(d: Device) -> Device {
+    let Device { _dir, root, engine } = d;
+    drop(engine);
+    let engine = Engine::open(EngineConfig::rooted_at(&root)).await.unwrap();
+    Device { _dir, root, engine }
+}
+
+#[tokio::test]
+async fn what_a_failed_sync_left_to_do_is_done_after_a_restart() {
+    use crate::storage::Source;
+
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    let middlemarch = add_book(&a, "Middlemarch").await;
+    let romola = add_book(&a, "Romola").await;
+    a.engine
+        .storage()
+        .enrich_book(
+            middlemarch,
+            &Book {
+                cover_url: Some("https://covers.example.test/1.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+    converge(&[&a, &b], &server).await;
+    let files = [
+        cover_file(&b, book(&b, "Middlemarch").await).await,
+        cover_file(&b, book(&b, "Romola").await).await,
+    ];
+
+    a.engine.delete_book(romola).await.unwrap();
+    a.engine
+        .storage()
+        .enrich_book(
+            middlemarch,
+            &Book {
+                cover_url: Some("https://covers.example.test/2.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+    sync(&a, &server).await;
+    let mut failing = Receiver::default();
+    failing.faults.fail_caught_up = true;
+    assert!(sync_with(&b, &server, failing).await.is_err());
+    assert_eq!(rows(&b, "SELECT title FROM books").await, ["Middlemarch"]);
+
+    let b = reopen(b).await;
+    let first = sync(&b, &server).await;
+    sync(&b, &server).await;
+    for file in &files {
+        assert!(!file.exists(), "{}", file.display());
+    }
+    assert_eq!(first.covers_to_fetch, [book(&b, "Middlemarch").await]);
+}
+
 #[tokio::test]
 async fn a_connection_a_sync_leaves_unsound_is_closed_and_the_next_sync_opens_another() {
     let server = TestServer::default();
@@ -482,7 +646,10 @@ async fn a_connection_a_sync_leaves_unsound_is_closed_and_the_next_sync_opens_an
         matches!(result, Err(EngineError::Sync(SyncError::Interrupted))),
         "{result:?}"
     );
-    assert!(b.engine.sync.held.lock().await.conn.is_none());
+    assert!(
+        writes_at_once(&b).await,
+        "the unsound connection still held the database"
+    );
     match b.engine.sync_status().await.unwrap() {
         SyncStatus::On(state) => {
             assert_eq!(state.last_problem, Some(SyncError::Interrupted));
@@ -492,7 +659,7 @@ async fn a_connection_a_sync_leaves_unsound_is_closed_and_the_next_sync_opens_an
     add_book(&b, "Romola").await;
 
     sync(&b, &server).await;
-    assert_eq!(b.engine.sync.held.lock().await.opened, opened + 1);
+    assert!(b.engine.sync.held.lock().await.opened > opened);
     converge(&[&a, &b], &server).await;
     for d in [&a, &b] {
         assert_eq!(
@@ -742,17 +909,28 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
                 .is_err()
         );
     }
-    b.engine.reconcile_vault().await.unwrap();
-    let first = b
-        .engine
-        .storage()
-        .get_note(got.refused_notes[0])
-        .await
-        .unwrap()
-        .unwrap();
-    b.engine.delete_note(&first).await.unwrap();
+    // Newer than any row, so a sweep that resolved these paths would read them.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
     for sentinel in &sentinels {
-        assert_eq!(std::fs::read_to_string(sentinel).unwrap(), SENTINEL);
+        std::fs::File::options()
+            .write(true)
+            .open(sentinel)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+    b.engine.reconcile_vault().await.unwrap();
+    for &id in &got.refused_notes {
+        let note = b.engine.storage().get_note(id).await.unwrap().unwrap();
+        b.engine.delete_note(&note).await.unwrap();
+        for sentinel in &sentinels {
+            assert_eq!(
+                std::fs::read_to_string(sentinel).unwrap(),
+                SENTINEL,
+                "after deleting {:?}",
+                note.file_path
+            );
+        }
     }
 
     let refused = b
@@ -777,6 +955,7 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
 
     converge(&[&a, &b], &server).await;
     for d in [&a, &b] {
+        assert!(rows(d, "SELECT title FROM notes_fts").await.len() <= 1);
         let bodies = rows(d, "SELECT body FROM note_bodies").await;
         assert!(
             bodies.iter().all(|body| !body.contains(SENTINEL)),

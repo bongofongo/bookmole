@@ -725,6 +725,13 @@ pub async fn create_note(
 
     let book_dir = book
         .map(|b| slugify(b.display_title()))
+        .map(|dir| {
+            if is_device_name(&dir) {
+                format!("{dir}-book")
+            } else {
+                dir
+            }
+        })
         .unwrap_or_else(|| "unsorted".to_string());
     std::fs::create_dir_all(vault_dir)?;
     note_file(vault_dir, &format!("{book_dir}/untitled.md"))?;
@@ -839,33 +846,59 @@ pub(crate) async fn reindex_from_body(
 /// The longest `notes.file_path` the engine accepts, in bytes.
 pub const NOTE_PATH_MAX: usize = 1024;
 
-/// Whether `file_path` can name a note: a relative, `/`-separated path of plain names (no root,
-/// drive, `.`, `..`, backslash, colon or control character), at most [`NOTE_PATH_MAX`] bytes,
-/// ending in `.md`. Reads the text only. A row from another device that fails this is never
-/// resolved to a file.
+/// Whether `file_path` can name a note: a relative, `/`-separated path of names every platform
+/// accepts (no root, drive, `.`, `..`, control character or any of `\ : < > " | ? *`, no name
+/// ending in a dot or space, no Windows device name), at most [`NOTE_PATH_MAX`] bytes, ending in
+/// `.md`. Reads the text only. A row from another device that fails this is never resolved to a
+/// file.
 pub fn note_path_is_plain(file_path: &str) -> bool {
     let path = Path::new(file_path);
     !file_path.is_empty()
         && file_path.len() <= NOTE_PATH_MAX
         && !file_path
             .chars()
-            .any(|c| c.is_control() || matches!(c, '\\' | ':'))
+            .any(|c| c.is_control() || matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'))
         && path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-        && file_path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != ".." && part.len() <= 255)
+        && file_path.split('/').all(portable_name)
         && path
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// One name of a note's path that any platform can hold.
+fn portable_name(part: &str) -> bool {
+    !part.is_empty()
+        && part != "."
+        && part != ".."
+        && part.len() <= 255
+        && !part.ends_with(['.', ' '])
+        && !is_device_name(part)
+}
+
+/// Windows reserves these names in every folder, with any extension and in any case.
+fn is_device_name(part: &str) -> bool {
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or(part)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix)
+                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        })
 }
 
 /// The file a note lives in: `file_path` under `vault`, the one way a note's row becomes a path.
 /// Refused unless the path is plain ([`note_path_is_plain`]) and stays inside the vault with
 /// symlinks followed: the deepest part of it that exists must resolve inside the vault (what
 /// does not exist yet is plain names below it), and the file itself, if it is a symlink, must
-/// point inside too. Reads metadata only; a refusal touches nothing.
+/// point inside too. Reads metadata only; a refusal touches nothing. It returns a path, not an
+/// open file: a symlink swapped in between check and use needs write access to the vault, which
+/// a remote device does not have, so the check is not the place to drop.
 pub fn note_file(vault: &Path, file_path: &str) -> Result<PathBuf> {
     let refuse = || {
         EngineError::InvalidInput("a note's file is not a markdown file inside the vault".into())
@@ -910,9 +943,14 @@ pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
 /// `stat` first, then compare; `last_modified` is in seconds, so a same-second edit is missed.
 pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<VaultReconcile> {
     let mut report = VaultReconcile::default();
-    for note in storage.note_files().await? {
+    let mut notes = storage.note_files().await?;
+    notes.sort_by_key(|n| n.id);
+    let mut seen = std::collections::HashSet::new();
+    for note in notes {
         report.checked += 1;
-        let Ok(path) = note_file(vault, &note.file_path) else {
+        let twin = !seen.insert(note.file_path.to_ascii_lowercase());
+        let path = note_file(vault, &note.file_path).ok().filter(|_| !twin);
+        let Some(path) = path else {
             report.absent += 1;
             continue;
         };
@@ -964,6 +1002,13 @@ pub(crate) fn hostile_note_paths() -> Vec<String> {
         format!("{}.md", "x".repeat(10_000)),
         "./x.md".into(),
         "a//b.md".into(),
+        "CON.md".into(),
+        "notes/nul.md".into(),
+        "Com1/x.md".into(),
+        "lpt9.tar.md".into(),
+        "notes./x.md".into(),
+        "notes /x.md".into(),
+        "x?.md".into(),
         ".md/..".into(),
     ]
 }
@@ -983,6 +1028,9 @@ mod tests {
             "notes/eliot/middlemarch.md",
             "Middlemarch/review.MD",
             "unsorted/20260101-prelude.md",
+            "console/x.md",
+            "com10/x.md",
+            "con-book/x.md",
         ] {
             assert!(note_path_is_plain(path), "{path:?}");
         }

@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 
 use super::http::{HttpTransport, Origin};
 use super::identity::{self, Identity, Stored};
-use super::{Receiver, kernel, replica, take_after, unwrap_application};
+use super::{Receiver, kernel, replica, unwrap_application};
 use crate::Engine;
 use crate::error::{EngineError, Result};
 
@@ -81,7 +81,7 @@ pub enum SyncStatus {
 pub struct SyncState {
     /// The library's id, in hex. Not a secret: the server knows it.
     pub library_id: String,
-    /// The server's origin, `https://host[:port]`.
+    /// The server's origin, `scheme://host[:port]`, `https` or `http`.
     pub server: String,
     pub device_label: String,
     /// How far into the server's log this library has read; 0 before the first sync.
@@ -151,15 +151,60 @@ pub(crate) struct Slot {
     problem: std::sync::Mutex<Option<SyncError>>,
 }
 
-/// The connection a sync runs on, kept between syncs: what committed applies left to do after
-/// a sync that failed later waits in it for the next one that succeeds.
+/// The turn of the one sync, create or join running at a time. It holds no connection between
+/// them: each attempt opens its own and closes it before the next, so nothing that might hold
+/// the write lock outlives the attempt that took it.
 #[derive(Default)]
 pub(crate) struct Held {
-    pub(crate) conn: Option<SqliteConnection>,
     #[cfg(test)]
     pub(crate) opened: usize,
     #[cfg(test)]
     pub(crate) busy_retries: usize,
+}
+
+/// A connection of a sync's own, opened from the pool's options and never one of the pool's.
+/// [`SyncConnection::close`] closes it and waits until it is closed. Dropped unclosed, as when
+/// the future running a sync is dropped or panics, it is closed on the runtime without waiting,
+/// so a transaction it holds ends without another sync having to come.
+struct SyncConnection(Option<SqliteConnection>);
+
+impl SyncConnection {
+    async fn open(engine: &Engine, held: &mut Held) -> Result<SyncConnection> {
+        let options = (*engine.storage.pool().connect_options())
+            .clone()
+            .busy_timeout(BUSY_TIMEOUT);
+        let conn = options.connect().await?;
+        #[cfg(test)]
+        {
+            held.opened += 1;
+        }
+        #[cfg(not(test))]
+        let _ = held;
+        Ok(SyncConnection(Some(conn)))
+    }
+
+    fn get(&mut self) -> &mut SqliteConnection {
+        self.0
+            .as_mut()
+            .expect("a sync connection is used only until it is closed")
+    }
+
+    async fn close(mut self) {
+        if let Some(conn) = self.0.take() {
+            conn.close().await.ok();
+        }
+    }
+}
+
+impl Drop for SyncConnection {
+    fn drop(&mut self) {
+        let Some(conn) = self.0.take() else { return };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                conn.close().await.ok();
+            });
+        }
+    }
 }
 
 /// Attempts after the first when another writer holds the database, and the first wait.
@@ -324,8 +369,10 @@ impl Engine {
     async fn install_identity(&self, held: &mut Held, identity: &Identity) -> Result<()> {
         identity::write(&self.config.sync_identity, identity)?;
         let installed = async {
-            let conn = self.sync_connection(held).await?;
-            replica()?.install(conn).await.map_err(kernel_error)
+            let mut conn = SyncConnection::open(self, held).await?;
+            let installed = replica()?.install(conn.get()).await.map_err(kernel_error);
+            conn.close().await;
+            installed
         }
         .await;
         if installed.is_err() {
@@ -396,11 +443,12 @@ impl Engine {
         let mut outcome = SyncOutcome::default();
         let mut busy = 0;
         loop {
-            let conn = self.sync_connection(held).await?;
+            let mut conn = SyncConnection::open(self, held).await?;
             let round = async {
-                prepare(conn, &replica).await?;
+                fongo_sync_client::check_connection(conn.get()).await?;
+                prepare(conn.get(), &replica).await?;
                 fongo_sync_client::sync_with(
-                    conn,
+                    conn.get(),
                     &replica,
                     transport,
                     &identity.credentials,
@@ -410,6 +458,7 @@ impl Engine {
                 .await
             }
             .await;
+            conn.close().await;
             match round {
                 Ok(report) => {
                     let more = report.more;
@@ -420,9 +469,6 @@ impl Engine {
                     }
                 }
                 Err(ClientError::ConnectionUnsound { .. }) => {
-                    if let Some(conn) = held.conn.take() {
-                        conn.close().await.ok();
-                    }
                     return Err(SyncError::Interrupted.into());
                 }
                 Err(e) if busy < BUSY_RETRIES && is_busy(&e) => {
@@ -436,28 +482,15 @@ impl Engine {
                 Err(e) => return Err(engine_error(e)),
             }
         }
-        let conn = self.sync_connection(held).await?;
-        let after = take_after(conn).await?;
+        let after = super::after_sync(
+            &self.storage,
+            &self.config.images_dir,
+            &self.config.vault_dir,
+        )
+        .await?;
         outcome.covers_to_fetch = after.covers_to_fetch;
         outcome.refused_notes = after.refused_notes;
         Ok(outcome)
-    }
-
-    /// The connection syncs run on: the library's file opened again, never one of the pool's, so
-    /// one that a sync leaves unsound is closed without touching what the rest of the engine
-    /// uses.
-    async fn sync_connection<'h>(&self, held: &'h mut Held) -> Result<&'h mut SqliteConnection> {
-        if held.conn.is_none() {
-            let options = (*self.storage.pool().connect_options())
-                .clone()
-                .busy_timeout(BUSY_TIMEOUT);
-            held.conn = Some(options.connect().await?);
-            #[cfg(test)]
-            {
-                held.opened += 1;
-            }
-        }
-        Ok(held.conn.as_mut().expect("just opened"))
     }
 }
 

@@ -295,9 +295,48 @@ mod tests {
     }
 
     /// The first, a middle and the last address of every refused IPv4 range.
+    /// Every IPv4 range that is not the public internet, written out here rather than read from
+    /// the table under test, so an entry missing there fails.
+    const EXPECTED_REFUSED_V4: &[([u8; 4], u8)] = &[
+        ([0, 0, 0, 0], 8),
+        ([10, 0, 0, 0], 8),
+        ([100, 64, 0, 0], 10),
+        ([127, 0, 0, 0], 8),
+        ([169, 254, 0, 0], 16),
+        ([172, 16, 0, 0], 12),
+        ([192, 0, 0, 0], 24),
+        ([192, 0, 2, 0], 24),
+        ([192, 88, 99, 0], 24),
+        ([192, 168, 0, 0], 16),
+        ([198, 18, 0, 0], 15),
+        ([198, 51, 100, 0], 24),
+        ([203, 0, 113, 0], 24),
+        ([224, 0, 0, 0], 4),
+        ([240, 0, 0, 0], 4),
+    ];
+
+    /// The same for IPv6: every range refused, as its first address and prefix length.
+    const EXPECTED_REFUSED_V6: &[(&str, u8)] = &[
+        ("::", 96),
+        ("::ffff:0:0:0", 96),
+        ("64:ff9b:1::", 48),
+        ("100::", 64),
+        ("2001::", 23),
+        ("2001:db8::", 32),
+        ("3fff::", 20),
+        ("5f00::", 16),
+        ("fc00::", 7),
+        ("fe80::", 10),
+        ("fec0::", 10),
+        ("ff00::", 8),
+        ("::", 3),
+        ("4000::", 2),
+        ("8000::", 1),
+    ];
+
     fn inward_v4() -> Vec<Ipv4Addr> {
         let mut out = Vec::new();
-        for &(base, len) in REFUSED_V4 {
+        for &(base, len) in EXPECTED_REFUSED_V4 {
             let first = u32::from(Ipv4Addr::from(base));
             let size = 1u64 << (32 - u32::from(len));
             for offset in [0, size / 2, size - 1] {
@@ -390,6 +429,21 @@ mod tests {
                 !is_public(IpAddr::V6(v4.to_ipv6_compatible())),
                 "{v4} compatible"
             );
+        }
+        for &(first, len) in EXPECTED_REFUSED_V6 {
+            let first = u128::from(Ipv6Addr::from_str(first).unwrap());
+            let size = if len == 0 {
+                u128::MAX
+            } else {
+                (1u128 << (128 - u32::from(len))) - 1
+            };
+            for at in [first, first + size / 2, first + size] {
+                let ip = Ipv6Addr::from(at);
+                if ip.to_ipv4_mapped().is_some() {
+                    continue;
+                }
+                assert!(!is_public(IpAddr::V6(ip)), "{ip} in {len}");
+            }
         }
         for refused in [
             "::",
@@ -586,6 +640,128 @@ mod tests {
             .filter(|r| r.url.path() == "/cover.png")
             .count();
         assert_eq!(fetched, 1, "only the public fetch reached the image");
+    }
+
+    /// A server that answers one request with `response` exactly as written.
+    fn answering_with(response: Vec<u8>) -> std::net::SocketAddr {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match socket.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = socket.write_all(&response);
+        });
+        at
+    }
+
+    #[tokio::test]
+    async fn a_cover_with_no_length_is_refused_once_it_passes_the_cap() {
+        let mut body = png();
+        body.resize(COVER_LIMIT + 1, 0);
+        let mut response =
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+        for chunk in body.chunks(64 << 10) {
+            response.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            response.extend_from_slice(chunk);
+            response.extend_from_slice(b"\r\n");
+        }
+        response.extend_from_slice(b"0\r\n\r\n");
+        let at = answering_with(response);
+        let lookup = move |_: &str| Ok(vec![at.ip()]);
+        let client = CoverClient::build(
+            Arc::new(lookup),
+            Allowance {
+                http: true,
+                addresses: vec![at.ip()],
+            },
+        )
+        .unwrap();
+        let images = tempfile::tempdir().unwrap();
+        let url = format!("http://public.test:{}/cover.png", at.port());
+        let error = client.fetch(&url, images.path()).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            EngineError::from(CoverRefusal::TooLarge).to_string()
+        );
+        assert_eq!(std::fs::read_dir(images.path()).unwrap().count(), 0);
+    }
+
+    const ORIGIN_PORT: &str = "BOOKMOLE_TEST_COVER_ORIGIN_PORT";
+
+    /// The fetch [`a_proxy_in_the_environment_is_never_used`] runs in a child process with proxy
+    /// variables set; run on its own, without the port it is given, it does nothing.
+    #[tokio::test]
+    #[ignore = "run in a child process by a_proxy_in_the_environment_is_never_used"]
+    async fn fetch_with_a_proxy_in_the_environment() {
+        let Ok(port) = std::env::var(ORIGIN_PORT) else {
+            return;
+        };
+        let loopback = IpAddr::from([127, 0, 0, 1]);
+        let client = CoverClient::build(
+            Arc::new(move |_: &str| Ok(vec![loopback])),
+            Allowance {
+                http: true,
+                addresses: vec![loopback],
+            },
+        )
+        .unwrap();
+        let images = tempfile::tempdir().unwrap();
+        client
+            .fetch(
+                &format!("http://public.test:{port}/cover.png"),
+                images.path(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_proxy_in_the_environment_is_never_used() {
+        let origin = MockServer::start().await;
+        Mock::given(path("/cover.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png()))
+            .mount(&origin)
+            .await;
+        let proxy = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png()))
+            .mount(&proxy)
+            .await;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "images::fetch::tests::fetch_with_a_proxy_in_the_environment",
+                "--ignored",
+            ])
+            .env(ORIGIN_PORT, origin.address().port().to_string())
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy");
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            child.env(name, proxy.uri());
+        }
+        let status = tokio::task::spawn_blocking(move || child.status().unwrap())
+            .await
+            .unwrap();
+        assert!(status.success());
+        assert!(proxy.received_requests().await.unwrap().is_empty());
+        assert_eq!(origin.received_requests().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

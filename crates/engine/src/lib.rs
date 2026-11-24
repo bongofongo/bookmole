@@ -1477,8 +1477,19 @@ impl Engine {
             seed.isbn_10.clone_from(&from_epub.isbn_10);
             seed.isbn_13.clone_from(&from_epub.isbn_13);
         }
-        let cover = file.cover(&self.config.images_dir)?;
+        let cover_bytes = file.cover_bytes();
         drop(file);
+        let cover = match cover_bytes {
+            Some(bytes) => {
+                let images_dir = self.config.images_dir.clone();
+                let stored =
+                    tokio::task::spawn_blocking(move || images::store_cover(&bytes, &images_dir))
+                        .await
+                        .map_err(|e| EngineError::Other(format!("storing a cover: {e}")))??;
+                Some(stored)
+            }
+            None => None,
+        };
         if let Some(cover) = &cover {
             from_epub.cover_path = Some(cover.path.display().to_string());
         }
@@ -2003,6 +2014,23 @@ impl Engine {
         notes::note_file(&self.config.vault_dir, &note.file_path)
     }
 
+    /// The note's file, for writing or for reading into the index: [`Engine::note_path`], and
+    /// refused too when an older note has the same path but for ASCII case, since on a
+    /// case-insensitive file system that file is the older note's.
+    pub(crate) async fn owned_note_file(&self, note: &NoteRecord) -> Result<PathBuf> {
+        let file = self.note_path(note)?;
+        if self
+            .storage
+            .note_is_case_twin(note.id, &note.file_path)
+            .await?
+        {
+            return Err(EngineError::InvalidInput(
+                "a note's file belongs to an older note whose path differs only in case".into(),
+            ));
+        }
+        Ok(file)
+    }
+
     /// Each `[[wikilink]]` this note's body wrote and the note it resolves to, if any.
     /// A target with no note yet is kept as text and resolves when that note appears.
     pub async fn outgoing_links(&self, note_id: i64) -> Result<Vec<OutgoingLink>> {
@@ -2080,7 +2108,7 @@ impl Engine {
 
     /// Replaces a note's body, keeping its frontmatter, and reindexes FTS and wikilink edges.
     pub async fn update_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
-        let file = self.note_path(note)?;
+        let file = self.owned_note_file(note).await?;
         let content = std::fs::read_to_string(&file)?;
         let (header, _) = notes::frontmatter_and_body(&content);
         let body = body.trim_end();
@@ -2092,9 +2120,9 @@ impl Engine {
     }
 
     /// Removes the markdown file, then the row and FTS entry; a missing file is not an error, and
-    /// a row whose path is refused loses its row alone.
+    /// a row whose path is refused, or whose file is an older note's, loses its row alone.
     pub async fn delete_note(&self, note: &NoteRecord) -> Result<()> {
-        if let Ok(file) = self.note_path(note) {
+        if let Ok(file) = self.owned_note_file(note).await {
             match std::fs::remove_file(&file) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2107,7 +2135,7 @@ impl Engine {
     /// Re-reads one note file and reindexes FTS and wikilink edges, since an outside edit may add a
     /// link.
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {
-        let file = self.note_path(note)?;
+        let file = self.owned_note_file(note).await?;
         let content = std::fs::read_to_string(&file)?;
         let (_, body) = notes::frontmatter_and_body(&content);
         notes::reindex_from_body(&self.storage, note.id, &note.title, body).await?;

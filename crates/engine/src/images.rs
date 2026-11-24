@@ -78,7 +78,17 @@ pub fn store_cover(bytes: &[u8], images_dir: &Path) -> Result<CoverFile> {
     let fname = filename_for(bytes)?;
     std::fs::create_dir_all(images_dir)?;
     let path = images_dir.join(fname);
-    if !path.exists() {
+    if let Ok(meta) = std::fs::metadata(&path) {
+        // An old file reused is made fresh, so `sweep_unused` cannot take it before a row points
+        // at it; a recent one is left alone, so storing twice writes nothing.
+        let now = std::time::SystemTime::now();
+        if meta.modified().is_ok_and(|m| m + REUSE_FRESHEN < now) {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)?
+                .set_modified(now)?;
+        }
+    } else {
         std::fs::write(&path, bytes)?;
     }
 
@@ -102,14 +112,17 @@ pub fn store_cover(bytes: &[u8], images_dir: &Path) -> Result<CoverFile> {
     })
 }
 
-/// The widest or tallest cover decoded. Print-resolution jackets from stores run to about
-/// 3,000 px on the long side; this leaves room for a scan and refuses a header that claims more.
-pub const COVER_SIDE_MAX: u32 = 8_000;
-/// At most 36 megapixels (6,000 by 6,000), whatever the sides: about 108 MB as RGB.
-pub const COVER_PIXELS_MAX: u64 = 36_000_000;
-/// What a decoder may allocate for one cover: 36 megapixels at four bytes, with room to spare,
-/// and refused for a 16-bit image of that size.
-pub const COVER_ALLOC_MAX: u64 = 256 << 20;
+/// The longest side of a cover that is decoded. What covers carry: Open Library's large size is
+/// about 500 by 800, Google Books' largest about 1,280 by 1,900, Apple Books asks for 1,400 wide,
+/// and Kindle's recommended jacket is 1,600 by 2,560; print-resolution EPUB covers reach about
+/// 3,000 by 4,500. Anything past that is refused rather than decoded.
+pub const COVER_SIDE_MAX: u32 = 4_500;
+/// At most 12 megapixels whatever the sides (3,000 by 4,000), so decoding and thumbnailing the
+/// largest cover takes a fraction of a second in a release build.
+pub const COVER_PIXELS_MAX: u64 = 12_000_000;
+/// What a decoder may allocate for one cover: 12 megapixels at four bytes with room to spare. A
+/// 16-bit image of the largest size is refused here, though its header passes.
+pub const COVER_ALLOC_MAX: u64 = 64 << 20;
 
 fn limits() -> image::Limits {
     let mut limits = image::Limits::default();
@@ -138,19 +151,46 @@ pub(crate) fn within_limits((width, height): (u32, u32)) -> bool {
         && u64::from(width) * u64::from(height) <= COVER_PIXELS_MAX
 }
 
-/// The only place a cover is decoded: refused unless its header is within the limits, and then
-/// decoded under [`limits`], so a small file claiming enormous dimensions allocates nothing large.
-/// An animated image is its first frame.
-fn decode(bytes: &[u8]) -> Option<RgbImage> {
-    if !dimensions(bytes).is_some_and(within_limits) {
-        return None;
+/// Why a cover was not decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Undecoded {
+    /// Not an image this build reads.
+    Unknown,
+    /// Its header states dimensions past the limits.
+    Oversized,
+    /// The decoder would allocate more than [`COVER_ALLOC_MAX`], or the dimensions it found
+    /// exceed the limits.
+    OverLimits,
+    /// It does not decode.
+    Corrupt,
+}
+
+/// The only place a cover is decoded. Both bounds are kept, as neither covers the other: the
+/// header check refuses a 16-megapixel 8-bit image the decoder's limits would let through, and
+/// the limits refuse what a header understates, such as a 16-bit image of an allowed size. An
+/// animated image is its first frame.
+pub(crate) fn decode_checked(bytes: &[u8]) -> std::result::Result<RgbImage, Undecoded> {
+    let size = dimensions(bytes).ok_or(Undecoded::Unknown)?;
+    if !within_limits(size) {
+        return Err(Undecoded::Oversized);
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .ok()?;
+        .map_err(|_| Undecoded::Unknown)?;
     reader.limits(limits());
-    let img = reader.decode().ok()?.to_rgb8();
-    (img.width() > 0 && img.height() > 0).then_some(img)
+    let img = reader.decode().map_err(|e| match e {
+        image::ImageError::Limits(_) => Undecoded::OverLimits,
+        _ => Undecoded::Corrupt,
+    })?;
+    let img = img.to_rgb8();
+    if img.width() == 0 || img.height() == 0 {
+        return Err(Undecoded::Corrupt);
+    }
+    Ok(img)
+}
+
+fn decode(bytes: &[u8]) -> Option<RgbImage> {
+    decode_checked(bytes).ok()
 }
 
 fn write_thumb(img: &RgbImage, cover: &Path) -> Result<Option<PathBuf>> {
@@ -212,6 +252,57 @@ pub fn accent_channels(accent: i64) -> [u8; 3] {
         ((accent >> 8) & 0xff) as u8,
         (accent & 0xff) as u8,
     ]
+}
+
+/// How old a stored cover may be before storing the same bytes again marks it fresh; well inside
+/// the hour a sweep leaves a fresh file alone.
+const REUSE_FRESHEN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether `name` is one this module gives a cover or its thumbnail: a sha256 in hex with an
+/// image extension, or a calibre copy.
+fn generated_name(name: &str) -> bool {
+    let (stem, ext) = name.split_once('.').unwrap_or((name, ""));
+    let hashed = stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit());
+    let calibre = stem.strip_prefix("calibre-").is_some_and(|rest| {
+        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    let plain_ext = !ext.is_empty() && ext.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.');
+    (hashed || calibre) && plain_ext
+}
+
+/// Removes cover files in `images_dir` that no book uses: only names this module generates,
+/// only files last written more than `settled` ago (a cover is stored before its row points at
+/// it), and never anything in `used`. Returns how many went. One directory listing; a file that
+/// cannot be read or removed is left.
+pub(crate) fn sweep_unused(
+    images_dir: &Path,
+    used: &std::collections::HashSet<String>,
+    settled: std::time::Duration,
+) -> Result<usize> {
+    let entries = match std::fs::read_dir(images_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(settled)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if used.contains(name) || !generated_name(name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() || meta.modified().map_or(true, |m| m > cutoff) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Re-measures a cover on disk. Reads the bytes (an old name is not its hash) and never renames:
@@ -451,15 +542,40 @@ mod tests {
         !crc
     }
 
-    /// A one-pixel PNG whose header claims `width` by `height`.
+    /// A one-pixel PNG whose header claims `width` by `height`, 8-bit RGB.
     fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+        png_header(width, height, None)
+    }
+
+    /// A one-pixel PNG whose header claims `width` by `height`, and, when given, a bit depth
+    /// and colour type.
+    fn png_header(width: u32, height: u32, depth_and_colour: Option<(u8, u8)>) -> Vec<u8> {
         let mut bytes = png(1, 1, 7);
         let ihdr = 8 + 4;
         bytes[ihdr + 4..ihdr + 8].copy_from_slice(&width.to_be_bytes());
         bytes[ihdr + 8..ihdr + 12].copy_from_slice(&height.to_be_bytes());
+        if let Some((depth, colour)) = depth_and_colour {
+            bytes[ihdr + 12] = depth;
+            bytes[ihdr + 13] = colour;
+        }
         let crc = crc32(&bytes[ihdr..ihdr + 4 + 13]);
         bytes[ihdr + 4 + 13..ihdr + 4 + 17].copy_from_slice(&crc.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn each_bound_refuses_what_the_other_lets_through() {
+        // Sides within, 16 megapixels: the decoder would need 48 MB, which its limits allow.
+        assert_eq!(
+            decode_checked(&png_claiming(4_000, 4_000)),
+            Err(Undecoded::Oversized)
+        );
+        // 9 megapixels, as its header allows, but 16-bit RGBA: 72 MB, past the decoder's limit.
+        assert_eq!(
+            decode_checked(&png_header(3_000, 3_000, Some((16, 6)))),
+            Err(Undecoded::OverLimits)
+        );
+        assert_eq!(decode_checked(b"not an image"), Err(Undecoded::Unknown));
     }
 
     /// A GIF of `frames` 2x2 frames, its screen then made to claim `width` by `height`.
@@ -495,13 +611,13 @@ mod tests {
                 png_claiming(COVER_SIDE_MAX + 1, 10),
                 (COVER_SIDE_MAX + 1, 10),
             ),
-            (png_claiming(7_000, 7_000), (7_000, 7_000)),
+            (png_claiming(4_000, 3_001), (4_000, 3_001)),
             (gif(u16::MAX, u16::MAX, 1), (65_535, 65_535)),
         ] {
             assert!(bytes.len() < 1_000);
             assert_eq!(dimensions(&bytes), Some(claimed));
             assert!(!within_limits(claimed));
-            assert!(decode(&bytes).is_none());
+            assert_eq!(decode_checked(&bytes), Err(Undecoded::Oversized));
             let stored = store_cover(&bytes, dir.path()).unwrap();
             assert!(stored.metrics.is_none() && stored.thumb_path.is_none());
         }

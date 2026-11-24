@@ -1214,6 +1214,44 @@ impl Storage {
         Ok(())
     }
 
+    /// Books with a cover URL and no cover file here, most recently changed first, at most
+    /// `limit`: what a sync hands back to fetch. Failed fetches are not remembered, so a URL that
+    /// cannot be fetched keeps a place in this list; the limit bounds what that costs.
+    pub(crate) async fn covers_to_fetch(&self, limit: i64) -> Result<Vec<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM books WHERE cover_url IS NOT NULL AND cover_path IS NULL
+              ORDER BY last_modified DESC, id DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    /// The file name of every cover and thumbnail a book refers to, whatever folder its stored
+    /// path names.
+    pub(crate) async fn cover_file_names(&self) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT cover_path, cover_thumb_path FROM books
+              WHERE cover_path IS NOT NULL OR cover_thumb_path IS NOT NULL",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut names = std::collections::HashSet::new();
+        for (cover, thumb) in rows {
+            let cover = cover.map(std::path::PathBuf::from);
+            let derived = cover.as_deref().map(crate::images::thumb_path_of);
+            for path in [cover, thumb.map(Into::into), derived]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    names.insert(name.to_owned());
+                }
+            }
+        }
+        Ok(names)
+    }
+
     pub async fn cover_paths(&self) -> Result<Vec<(i64, Option<String>, Option<String>)>> {
         let rows = sqlx::query(
             "SELECT id, cover_path, cover_thumb_path FROM books
