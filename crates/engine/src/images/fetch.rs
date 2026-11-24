@@ -31,7 +31,7 @@ pub enum CoverRefusal {
     NotPublic,
     #[error("a cover's address redirects too many times")]
     TooManyRedirects,
-    #[error("the cover is larger than any cover should be")]
+    #[error("the cover is larger, in bytes or pixels, than any cover should be")]
     TooLarge,
     #[error("what the cover's address returned is not an image")]
     NotAnImage,
@@ -43,9 +43,9 @@ impl From<CoverRefusal> for EngineError {
     }
 }
 
-/// Whether `ip` is an address on the public internet: not loopback, private, shared,
-/// link-local, unique-local, multicast, unspecified, broadcast, documentation, benchmarking or
-/// reserved, in IPv4 or IPv6, including an IPv4 address carried inside an IPv6 one.
+/// Whether `ip` is an address on the public internet. Deny by default: an IPv4 address outside
+/// [`REFUSED_V4`], or an IPv6 address in global unicast (`2000::/3`) outside [`REFUSED_V6`]; an
+/// IPv4 address an IPv6 one carries (mapped, NAT64, 6to4) is judged as itself.
 pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => public_v4(v4),
@@ -53,44 +53,71 @@ pub(crate) fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// Every IPv4 range that is not the public internet, as (first address, prefix length): this
+/// network, private, shared (CGNAT), loopback, link-local, private, IETF protocol assignments,
+/// TEST-NET-1, the old 6to4 relay anycast, private, benchmarking, TEST-NET-2, TEST-NET-3,
+/// multicast, and reserved (which holds the limited broadcast address).
+pub(crate) const REFUSED_V4: &[([u8; 4], u8)] = &[
+    ([0, 0, 0, 0], 8),
+    ([10, 0, 0, 0], 8),
+    ([100, 64, 0, 0], 10),
+    ([127, 0, 0, 0], 8),
+    ([169, 254, 0, 0], 16),
+    ([172, 16, 0, 0], 12),
+    ([192, 0, 0, 0], 24),
+    ([192, 0, 2, 0], 24),
+    ([192, 88, 99, 0], 24),
+    ([192, 168, 0, 0], 16),
+    ([198, 18, 0, 0], 15),
+    ([198, 51, 100, 0], 24),
+    ([203, 0, 113, 0], 24),
+    ([224, 0, 0, 0], 4),
+    ([240, 0, 0, 0], 4),
+];
+
+/// The special-purpose ranges inside global unicast that are refused: the IETF protocol
+/// assignments (holding Teredo, benchmarking and ORCHID), documentation, the newer
+/// documentation prefix, and segment-routing identifiers. `2002::/16` (6to4) is judged by the
+/// IPv4 address it carries instead.
+pub(crate) const REFUSED_V6: &[([u16; 2], u8)] = &[
+    ([0x2001, 0x0000], 23),
+    ([0x2001, 0x0db8], 32),
+    ([0x3fff, 0x0000], 20),
+    ([0x5f00, 0x0000], 16),
+];
+
+fn in_v4(ip: Ipv4Addr, (base, len): ([u8; 4], u8)) -> bool {
+    let mask = u32::MAX.checked_shl(32 - u32::from(len)).unwrap_or(0);
+    u32::from(ip) & mask == u32::from(Ipv4Addr::from(base)) & mask
+}
+
 fn public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    !(ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        || ip.is_multicast()
-        || ip.is_documentation()
-        || a == 0
-        || a >= 240
-        || (a == 100 && (64..128).contains(&b))
-        || (a == 192 && b == 0 && c == 0)
-        || (a == 198 && (18..20).contains(&b)))
+    !REFUSED_V4.iter().any(|&range| in_v4(ip, range))
 }
 
 fn public_v6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
-    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+    let embedded = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    // IPv4-mapped, `::ffff:0:0/96`.
+    if s[..5] == [0; 5] && s[5] == 0xffff {
+        return public_v4(embedded(s[6], s[7]));
+    }
+    // NAT64's well-known prefix, `64:ff9b::/96`; its local-use `64:ff9b:1::/48` is refused below.
+    if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return public_v4(embedded(s[6], s[7]));
+    }
+    if s[0] & 0xe000 != 0x2000 {
         return false;
     }
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return public_v4(v4);
+    if s[0] == 0x2002 {
+        return public_v4(embedded(s[1], s[2]));
     }
-    let embedded = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
-    match s[0] {
-        // IPv4-compatible (::a.b.c.d), long deprecated: judged by the address it carries.
-        0 if s[1..6] == [0; 5] => public_v4(embedded(s[6], s[7])),
-        // NAT64, which reaches the IPv4 address it carries.
-        0x64 if s[1] == 0xff9b && s[2..6] == [0; 4] => public_v4(embedded(s[6], s[7])),
-        // 6to4, which carries an IPv4 address in its second and third segments.
-        0x2002 => public_v4(embedded(s[1], s[2])),
-        // Teredo and documentation.
-        0x2001 if s[1] == 0 || s[1] == 0x0db8 => false,
-        // Unique-local, link-local and the old site-local.
-        x if (x & 0xfe00) == 0xfc00 || (x & 0xffc0) == 0xfe80 || (x & 0xffc0) == 0xfec0 => false,
-        _ => true,
-    }
+    let top = (u32::from(s[0]) << 16) | u32::from(s[1]);
+    !REFUSED_V6.iter().any(|&(base, len)| {
+        let base = (u32::from(base[0]) << 16) | u32::from(base[1]);
+        let mask = u32::MAX << (32 - u32::from(len));
+        top & mask == base & mask
+    })
 }
 
 type Lookup = dyn Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync;
@@ -194,7 +221,10 @@ impl CoverClient {
     /// Fetches the cover at `url` and stores it in `images_dir`.
     pub(crate) async fn fetch(&self, url: &str, images_dir: &Path) -> Result<CoverFile> {
         let bytes = self.bytes(url).await?;
-        store_cover(&bytes, images_dir)
+        let images_dir = images_dir.to_owned();
+        tokio::task::spawn_blocking(move || store_cover(&bytes, &images_dir))
+            .await
+            .map_err(|e| EngineError::Other(format!("storing a cover: {e}")))?
     }
 
     async fn bytes(&self, url: &str) -> Result<Vec<u8>> {
@@ -224,7 +254,11 @@ impl CoverClient {
         if image::guess_format(&bytes).is_err() {
             return Err(CoverRefusal::NotAnImage.into());
         }
-        Ok(bytes)
+        match super::dimensions(&bytes) {
+            Some(size) if super::within_limits(size) => Ok(bytes),
+            Some(_) => Err(CoverRefusal::TooLarge.into()),
+            None => Err(CoverRefusal::NotAnImage.into()),
+        }
     }
 }
 
@@ -260,55 +294,144 @@ mod tests {
         IpAddr::from(octets)
     }
 
-    /// Private, shared and reserved IPv4 addresses, built from octets.
+    /// The first, a middle and the last address of every refused IPv4 range.
     fn inward_v4() -> Vec<Ipv4Addr> {
+        let mut out = Vec::new();
+        for &(base, len) in REFUSED_V4 {
+            let first = u32::from(Ipv4Addr::from(base));
+            let size = 1u64 << (32 - u32::from(len));
+            for offset in [0, size / 2, size - 1] {
+                out.push(Ipv4Addr::from(first + offset as u32));
+            }
+        }
+        out
+    }
+
+    fn public_v4s() -> Vec<Ipv4Addr> {
         [
-            [127, 0, 0, 1],
-            [10, 0, 0, 1],
-            [172, 16, 4, 1],
-            [192, 168, 1, 1],
-            [169, 254, 169, 254],
-            [100, 64, 0, 1],
-            [0, 0, 0, 0],
-            [255, 255, 255, 255],
-            [224, 0, 0, 1],
-            [192, 0, 2, 7],
-            [198, 18, 0, 1],
-            [240, 0, 0, 1],
+            [1, 1, 1, 1],
+            [8, 8, 4, 4],
+            [93, 184, 216, 34],
+            [151, 101, 1, 69],
+            [100, 63, 255, 255],
+            [100, 128, 0, 0],
+            [172, 15, 255, 255],
+            [172, 32, 0, 0],
+            [192, 0, 1, 0],
+            [198, 20, 0, 0],
+            [223, 255, 255, 255],
         ]
         .map(Ipv4Addr::from)
         .to_vec()
     }
 
+    fn nat64(v4: Ipv4Addr) -> Ipv6Addr {
+        let [a, b, c, d] = v4.octets();
+        Ipv6Addr::new(
+            0x64,
+            0xff9b,
+            0,
+            0,
+            0,
+            0,
+            u16::from_be_bytes([a, b]),
+            u16::from_be_bytes([c, d]),
+        )
+    }
+
+    fn six_to_four(v4: Ipv4Addr) -> Ipv6Addr {
+        let [a, b, c, d] = v4.octets();
+        Ipv6Addr::new(
+            0x2002,
+            u16::from_be_bytes([a, b]),
+            u16::from_be_bytes([c, d]),
+            0,
+            0,
+            0,
+            0,
+            1,
+        )
+    }
+
+    /// A one-frame GIF whose screen claims `width` by `height`.
+    fn gif_claiming(width: u16, height: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::codecs::gif::GifEncoder::new(&mut out)
+            .encode_frame(image::Frame::new(image::RgbaImage::new(2, 2)))
+            .unwrap();
+        out[6..8].copy_from_slice(&width.to_le_bytes());
+        out[8..10].copy_from_slice(&height.to_le_bytes());
+        out
+    }
+
     #[test]
     fn only_a_public_address_is_one_a_cover_may_come_from() {
         for v4 in inward_v4() {
-            assert!(!is_public(IpAddr::V4(v4)), "{v4}");
-            assert!(!is_public(IpAddr::V6(v4.to_ipv6_mapped())), "{v4} mapped");
+            for ip in [
+                IpAddr::V4(v4),
+                IpAddr::V6(v4.to_ipv6_mapped()),
+                IpAddr::V6(v4.to_ipv6_compatible()),
+                IpAddr::V6(nat64(v4)),
+                IpAddr::V6(six_to_four(v4)),
+            ] {
+                assert!(!is_public(ip), "{ip} ({v4})");
+            }
+        }
+        for v4 in public_v4s() {
+            for ip in [
+                IpAddr::V4(v4),
+                IpAddr::V6(v4.to_ipv6_mapped()),
+                IpAddr::V6(nat64(v4)),
+                IpAddr::V6(six_to_four(v4)),
+            ] {
+                assert!(is_public(ip), "{ip} ({v4})");
+            }
             assert!(
                 !is_public(IpAddr::V6(v4.to_ipv6_compatible())),
                 "{v4} compatible"
             );
         }
         for refused in [
-            "::1",
             "::",
-            "64:ff9b::a00:1",
-            "2002:7f00:1::",
+            "::1",
+            "::ffff:0:a00:1",
+            "64:ff9b:1::1",
+            "100::1",
+            "100::ffff:ffff:ffff:ffff",
             "fc00::1",
             "fd12:3456::1",
             "fe80::1",
+            "febf:ffff::1",
             "fec0::1",
             "ff02::1",
-            "2001:db8::1",
+            "ff0e::1",
             "2001::1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:20::1",
+            "2001:1ff::1",
+            "2001:db8::1",
+            "2001:db8:ffff::1",
+            "3fff::1",
+            "3fff:fff::1",
+            "5f00::1",
+            "4000::1",
+            "1fff:ffff::1",
+            "c000::1",
         ] {
             assert!(!is_public(IpAddr::from_str(refused).unwrap()), "{refused}");
         }
-        let public = Ipv4Addr::from([93, 184, 216, 34]);
-        assert!(is_public(IpAddr::V4(public)));
-        assert!(is_public(IpAddr::V6(public.to_ipv6_mapped())));
-        assert!(is_public(IpAddr::from_str("2606:4700::6810:84e5").unwrap()));
+        for public in [
+            "2606:4700::6810:84e5",
+            "2a00:1450:4001:830::200e",
+            "2001:4860:4860::8888",
+            "2001:200::1",
+            "2620:fe::fe",
+            "3fff:1000::1",
+        ] {
+            assert!(is_public(IpAddr::from_str(public).unwrap()), "{public}");
+        }
     }
 
     #[test]
@@ -402,6 +525,10 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x89; COVER_LIMIT + 1]))
             .mount(&server)
             .await;
+        Mock::given(path("/bomb.gif"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(gif_claiming(60_000, 60_000)))
+            .mount(&server)
+            .await;
         Mock::given(path("/page.html"))
             .respond_with(ResponseTemplate::new(200).set_body_string("<html>not a cover</html>"))
             .mount(&server)
@@ -427,6 +554,10 @@ mod tests {
             (
                 on(&server, "public.test", "/round"),
                 CoverRefusal::TooManyRedirects,
+            ),
+            (
+                on(&server, "public.test", "/bomb.gif"),
+                CoverRefusal::TooLarge,
             ),
             (
                 on(&server, "public.test", "/huge.png"),

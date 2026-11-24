@@ -1080,7 +1080,11 @@ impl Engine {
         let mut measured = 0;
         let mut unreadable = 0;
         for (id, path) in self.storage.unmeasured_covers().await? {
-            match images::measure_stored(Path::new(&path)) {
+            let measured_now =
+                tokio::task::spawn_blocking(move || images::measure_stored(Path::new(&path)))
+                    .await
+                    .map_err(|e| EngineError::Other(format!("measuring a cover: {e}")))?;
+            match measured_now {
                 Ok(cover) if cover.metrics.is_some() => {
                     self.storage.set_cover(id, &cover, None).await?;
                     measured += 1;
