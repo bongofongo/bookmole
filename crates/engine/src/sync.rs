@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use fongo_sync_client::{Apply, Error as ClientError, merge_applied};
+use fongo_sync_client::{Apply, Error as ClientError, Pace, merge_applied};
 use fongo_sync_sqlite::core::{Change, Strategy};
 use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
@@ -219,6 +219,10 @@ pub(crate) async fn installed(conn: &mut SqliteConnection) -> Result<bool> {
     Ok(found.is_some())
 }
 
+/// Half the kernel's default: its time per apply follows rows more than changes, and 4,000 changes
+/// of note bodies held the write lock for about a second in a library of 50,000 books.
+const PACE_APPLY: usize = 2_000;
+
 /// How many times one settle gives up rows that keep held rows out and tries those again. What
 /// still waits after that is reported held and tried by the next settle.
 const SETTLE_ROUNDS: usize = 4;
@@ -235,6 +239,8 @@ const SETTLE_ROUNDS: usize = 4;
 pub(crate) struct Receiver {
     /// The vault, to check received notes' file paths against; without one, only their text is.
     pub(crate) vault: Option<std::path::PathBuf>,
+    /// [`Pace::held`] for the next sync: how long the one just before it held the write lock.
+    pub(crate) held: std::time::Duration,
     #[cfg(test)]
     pub(crate) faults: Faults,
 }
@@ -261,11 +267,24 @@ pub(crate) struct Faults {
     pub(crate) fail_caught_up: bool,
     /// Where to record, for each apply, the time in the kernel's apply and in the repair.
     pub(crate) timings: Option<std::sync::Arc<std::sync::Mutex<Vec<Timing>>>>,
+    /// Where to record each time the client calls [`Apply::between`].
+    pub(crate) gaps: Option<std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>>,
+    /// Where to record the [`Pace::held`] each sync starts from.
+    pub(crate) paces: Option<std::sync::Arc<std::sync::Mutex<Vec<std::time::Duration>>>>,
+    /// Called inside the first apply that is given changes, with its transaction open.
+    pub(crate) in_first_apply: Option<Box<dyn FnOnce() + Send>>,
 }
 
-/// The time one apply spent in the kernel (with any give-way rounds) and in the repair.
+/// One apply: when it ran, what it was given, and the time it spent in the kernel (with any
+/// give-way rounds) and in the repair.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timing {
+    #[cfg(test)]
+    pub(crate) started: std::time::Instant,
+    #[cfg(test)]
+    pub(crate) ended: std::time::Instant,
+    #[cfg(test)]
+    pub(crate) changes: usize,
     pub(crate) kernel: std::time::Duration,
     pub(crate) repair: std::time::Duration,
     pub(crate) touched: usize,
@@ -291,6 +310,12 @@ impl Apply for Receiver {
             timings.lock().unwrap().push(timing);
         }
         #[cfg(test)]
+        if !changes.is_empty()
+            && let Some(first) = self.faults.in_first_apply.take()
+        {
+            first();
+        }
+        #[cfg(test)]
         self.suffer(conn, !changes.is_empty()).await?;
         Ok(applied)
     }
@@ -307,6 +332,29 @@ impl Apply for Receiver {
         apply_and_repair(conn, replica, &[], true, self.vault.as_deref())
             .await
             .map(|(applied, _)| Some(applied))
+    }
+
+    #[cfg(test)]
+    async fn between(
+        &mut self,
+        _conn: &mut SqliteConnection,
+    ) -> std::result::Result<(), ClientError> {
+        if let Some(gaps) = &self.faults.gaps {
+            gaps.lock().unwrap().push(std::time::Instant::now());
+        }
+        Ok(())
+    }
+
+    fn pace(&self) -> Pace {
+        #[cfg(test)]
+        if let Some(paces) = &self.faults.paces {
+            paces.lock().unwrap().push(self.held);
+        }
+        Pace {
+            apply: PACE_APPLY,
+            held: self.held,
+            ..Pace::default()
+        }
     }
 }
 
@@ -374,9 +422,16 @@ async fn apply_and_repair(
     synced::repair(conn, &touched, vault)
         .await
         .map_err(application)?;
+    let ended = std::time::Instant::now();
     let timing = Timing {
+        #[cfg(test)]
+        started,
+        #[cfg(test)]
+        ended,
+        #[cfg(test)]
+        changes: changes.len(),
         kernel,
-        repair: started.elapsed() - kernel,
+        repair: ended - started - kernel,
         touched: touched.len(),
     };
     Ok((applied, timing))

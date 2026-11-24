@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fongo_sync_client::{Error as ClientError, SyncReport, Transport, merge_applied};
+use fongo_sync_client::{Apply, Error as ClientError, SyncReport, Transport, merge_applied};
 use fongo_sync_sqlite::{Applied, Conflict, Replica, Resume};
 use sqlx::sqlite::SqliteConnection;
 use sqlx::{ConnectOptions, Connection};
@@ -452,6 +452,7 @@ impl Engine {
             match round {
                 Ok(mut report) => {
                     let more = report.more;
+                    receiver.held = report.held;
                     conflicts.push(std::mem::take(&mut report.applied.conflicts));
                     add(&mut outcome, report);
                     busy = 0;
@@ -463,7 +464,16 @@ impl Engine {
                     return Err(SyncError::Interrupted.into());
                 }
                 Err(e) if busy < BUSY_RETRIES && is_busy(&e) => {
-                    tokio::time::sleep(BUSY_BACKOFF * 2u32.pow(busy)).await;
+                    let backoff = BUSY_BACKOFF * 2u32.pow(busy);
+                    tokio::time::sleep(backoff).await;
+                    // How long the failed round held the lock is unknown, so a backoff shorter
+                    // than the pace's pause is followed by that pause.
+                    let pace = receiver.pace();
+                    receiver.held = if backoff >= pace.pause {
+                        Duration::ZERO
+                    } else {
+                        pace.hold
+                    };
                     busy += 1;
                     #[cfg(test)]
                     {

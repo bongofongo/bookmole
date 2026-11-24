@@ -1382,87 +1382,288 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
     }
 }
 
-/// How a large first sync shares the database with the reader's writes: a device joins a
-/// library of `n` books and syncs while another task writes through the engine's pool every
-/// 20 ms. A measurement, not a check.
+/// A pull larger than one apply is committed in several transactions, each of whole envelopes
+/// and no more changes than the pace allows; a write the reader makes while one is open goes
+/// through; and when the log holds more than one call reads, the next call starts from how long
+/// the one before held the write lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_pull_takes_turns_with_the_readers_writes() {
+    use std::sync::{Arc, Mutex};
+
+    use fongo_sync_client::Apply;
+
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    sync(&a, &server).await;
+    sqlx::query("INSERT INTO dismissed_shelves (source, tag, dismissed_at) VALUES ('goodreads', 'to-read', 1)")
+        .execute(a.engine.storage().pool())
+        .await
+        .unwrap();
+    sync(&a, &server).await;
+    // One call reads at most 1,000 pages of the test server's two envelopes.
+    server.repeat_last(2_100);
+    join(&b, &server, &code).await;
+
+    let timings = Arc::new(Mutex::new(Vec::new()));
+    let paces = Arc::new(Mutex::new(Vec::new()));
+    let (opened, wait) = tokio::sync::oneshot::channel();
+    let mut receiver = Receiver::default();
+    receiver.faults.timings = Some(timings.clone());
+    receiver.faults.paces = Some(paces.clone());
+    receiver.faults.in_first_apply = Some(Box::new(move || opened.send(()).unwrap()));
+    let write = async {
+        wait.await.unwrap();
+        b.engine.create_list("Written while syncing", None).await
+    };
+    let (synced, written) = tokio::join!(sync_with(&b, &server, receiver), write);
+    synced.unwrap();
+    written.unwrap();
+    assert_eq!(
+        rows(&b, "SELECT name FROM book_lists").await,
+        ["Written while syncing"]
+    );
+
+    let limit = Receiver::default().pace().apply;
+    let sizes: Vec<usize> = timings
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|t| t.changes)
+        .filter(|&n| n > 0)
+        .collect();
+    assert!(sizes.len() >= 3, "{sizes:?}");
+    assert!(sizes.iter().all(|&n| n <= limit), "{sizes:?}");
+    let paces = paces.lock().unwrap().clone();
+    assert_eq!(paces.len(), 2, "{paces:?}");
+    assert_eq!(paces[0], std::time::Duration::ZERO);
+    assert!(paces[1] > std::time::Duration::ZERO, "{paces:?}");
+}
+
+/// How a large first sync shares the database with everything else that uses it: a device joins
+/// a library of `n` books, each with a highlight and a note, and syncs while the reader's engine
+/// writes and reads through its API every 20 ms and a second engine on the same data directory
+/// writes every 20 ms. A measurement, not a check. In a release build:
+/// `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000 BOOKMOLE_SYNC_BENCH_RUNS=5 cargo test -p bookmole
+/// --release --lib -- --ignored --nocapture a_large_first_sync`.
 ///
-/// What it found (release build, a loaded machine): at 10,000 books the joining sync took 15 s
-/// over 3 applies, the longest 9.1 s in the kernel and 0.48 s in the repair, and the writer's
-/// worst wait was 5.4 s with 2 of 10 writes failing "database is locked"; at 50,000, 23 s over 9
-/// applies, the longest 2.7 s, worst wait 5.4 s, 3 of 11 failed. A second run with 2.5 s applies
-/// at 10,000 books still kept the writer waiting 4.2 s: consecutive applies and appends retake
-/// the write lock before the pool's busy handler gets in, so the wait spans the whole sync, not
-/// one apply. A fix has to open gaps between the sync's transactions that a waiting writer can
-/// take (or move to WAL), not only shrink each apply. In a release build:
-/// `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000 cargo test -p bookmole --release --lib --
-/// --ignored --nocapture a_large_first_sync`.
+/// What it found on a laptop, in rollback-journal mode, as ranges over runs (five, except two
+/// before at 50,000). Before: one transaction per 50,000 changes, and each link in a note's body
+/// resolved by reading every note. After: transactions of 2,000 changes with the client's pauses
+/// between them, and the titles read once per apply.
+///
+/// | | 10,000 before | 10,000 after | 50,000 before | 50,000 after |
+/// |---|---|---|---|---|
+/// | sync | 20 s, 6 applies | 33-34 s, 131 | 135 s, 27 | 219-226 s, 651 |
+/// | longest hold | 6.0-6.1 s | 0.40-0.42 s | 26.9 s | 0.63-0.71 s |
+/// | repair's share, longest | 17%, 1.65 s | 10%, 0.08 s | 33%, 19.6 s | 10%, 0.19 s |
+/// | writer: worst, failed | 5.4 s, 1-3 | 0.93-1.61 s, 0 | 5.5 s, 18-20 | 1.24-1.81 s, 0 |
+/// | reader | 3.0 s, 0 | 0.18-0.22 s, 0 | 5.5 s, 7 | 0.40-0.50 s, 0 |
+/// | second engine | 5.4-5.5 s, 1-3 | 0.63-1.05 s, 0 | 5.5 s, 17-20 | 1.26-1.48 s, 0 |
+///
+/// Nothing fails any more. A writer still waits up to about a second at 10,000 books (1.6 s once
+/// in five runs) and up to 1.8 s at 50,000: the client holds the lock for 250 ms before it
+/// pauses, plus the apply that crosses that mark, and SQLite's busy handler, once it has waited
+/// 0.3 s, tries only every 100 ms. Applies of 1,000 changes did not shorten that wait; the kernel's time per apply,
+/// which grows with the library and with rows rather than changes, sets the longest hold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "a measurement; run in a release build"]
-async fn a_large_first_sync_while_the_reader_writes() {
+#[expect(clippy::too_many_lines, reason = "one measurement, read top to bottom")]
+async fn a_large_first_sync_while_the_reader_works() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    let sizes: Vec<i64> = std::env::var("BOOKMOLE_SYNC_BENCH_BOOKS")
-        .ok()
-        .map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect())
-        .unwrap_or_else(|| vec![10_000]);
-    for n in sizes {
-        let server = TestServer::default();
-        let (a, b) = (device().await, device().await);
-        let code = create(&a, &server).await;
-        sqlx::query(
-            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
-             INSERT INTO books (title, authors, cover_url, created_at, last_modified)
-             SELECT 'Book ' || n, '[\"George Eliot\"]',
-                    'https://covers.example.test/' || n || '.jpg', 1, 1
-               FROM i",
-        )
-        .bind(n)
-        .execute(a.engine.storage().pool())
-        .await
-        .unwrap();
-        let started = Instant::now();
-        sync(&a, &server).await;
-        let sent = started.elapsed();
-        join(&b, &server, &code).await;
+    use crate::{BookQuery, BookSort};
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let storage = b.engine.storage().clone();
-        let writer = {
-            let stop = stop.clone();
-            tokio::spawn(async move {
-                let (mut worst, mut failed, mut writes) = (Duration::ZERO, 0, 0);
-                while !stop.load(Ordering::Relaxed) {
-                    let started = Instant::now();
-                    let book = Book {
-                        title: Some(format!("Written while syncing {writes}")),
-                        ..Default::default()
-                    };
-                    if storage.upsert_book(&book, None).await.is_err() {
-                        failed += 1;
-                    }
-                    worst = worst.max(started.elapsed());
-                    writes += 1;
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+    /// Calls `op` every 20 ms until `stop`; the longest call, the failures and the calls made.
+    fn party<F, Fut>(stop: Arc<AtomicBool>, mut op: F) -> tokio::task::JoinHandle<Party>
+    where
+        F: FnMut(usize) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = crate::Result<()>> + Send,
+    {
+        tokio::spawn(async move {
+            let mut party = Party::default();
+            while !stop.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                if let Err(e) = op(party.calls).await {
+                    party.failed += 1;
+                    party.error.get_or_insert(e.to_string());
                 }
-                (worst, failed, writes)
-            })
-        };
-        let timings = Arc::new(Mutex::new(Vec::new()));
-        let mut receiver = Receiver::default();
-        receiver.faults.timings = Some(timings.clone());
-        let started = Instant::now();
-        sync_with(&b, &server, receiver).await.unwrap();
-        let synced = started.elapsed();
-        stop.store(true, Ordering::Relaxed);
-        let (worst, failed, writes) = writer.await.unwrap();
-        let timings = timings.lock().unwrap().clone();
-        let longest = timings.iter().max_by_key(|t| t.kernel + t.repair);
-        println!(
-            "{n} books: sent in {sent:?}; joined device synced in {synced:?} over {} applies; \
-             longest apply {longest:?}; {writes} writes, worst wait {worst:?}, {failed} failed",
-            timings.len()
-        );
+                party.worst = party.worst.max(started.elapsed());
+                party.calls += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            party
+        })
+    }
+    #[derive(Debug, Default)]
+    struct Party {
+        worst: Duration,
+        failed: usize,
+        calls: usize,
+        error: Option<String>,
+    }
+
+    let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+    let sizes: Vec<i64> = env("BOOKMOLE_SYNC_BENCH_BOOKS", "10000")
+        .split(',')
+        .filter_map(|n| n.trim().parse().ok())
+        .collect();
+    let runs: usize = env("BOOKMOLE_SYNC_BENCH_RUNS", "1").parse().unwrap();
+    for n in sizes {
+        for run in 0..runs {
+            let server = TestServer::default();
+            let a = device().await;
+            let code = create(&a, &server).await;
+            for sql in [
+                "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
+                 INSERT INTO books (title, authors, cover_url, created_at, last_modified)
+                 SELECT 'Book ' || n, '[\"George Eliot\"]',
+                        'https://covers.example.test/' || n || '.jpg', 1, 1
+                   FROM i",
+                "INSERT INTO highlights (book_id, text, chapter, page, source, identity_hash,
+                                         created_at)
+                 SELECT id, 'Who can quit young lives after being long in company with them? '
+                            || id, 'Finale', 838, 'koreader', 'bench-' || id, 1
+                   FROM books",
+                // One path in ten is not ASCII, as accented titles make them.
+                "INSERT INTO notes (book_id, file_path, title, kind, created_at, last_modified)
+                 SELECT id, CASE WHEN id % 10 = 0 THEN 'notes/Études ' ELSE 'notes/Book ' END
+                            || id || '.md', 'Book ' || id, 'note', 1, 1
+                   FROM books",
+                "INSERT INTO note_bodies (note_id, body)
+                 SELECT id, 'Miss Brooke had that kind of beauty which seems to be thrown into
+                             relief by poor dress. See [[Book ' || (id + 1) || ']].'
+                   FROM notes",
+            ] {
+                sqlx::query(sql)
+                    .bind(n)
+                    .execute(a.engine.storage().pool())
+                    .await
+                    .unwrap();
+            }
+            let started = Instant::now();
+            sync(&a, &server).await;
+            let sent = started.elapsed();
+            drop(a);
+
+            let dir = tempfile::tempdir().unwrap();
+            let engine = Arc::new(
+                Engine::open(EngineConfig::rooted_at(dir.path()))
+                    .await
+                    .unwrap(),
+            );
+            engine
+                .join_sync_library_via(origin(), code.as_str(), "Reading chair", &server)
+                .await
+                .unwrap();
+            let beside = Arc::new(
+                Engine::open(EngineConfig::rooted_at(dir.path()))
+                    .await
+                    .unwrap(),
+            );
+            let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(engine.storage().pool())
+                .await
+                .unwrap();
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let writer = party(stop.clone(), {
+                let engine = engine.clone();
+                move |i| {
+                    let engine = engine.clone();
+                    async move {
+                        let name = format!("Written while syncing {i}");
+                        engine.create_list(&name, None).await.map(|_| ())
+                    }
+                }
+            });
+            let reader = party(stop.clone(), {
+                let engine = engine.clone();
+                move |_| {
+                    let engine = engine.clone();
+                    async move {
+                        let page = BookQuery::new(50, BookSort::Title);
+                        engine.list_books(&page).await.map(|_| ())
+                    }
+                }
+            });
+            let other = party(stop.clone(), {
+                let beside = beside.clone();
+                move |i| {
+                    let beside = beside.clone();
+                    async move {
+                        let name = format!("Written beside {i}");
+                        beside.create_list(&name, None).await.map(|_| ())
+                    }
+                }
+            });
+
+            let timings = Arc::new(Mutex::new(Vec::new()));
+            let gaps = Arc::new(Mutex::new(Vec::new()));
+            let mut receiver = Receiver::default();
+            receiver.faults.timings = Some(timings.clone());
+            receiver.faults.gaps = Some(gaps.clone());
+            let started = Instant::now();
+            engine
+                .sync_now_with(|_| Ok(server.clone()), receiver)
+                .await
+                .unwrap();
+            let synced = started.elapsed();
+            stop.store(true, Ordering::Relaxed);
+            let parties = [
+                ("writer", writer.await.unwrap()),
+                ("reader", reader.await.unwrap()),
+                ("other engine", other.await.unwrap()),
+            ];
+
+            // A transaction runs from its apply to the next gap the client leaves, less the
+            // client's pause when it took one.
+            let pause = Duration::from_millis(150);
+            let timings = timings.lock().unwrap().clone();
+            let gaps = gaps.lock().unwrap().clone();
+            let holds: Vec<Duration> = timings
+                .iter()
+                .map(|t| {
+                    let commit = gaps
+                        .iter()
+                        .find(|&&g| g >= t.ended)
+                        .map_or(Duration::ZERO, |&g| g - t.ended);
+                    let commit = commit.checked_sub(pause).unwrap_or(commit);
+                    t.ended - t.started + commit
+                })
+                .collect();
+            let longest = holds.iter().max().copied().unwrap_or_default();
+            let held: Duration = holds.iter().sum();
+            let kernel: Duration = timings.iter().map(|t| t.kernel).sum();
+            let repair: Duration = timings.iter().map(|t| t.repair).sum();
+            let worst_repair = timings.iter().map(|t| t.repair).max().unwrap_or_default();
+            let share = |d: Duration| 100.0 * d.as_secs_f64() / held.as_secs_f64().max(1e-9);
+            let mut line = format!(
+                "{n} books, run {run}, {journal}: sent in {:.1}s; synced in {:.1}s over {} \
+                 applies; longest hold {} ms; kernel {:.0}%, repair {:.0}% of the holds \
+                 (longest repair {} ms)",
+                sent.as_secs_f64(),
+                synced.as_secs_f64(),
+                timings.len(),
+                longest.as_millis(),
+                share(kernel),
+                share(repair),
+                worst_repair.as_millis(),
+            );
+            for (name, p) in &parties {
+                line += &format!(
+                    "; {name} worst {} ms, {} of {} failed",
+                    p.worst.as_millis(),
+                    p.failed,
+                    p.calls
+                );
+                if let Some(e) = &p.error {
+                    line += &format!(" ({e})");
+                }
+            }
+            println!("{line}");
+        }
     }
 }
