@@ -379,6 +379,13 @@ impl VaultWatcher {
         let Some(note) = self.storage.note_by_path(&rel).await? else {
             return Ok(Decision::Settled(None));
         };
+        if self
+            .storage
+            .note_is_case_twin(note.id, &note.file_path)
+            .await?
+        {
+            return Ok(Decision::Settled(None));
+        }
 
         let body = match settled_read(path)? {
             Settled::Gone => {
@@ -885,6 +892,48 @@ mod vault_tests {
                 .map(|n| n.id)
                 .collect()
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_note_whose_file_is_reached_through_a_link_out_of_the_vault_is_never_read() {
+        let v = Vault::new().await;
+        let outside = v._dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("x.md"), "a sentence from outside the vault").unwrap();
+        std::os::unix::fs::symlink(&outside, v.root.join("away")).unwrap();
+        v.storage
+            .insert_note(
+                crate::storage::NewNoteMeta {
+                    book_id: None,
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: "away/x.md",
+                    title: "Prelude",
+                    kind: "note",
+                },
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let (tx, mut watcher) = v.watcher();
+        tx.send(VaultStir(v.root.join("away/x.md"))).await.unwrap();
+        assert!(
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
+            "the watcher read a file outside the vault"
+        );
+        assert!(v.finds("outside").await.is_empty());
+        let bodies: Vec<String> = sqlx::query_scalar("SELECT body FROM note_bodies")
+            .fetch_all(v.storage.pool())
+            .await
+            .unwrap();
+        assert!(bodies.iter().all(|b| !b.contains("outside")), "{bodies:?}");
     }
 
     #[tokio::test]

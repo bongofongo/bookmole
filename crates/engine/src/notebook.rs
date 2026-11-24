@@ -430,7 +430,7 @@ impl Engine {
     }
 
     async fn write_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
-        let file = self.note_path(note)?;
+        let file = self.owned_note_file(note).await?;
         let content = std::fs::read_to_string(&file)?;
         let (header, _) = notes::frontmatter_and_body(&content);
         let body = body.trim_end();

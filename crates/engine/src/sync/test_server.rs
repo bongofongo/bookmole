@@ -27,6 +27,10 @@ struct State {
     requests: usize,
     /// Reads see the log only this far, as from a replica of the server that lags.
     horizon: Option<usize>,
+    /// The request with this number, counted from 1, never gets an answer.
+    hang_at: Option<usize>,
+    /// Every request's endpoint, in the order they arrived.
+    endpoints: Vec<&'static str>,
     in_flight: usize,
     most_in_flight: usize,
 }
@@ -53,6 +57,16 @@ impl TestServer {
         self.with(|s| s.libraries.values().map(|l| l.log.len()).sum())
     }
 
+    /// The `n`-th request from now on, counted from 1, is never answered.
+    pub(crate) fn hang_at(&self, n: Option<usize>) {
+        self.with(|s| s.hang_at = n.map(|n| s.requests + n));
+    }
+
+    /// The endpoint of every request so far, in order.
+    pub(crate) fn endpoints(&self) -> Vec<&'static str> {
+        self.with(|s| s.endpoints.clone())
+    }
+
     /// Reads see only the first `horizon` envelopes of a log, or all of it.
     pub(crate) fn lag_reads(&self, horizon: Option<usize>) {
         self.with(|s| s.horizon = horizon);
@@ -74,9 +88,28 @@ impl Transport for TestServer {
         let response = self.with(|s| {
             s.in_flight -= 1;
             s.requests += 1;
-            s.handle(&request).unwrap_or_else(refusal)
+            s.endpoints.push(endpoint(&request));
+            (s.hang_at != Some(s.requests)).then(|| s.handle(&request).unwrap_or_else(refusal))
         });
-        Ok(response)
+        match response {
+            Some(response) => Ok(response),
+            None => std::future::pending().await,
+        }
+    }
+}
+
+fn endpoint(request: &Request) -> &'static str {
+    match (
+        Route::parse(&request.target).map(|(r, _)| r),
+        request.method,
+    ) {
+        (Some(Route::Capabilities), _) => "capabilities",
+        (Some(Route::Libraries), _) => "create",
+        (Some(Route::Devices(_)), Method::Get) => "devices",
+        (Some(Route::Devices(_)), Method::Post) => "add device",
+        (Some(Route::Batches(_)), Method::Get) => "read",
+        (Some(Route::Batches(_)), Method::Post) => "append",
+        _ => "other",
     }
 }
 

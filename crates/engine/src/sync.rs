@@ -16,9 +16,7 @@ use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
-#[cfg(test)]
-use crate::storage::Storage;
-use crate::storage::{clashes, synced};
+use crate::storage::{Storage, clashes, synced};
 
 #[expect(clippy::too_many_lines)]
 pub(crate) fn registry() -> Result<Registry> {
@@ -228,12 +226,11 @@ const SETTLE_ROUNDS: usize = 4;
 /// Applies what a sync receives and, once a pull has read the whole log, settles clashes: the
 /// engine's side of the kernel client's [`Apply`].
 ///
-/// Everything it does in the database happens in the transaction the client hands it. What has
-/// to wait for that transaction to commit (deleting cover files) or happen outside it (fetching
-/// covers) is written to a temporary table on the same connection inside that transaction, so it
-/// is kept exactly when the transaction commits; [`take_after`] reads it once the sync is over.
-/// The receiver itself keeps nothing between calls, so an apply the client repeats after a
-/// rollback starts from what the database holds.
+/// Everything it does happens in the database, in the transaction the client hands it. Nothing
+/// is left to do after the commit: covers to fetch and cover files no book uses are read from
+/// the database once a sync succeeds ([`after_sync`]), so a failed, cancelled or interrupted
+/// sync loses nothing. The receiver keeps nothing between calls, so an apply the client repeats
+/// after a rollback starts from what the database holds.
 #[derive(Default)]
 pub(crate) struct Receiver {
     /// The vault, to check received notes' file paths against; without one, only their text is.
@@ -245,11 +242,18 @@ pub(crate) struct Receiver {
 /// Failures a test makes the receiver suffer.
 #[cfg(test)]
 #[derive(Default)]
+#[expect(clippy::struct_excessive_bools, reason = "each fault is switched on alone")]
 pub(crate) struct Faults {
     /// Fail this many applies that were given changes, after doing their work.
     pub(crate) fail_applies: usize,
     /// End the client's transaction inside a savepoint of the receiver's own, once.
     pub(crate) end_transaction: bool,
+    /// Never return from an apply that was given changes, once its writes are made.
+    pub(crate) hang: bool,
+    /// Panic in an apply that was given changes, once its writes are made.
+    pub(crate) panic: bool,
+    /// Fail once a pull has read the whole log, after its applies committed.
+    pub(crate) fail_caught_up: bool,
 }
 
 impl Apply for Receiver {
@@ -271,6 +275,10 @@ impl Apply for Receiver {
         conn: &mut SqliteConnection,
         replica: &Replica,
     ) -> std::result::Result<Option<Applied>, ClientError> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.faults.fail_caught_up) {
+            return Err(application(EngineError::Other("injected failure".into())));
+        }
         apply_and_repair(conn, replica, &[], true, self.vault.as_deref())
             .await
             .map(Some)
@@ -291,6 +299,10 @@ impl Receiver {
             sqlx::query("ROLLBACK").execute(&mut *own).await?;
             std::mem::forget(own);
         }
+        if received && self.faults.hang {
+            std::future::pending::<()>().await;
+        }
+        assert!(!(received && self.faults.panic), "injected panic");
         if received && self.faults.fail_applies > 0 {
             self.faults.fail_applies -= 1;
             return Err(application(EngineError::Other("injected failure".into())));
@@ -312,7 +324,7 @@ async fn apply_and_repair(
     give_way: bool,
     vault: Option<&Path>,
 ) -> std::result::Result<Applied, ClientError> {
-    let covers = synced::covers(conn).await.map_err(application)?;
+    synced::watch_covers(conn).await.map_err(application)?;
     let mut applied = replica.apply(conn, changes).await?;
     let mut touched = applied.touched.clone();
     for _ in 0..SETTLE_ROUNDS {
@@ -328,98 +340,61 @@ async fn apply_and_repair(
         touched.extend(again.touched.iter().cloned());
         merge_applied(&mut applied, again);
     }
-    let repaired = synced::repair(conn, &touched, &covers, vault)
+    synced::repair(conn, &touched, vault)
         .await
         .map_err(application)?;
-    keep_for_after(conn, &repaired).await.map_err(application)?;
     Ok(applied)
 }
 
-const AFTER_TABLE: &str = "CREATE TEMP TABLE IF NOT EXISTS bookmole_sync_after (
-    cover_file TEXT,
-    cover_fetch INTEGER,
-    refused_note INTEGER)";
+/// How many books a sync hands back to fetch covers for at most.
+const COVERS_TO_FETCH: i64 = 100;
+/// A cover file younger than this is never swept: a cover is written before its row points at it.
+const COVER_SETTLE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
-async fn keep_for_after(conn: &mut SqliteConnection, repaired: &synced::Repaired) -> Result<()> {
-    if repaired.orphaned_covers.is_empty()
-        && repaired.covers_to_fetch.is_empty()
-        && repaired.refused_notes.is_empty()
-    {
-        return Ok(());
-    }
-    sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
-    for file in &repaired.orphaned_covers {
-        sqlx::query("INSERT INTO temp.bookmole_sync_after (cover_file) VALUES (?)")
-            .bind(file)
-            .execute(&mut *conn)
-            .await?;
-    }
-    for book in &repaired.covers_to_fetch {
-        sqlx::query("INSERT INTO temp.bookmole_sync_after (cover_fetch) VALUES (?)")
-            .bind(book)
-            .execute(&mut *conn)
-            .await?;
-    }
-    for note in &repaired.refused_notes {
-        sqlx::query("INSERT INTO temp.bookmole_sync_after (refused_note) VALUES (?)")
-            .bind(note)
-            .execute(&mut *conn)
-            .await?;
-    }
-    Ok(())
-}
-
-/// What committed applies on a connection left for after the sync.
+/// What a sync hands back besides its report, read from the database as it stands once the sync
+/// succeeded, so a sync that failed or was cancelled earlier, or a restart, loses none of it.
 #[derive(Debug, Default)]
 pub(crate) struct After {
-    /// Books whose cover URL changed and still has one.
     pub covers_to_fetch: Vec<i64>,
-    /// Notes whose file path was refused, and which are still here.
     pub refused_notes: Vec<i64>,
 }
 
-/// What committed applies on a connection left to do outside the database: cover files deleted
-/// here, the rest returned. Reads and clears the record in one transaction; `conn` must have
-/// none open. A file is deleted only if no book uses it now.
-pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<After> {
-    use sqlx::Connection;
-
-    sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
-    let mut tx = conn.begin().await?;
-    let files: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT cover_file FROM temp.bookmole_sync_after
-          WHERE cover_file IS NOT NULL
-            AND NOT EXISTS (SELECT 1 FROM books WHERE cover_path = cover_file)",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
-    let fetch: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT cover_fetch FROM temp.bookmole_sync_after
-          WHERE cover_fetch IN (SELECT id FROM books WHERE cover_url IS NOT NULL)
-          ORDER BY cover_fetch",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
-    let refused_notes: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT refused_note FROM temp.bookmole_sync_after
-          WHERE refused_note IN (SELECT id FROM notes)
-          ORDER BY refused_note",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
-    sqlx::query("DELETE FROM temp.bookmole_sync_after")
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    for cover in &files {
-        let cover = Path::new(cover);
-        std::fs::remove_file(crate::images::thumb_path_of(cover)).ok();
-        std::fs::remove_file(cover).ok();
-    }
+/// Removes cover files no book uses, and reads the books whose covers are to be fetched and the
+/// notes whose paths are refused.
+pub(crate) async fn after_sync(
+    storage: &Storage,
+    images_dir: &Path,
+    vault: &Path,
+) -> Result<After> {
+    let used = storage.cover_file_names().await?;
+    let notes = storage.note_files().await?;
+    let images_dir = images_dir.to_owned();
+    let vault = vault.to_owned();
+    let refused_notes = tokio::task::spawn_blocking(move || {
+        crate::images::sweep_unused(&images_dir, &used, COVER_SETTLE)?;
+        Ok::<_, EngineError>(refused_notes(&vault, notes))
+    })
+    .await
+    .map_err(|e| EngineError::Other(format!("sweeping covers: {e}")))??;
     Ok(After {
-        covers_to_fetch: fetch,
+        covers_to_fetch: storage.covers_to_fetch(COVERS_TO_FETCH).await?,
         refused_notes,
     })
+}
+
+/// Notes whose path is never resolved to a file: not plain, outside the vault, or the same as
+/// an older note's but for ASCII case.
+fn refused_notes(vault: &Path, mut notes: Vec<crate::storage::NoteFile>) -> Vec<i64> {
+    notes.sort_by_key(|n| n.id);
+    let mut seen = std::collections::HashSet::new();
+    notes
+        .into_iter()
+        .filter(|n| {
+            let twin = !seen.insert(n.file_path.to_ascii_lowercase());
+            twin || crate::notes::note_file(vault, &n.file_path).is_err()
+        })
+        .map(|n| n.id)
+        .collect()
 }
 
 fn application(e: EngineError) -> ClientError {
@@ -442,7 +417,7 @@ pub(crate) fn unwrap_application(e: ClientError) -> std::result::Result<EngineEr
 #[derive(Debug)]
 pub(crate) struct Received {
     pub applied: Applied,
-    /// Books whose cover URL changed; their covers are fetched after the apply, never during it.
+    /// Books with a cover URL and no file, as a sync reports them.
     pub covers_to_fetch: Vec<i64>,
 }
 
@@ -487,7 +462,8 @@ async fn in_transaction(
         }
     };
     tx.commit().await?;
-    let covers_to_fetch = take_after(&mut conn).await?.covers_to_fetch;
+    drop(conn);
+    let covers_to_fetch = storage.covers_to_fetch(COVERS_TO_FETCH).await?;
     Ok(Received {
         applied,
         covers_to_fetch,
@@ -1149,7 +1125,7 @@ mod tests {
         exchange((&ra, &a), (&rb, &b)).await;
 
         let dir = tempfile::tempdir().unwrap();
-        let cover = dir.path().join("0f3c.jpg");
+        let cover = dir.path().join(cover_name(1));
         let thumb = crate::images::thumb_path_of(&cover);
         std::fs::write(&cover, b"cover").unwrap();
         std::fs::write(&thumb, b"thumb").unwrap();
@@ -1186,9 +1162,29 @@ mod tests {
 
         a.delete_book(on_a).await.unwrap();
         exchange((&ra, &a), (&rb, &b)).await;
+        sweep(&b, dir.path()).await;
         assert_eq!(count(&b, "SELECT count(*) FROM books").await, 0);
         assert!(!cover.exists());
         assert!(!thumb.exists());
+    }
+
+    /// A cover file name as the engine generates them.
+    fn cover_name(n: u8) -> String {
+        format!("{}.jpg", format!("{n:02x}").repeat(32))
+    }
+
+    /// What a successful sync does to `dir`'s cover files, with every file there old enough.
+    async fn sweep(s: &Storage, dir: &std::path::Path) {
+        let old = std::time::SystemTime::now() - 2 * COVER_SETTLE;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(entry.unwrap().path())
+                .unwrap();
+            file.set_modified(old).unwrap();
+        }
+        let used = s.cover_file_names().await.unwrap();
+        crate::images::sweep_unused(dir, &used, COVER_SETTLE).unwrap();
     }
 
     async fn set_cover_path(s: &Storage, book: i64, path: &std::path::Path) {
@@ -1238,7 +1234,7 @@ mod tests {
                 .await
                 .unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let cover = dir.path().join("0f3c.jpg");
+            let cover = dir.path().join(cover_name(1));
             std::fs::write(&cover, b"cover").unwrap();
             let holder = if cover_on_isbn_10 {
                 by_isbn_10
@@ -1249,6 +1245,7 @@ mod tests {
 
             let out = outbox((&ra, &a)).await;
             receive(&b, &rb, &out.changes).await.unwrap();
+            sweep(&b, dir.path()).await;
             let rows: Vec<(Option<String>, Option<i64>)> =
                 sqlx::query_as("SELECT cover_path, cover_width FROM books")
                     .fetch_all(b.pool())
@@ -1309,7 +1306,10 @@ mod tests {
         .unwrap();
         let rows = split_book(&b, "Middlemarch", "0141439548", "9780141439549").await;
         let dir = tempfile::tempdir().unwrap();
-        let files = [dir.path().join("10.jpg"), dir.path().join("13.jpg")];
+        let files = [
+            dir.path().join(cover_name(10)),
+            dir.path().join(cover_name(13)),
+        ];
         for (row, file) in rows.iter().zip(&files) {
             std::fs::write(file, b"cover").unwrap();
             set_cover_path(&b, *row, file).await;
@@ -1317,6 +1317,7 @@ mod tests {
 
         let out = outbox((&ra, &a)).await;
         receive(&b, &rb, &out.changes).await.unwrap();
+        sweep(&b, dir.path()).await;
         let stays = id_of(&b, "Middlemarch").await;
         let (kept, gone) = if stays == rows[0] {
             (&files[0], &files[1])
@@ -1355,7 +1356,7 @@ mod tests {
             let mut covered = Vec::new();
             for (title, isbn_10, isbn_13) in pairs {
                 let rows = split_book(&b, title, isbn_10, isbn_13).await;
-                let file = dir.path().join(format!("{isbn_13}.jpg"));
+                let file = dir.path().join(cover_name(covered.len() as u8));
                 std::fs::write(&file, b"cover").unwrap();
                 set_cover_path(&b, rows[0], &file).await;
                 covered.push((title, rows[0], file));
@@ -1363,6 +1364,7 @@ mod tests {
 
             let out = outbox((&ra, &a)).await;
             receive(&b, &rb, &out.changes).await.unwrap();
+            sweep(&b, dir.path()).await;
             let mut carried = 0;
             for (title, row, file) in &covered {
                 assert_eq!(
@@ -1388,7 +1390,7 @@ mod tests {
         let on_a = a.upsert_book(&middlemarch(), None).await.unwrap();
         exchange((&ra, &a), (&rb, &b)).await;
         let dir = tempfile::tempdir().unwrap();
-        let cover = dir.path().join("0f3c.jpg");
+        let cover = dir.path().join(cover_name(1));
         std::fs::write(&cover, b"cover").unwrap();
         set_cover_path(&b, id_of(&b, "Middlemarch").await, &cover).await;
         a.delete_book(on_a).await.unwrap();
@@ -1401,18 +1403,13 @@ mod tests {
             .await
             .unwrap();
         tx.rollback().await.unwrap();
-        assert!(
-            take_after(&mut conn)
-                .await
-                .unwrap()
-                .covers_to_fetch
-                .is_empty()
-        );
         drop(conn);
+        sweep(&b, dir.path()).await;
         assert!(cover.exists());
         assert_eq!(count(&b, "SELECT count(*) FROM books").await, 1);
 
         receive(&b, &rb, &changes).await.unwrap();
+        sweep(&b, dir.path()).await;
         assert_eq!(count(&b, "SELECT count(*) FROM books").await, 0);
         assert!(!cover.exists());
     }
@@ -1435,7 +1432,7 @@ mod tests {
         .unwrap();
         exchange((&ra, &a), (&rb, &b)).await;
         let dir = tempfile::tempdir().unwrap();
-        let cover = dir.path().join("0f3c.jpg");
+        let cover = dir.path().join(cover_name(1));
         std::fs::write(&cover, b"cover").unwrap();
         let on_b: Vec<i64> = sqlx::query_scalar("SELECT id FROM books")
             .fetch_all(b.pool())
@@ -1447,6 +1444,7 @@ mod tests {
 
         a.delete_book(gone).await.unwrap();
         exchange((&ra, &a), (&rb, &b)).await;
+        sweep(&b, dir.path()).await;
         assert_eq!(count(&b, "SELECT count(*) FROM books").await, 1);
         assert!(cover.exists());
     }

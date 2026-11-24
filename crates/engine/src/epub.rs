@@ -37,10 +37,15 @@ impl EpubFile {
     }
 
     pub(crate) fn cover(&mut self, images_dir: &Path) -> Result<Option<crate::images::CoverFile>> {
-        let Some(cover) = self.package.cover() else {
+        let Some(bytes) = self.cover_bytes() else {
             return Ok(None);
         };
-        crate::images::store_cover(&cover.bytes, images_dir).map(Some)
+        crate::images::store_cover(&bytes, images_dir).map(Some)
+    }
+
+    /// The embedded cover's bytes, for a caller that stores them off the async executor.
+    pub(crate) fn cover_bytes(&mut self) -> Option<Vec<u8>> {
+        self.package.cover().map(|cover| cover.bytes)
     }
 
     pub(crate) fn toc(&mut self) -> Vec<TocEntry> {

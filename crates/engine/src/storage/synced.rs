@@ -12,8 +12,7 @@ use crate::error::Result;
 
 /// A book's cover as it stood before an apply.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Cover {
-    cover_url: Option<String>,
+struct Cover {
     cover_path: Option<String>,
     cover_thumb_path: Option<String>,
     cover_width: Option<i64>,
@@ -21,36 +20,69 @@ pub(crate) struct Cover {
     cover_accent: Option<i64>,
 }
 
-/// Each book's cover before an apply, for books with a cover URL or file.
-pub(crate) type Covers = HashMap<i64, Cover>;
+/// Temporary triggers on this connection record a book's cover as it stood before the apply
+/// removed the row or changed its cover URL, so the repair reads only the rows the apply
+/// touched. Made inside the apply's transaction and dropped by [`repair`] in it.
+const WATCH_COVERS: &[&str] = &[
+    "CREATE TEMP TABLE IF NOT EXISTS bookmole_cover_before (
+        id INTEGER PRIMARY KEY,
+        url_changed INTEGER NOT NULL,
+        cover_path TEXT, cover_thumb_path TEXT,
+        cover_width INTEGER, cover_height INTEGER, cover_accent INTEGER)",
+    "CREATE TEMP TRIGGER IF NOT EXISTS bookmole_cover_gone BEFORE DELETE ON main.books
+     BEGIN
+        INSERT OR IGNORE INTO bookmole_cover_before VALUES (old.id, 0, old.cover_path,
+            old.cover_thumb_path, old.cover_width, old.cover_height, old.cover_accent);
+     END",
+    "CREATE TEMP TRIGGER IF NOT EXISTS bookmole_cover_moved BEFORE UPDATE OF cover_url ON main.books
+     WHEN old.cover_url IS NOT new.cover_url
+     BEGIN
+        INSERT OR IGNORE INTO bookmole_cover_before VALUES (old.id, 1, old.cover_path,
+            old.cover_thumb_path, old.cover_width, old.cover_height, old.cover_accent);
+     END",
+];
 
-pub(crate) async fn covers(conn: &mut SqliteConnection) -> Result<Covers> {
-    let rows = sqlx::query(
-        "SELECT id, cover_url, cover_path, cover_thumb_path, cover_width, cover_height,
-                cover_accent
-           FROM books WHERE cover_url IS NOT NULL OR cover_path IS NOT NULL",
-    )
-    .fetch_all(conn)
-    .await?;
+/// Starts recording covers for [`repair`]; call in the apply's transaction, before the apply.
+pub(crate) async fn watch_covers(conn: &mut SqliteConnection) -> Result<()> {
+    for sql in WATCH_COVERS {
+        sqlx::query(sql).execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
+/// What [`watch_covers`] recorded, by book, after which it records nothing more.
+async fn covers_before(conn: &mut SqliteConnection) -> Result<HashMap<i64, (bool, Cover)>> {
+    let rows = sqlx::query("SELECT * FROM temp.bookmole_cover_before")
+        .fetch_all(&mut *conn)
+        .await?;
+    for sql in [
+        "DROP TRIGGER IF EXISTS temp.bookmole_cover_gone",
+        "DROP TRIGGER IF EXISTS temp.bookmole_cover_moved",
+        "DROP TABLE IF EXISTS temp.bookmole_cover_before",
+    ] {
+        sqlx::query(sql).execute(&mut *conn).await?;
+    }
     rows.iter()
         .map(|r| {
             let cover = Cover {
-                cover_url: r.try_get("cover_url")?,
                 cover_path: r.try_get("cover_path")?,
                 cover_thumb_path: r.try_get("cover_thumb_path")?,
                 cover_width: r.try_get("cover_width")?,
                 cover_height: r.try_get("cover_height")?,
                 cover_accent: r.try_get("cover_accent")?,
             };
-            Ok((r.try_get("id")?, cover))
+            Ok((
+                r.try_get("id")?,
+                (r.try_get::<i64, _>("url_changed")? == 1, cover),
+            ))
         })
         .collect()
 }
 
 /// A row the kernel gave up when two books became one hands its file to the row that stays, as
-/// `merge_books` does, unless that row has its own. Returns whether it did.
-async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Result<bool> {
-    let carried = sqlx::query(
+/// `merge_books` does, unless that row has its own; otherwise the file is left unused.
+async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Result<()> {
+    sqlx::query(
         "UPDATE books SET cover_path = ?1, cover_thumb_path = ?2, cover_width = ?3,
                 cover_height = ?4, cover_accent = ?5
           WHERE id = ?6 AND cover_path IS NULL",
@@ -63,17 +95,12 @@ async fn carry_cover(conn: &mut SqliteConnection, to: i64, cover: &Cover) -> Res
     .bind(to)
     .execute(conn)
     .await?;
-    Ok(carried.rows_affected() > 0)
+    Ok(())
 }
 
+/// Notes whose stored file path is never resolved to a file. Kept as rows, left out of the index.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Repaired {
-    /// Books whose cover URL changed to one this device has not fetched.
-    pub covers_to_fetch: Vec<i64>,
-    /// Cover files of removed books that no book here uses any more.
-    pub orphaned_covers: Vec<String>,
-    /// Notes whose file path is not a markdown file inside the vault: kept as rows, never
-    /// resolved to a file, and left out of the index.
     pub refused_notes: Vec<i64>,
 }
 
@@ -103,14 +130,17 @@ fn keys_of<'t>(
         .map(|t| ids(&t.key))
 }
 
-/// `before` is [`covers`] read ahead of the apply that wrote `touched`; `vault` is where notes'
-/// files live, to check their paths against.
+/// Brings what this device derives from synced rows in line after an apply that wrote
+/// `touched`, which ran after [`watch_covers`]: sort keys; a cover file carried from a row a
+/// merge gave up; a cover whose URL changed elsewhere forgotten here, so the book reads as one
+/// whose cover is to be fetched and the old file as unused; the notes index. `vault` is where
+/// notes' files live, to check their paths against. Work is proportional to `touched`.
 pub(crate) async fn repair(
     conn: &mut SqliteConnection,
     touched: &[Touched],
-    before: &Covers,
     vault: Option<&Path>,
 ) -> Result<Repaired> {
+    let before = covers_before(conn).await?;
     let books: BTreeSet<i64> = keys_of(touched, &["books"])
         .filter_map(|k| k.first().copied())
         .collect();
@@ -127,53 +157,60 @@ pub(crate) async fn repair(
             kept.insert(t.gid, id);
         }
     }
-    let mut repaired = Repaired::default();
     for &id in &books {
-        let before = before.get(&id).cloned().unwrap_or_default();
-        let url: Option<Option<String>> =
-            sqlx::query_scalar("SELECT cover_url FROM books WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&mut *conn)
-                .await?;
-        if let Some(url) = url {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM books WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_some() {
             super::books::refresh_sort_keys(conn, id).await?;
-            if url.is_some() && url != before.cover_url {
-                repaired.covers_to_fetch.push(id);
+            if before.get(&id).is_some_and(|(url_changed, _)| *url_changed) {
+                forget_cover(conn, id).await?;
             }
             continue;
         }
-        let Some(path) = before.cover_path.clone() else {
+        let Some((_, cover)) = before.get(&id).filter(|(_, c)| c.cover_path.is_some()) else {
             continue;
         };
         let merged_into = touched
             .iter()
             .filter(|t| t.collection == "books" && t.deleted && ids(&t.key).first() == Some(&id))
             .find_map(|t| kept.get(&t.gid).filter(|&&to| to != id));
-        if let Some(&to) = merged_into
-            && carry_cover(conn, to, &before).await?
-        {
-            continue;
-        }
-        let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")
-            .bind(&path)
-            .fetch_one(&mut *conn)
-            .await?;
-        if others == 0 && !repaired.orphaned_covers.contains(&path) {
-            repaired.orphaned_covers.push(path);
+        if let Some(&to) = merged_into {
+            carry_cover(conn, to, cover).await?;
         }
     }
+    let mut repaired = Repaired::default();
     for &note in &notes {
         let path: Option<String> = sqlx::query_scalar("SELECT file_path FROM notes WHERE id = ?")
             .bind(note)
             .fetch_optional(&mut *conn)
             .await?;
-        match path {
-            Some(path) if !acceptable(vault, &path) => {
-                super::notes::unindex_stored(conn, note).await?;
-                repaired.refused_notes.push(note);
+        let refused = match &path {
+            Some(path) => {
+                !acceptable(vault, path) || super::notes::has_case_twin(conn, note, path).await?
             }
-            _ => super::notes::reindex_stored(conn, note).await?,
+            None => false,
+        };
+        if refused {
+            super::notes::unindex_stored(conn, note).await?;
+            repaired.refused_notes.push(note);
+        } else {
+            super::notes::reindex_stored(conn, note).await?;
         }
     }
     Ok(repaired)
+}
+
+/// Forgets the file of a book whose cover URL another device changed; only local columns.
+async fn forget_cover(conn: &mut SqliteConnection, id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE books SET cover_path = NULL, cover_thumb_path = NULL, cover_width = NULL,
+                cover_height = NULL, cover_accent = NULL
+          WHERE id = ? AND cover_path IS NOT NULL",
+    )
+    .bind(id)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
