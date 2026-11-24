@@ -1166,6 +1166,11 @@ async fn notes_that_are_one_file_have_one_owner_whatever_order_they_arrive_in() 
             .unwrap()
             .unwrap();
         a.engine.delete_note(&owner_a).await.unwrap();
+        assert_eq!(
+            indexed(&a, "alpha").await,
+            1,
+            "the next note was not handed the file"
+        );
         converge(&[&a, &b], &server).await;
         for d in [&a, &b] {
             assert_eq!(indexed(d, "alpha").await, 1, "order {order:?}");
