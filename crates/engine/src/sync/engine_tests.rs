@@ -323,8 +323,13 @@ async fn two_devices_opening_a_reading_of_one_book_settle_on_one_open_everywhere
             .unwrap();
     }
     sync(&a, &server).await;
-    let held = sync(&b, &server).await;
-    assert!(held.held.is_empty(), "{:?}", held.held);
+    // When a's reading is the one that loses, b holds it until a's next sync gives it up.
+    let first = sync(&b, &server).await;
+    assert!(
+        first.held.iter().all(|h| h.collection == "readings"),
+        "{:?}",
+        first.held
+    );
     converge(&[&a, &b], &server).await;
     for d in [&a, &b] {
         let open =
