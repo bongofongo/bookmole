@@ -1064,3 +1064,79 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
         );
     }
 }
+
+/// How a large first sync shares the database with the reader's writes: a device joins a
+/// library of `n` books and syncs while another task writes through the engine's pool every
+/// 20 ms. A measurement, not a check. In a release build:
+/// `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000 cargo test -p bookmole --release --lib --
+/// --ignored --nocapture a_large_first_sync`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement; run in a release build"]
+async fn a_large_first_sync_while_the_reader_writes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let sizes: Vec<i64> = std::env::var("BOOKMOLE_SYNC_BENCH_BOOKS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![10_000]);
+    for n in sizes {
+        let server = TestServer::default();
+        let (a, b) = (device().await, device().await);
+        let code = create(&a, &server).await;
+        sqlx::query(
+            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
+             INSERT INTO books (title, authors, cover_url, created_at, last_modified)
+             SELECT 'Book ' || n, '[\"George Eliot\"]',
+                    'https://covers.example.test/' || n || '.jpg', 1, 1
+               FROM i",
+        )
+        .bind(n)
+        .execute(a.engine.storage().pool())
+        .await
+        .unwrap();
+        let started = Instant::now();
+        sync(&a, &server).await;
+        let sent = started.elapsed();
+        join(&b, &server, &code).await;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let storage = b.engine.storage().clone();
+        let writer = {
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let (mut worst, mut failed, mut writes) = (Duration::ZERO, 0, 0);
+                while !stop.load(Ordering::Relaxed) {
+                    let started = Instant::now();
+                    let book = Book {
+                        title: Some(format!("Written while syncing {writes}")),
+                        ..Default::default()
+                    };
+                    if storage.upsert_book(&book, None).await.is_err() {
+                        failed += 1;
+                    }
+                    worst = worst.max(started.elapsed());
+                    writes += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                (worst, failed, writes)
+            })
+        };
+        let timings = Arc::new(Mutex::new(Vec::new()));
+        let mut receiver = Receiver::default();
+        receiver.faults.timings = Some(timings.clone());
+        let started = Instant::now();
+        sync_with(&b, &server, receiver).await.unwrap();
+        let synced = started.elapsed();
+        stop.store(true, Ordering::Relaxed);
+        let (worst, failed, writes) = writer.await.unwrap();
+        let timings = timings.lock().unwrap().clone();
+        let longest = timings.iter().max_by_key(|t| t.kernel + t.repair);
+        println!(
+            "{n} books: sent in {sent:?}; joined device synced in {synced:?} over {} applies; \
+             longest apply {longest:?}; {writes} writes, worst wait {worst:?}, {failed} failed",
+            timings.len()
+        );
+    }
+}
