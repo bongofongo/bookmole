@@ -86,7 +86,9 @@ deny = [
     { crate = "ratatui", wrappers = ["bookmole-tui"] },
     { crate = "crossterm", wrappers = ["bookmole-tui", "ratatui"] },
     # Sync goes through the engine; a frontend never drives the kernel itself.
-    { crate = "fongo-sync-sqlite", wrappers = ["bookmole"] },
+    { crate = "fongo-sync-sqlite", wrappers = ["bookmole", "fongo-sync-client"] },
+    { crate = "fongo-sync-client", wrappers = ["bookmole"] },
+    { crate = "fongo-sync-protocol", wrappers = ["fongo-sync-client"] },
 ]
 
 [sources]
