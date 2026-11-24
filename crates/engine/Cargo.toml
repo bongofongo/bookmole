@@ -77,8 +77,9 @@ flate2.workspace = true
 # `sync` is the mount watcher's channel seam; `time` is the provider timeout
 # and the watcher's debounce; `process` is how calibre's binaries are run —
 # `ebook-convert` on a large book takes minutes, and blocking the executor for
-# that would stop every other task in the frontend.
-tokio = { workspace = true, features = ["time", "sync", "process"] }
+# that would stop every other task in the frontend. `rt` is the blocking pool a cover's host is
+# resolved on before its addresses are checked.
+tokio = { workspace = true, features = ["time", "sync", "process", "rt"] }
 notify.workspace = true
 # `ko_statistics` copies the device's live `statistics.sqlite3` out before reading it,
 # and the copy has to land somewhere private that is cleaned up even when the

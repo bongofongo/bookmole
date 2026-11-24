@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 use image::RgbImage;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use reqwest::Client;
 use sha2::{Digest, Sha256};
-use url::Url;
+
+mod fetch;
+
+pub(crate) use fetch::CoverClient;
+pub use fetch::CoverRefusal;
 
 use crate::error::{EngineError, Result};
 
@@ -165,27 +168,6 @@ pub fn accent_channels(accent: i64) -> [u8; 3] {
     ]
 }
 
-pub async fn image_from_url(
-    client: &Client,
-    url_str: &str,
-    images_dir: &Path,
-) -> Result<CoverFile> {
-    let url = Url::parse(url_str)?;
-    let bytes = client
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    if bytes.is_empty() {
-        return Err(EngineError::Other(format!(
-            "empty image response from {url_str}"
-        )));
-    }
-    store_cover(&bytes, images_dir)
-}
-
 /// Re-measures a cover on disk. Reads the bytes (an old name is not its hash) and never renames:
 /// the stored `cover_path` is what frontends resolve, so its shape is a contract.
 pub fn measure_stored(cover: &Path) -> Result<CoverFile> {
@@ -228,6 +210,7 @@ pub(crate) fn rerooted(stored: &str, images_dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use image::{ImageFormat, Rgb};
+    use url::Url;
 
     #[test]
     fn a_cover_is_pointed_into_this_librarys_own_folder() {

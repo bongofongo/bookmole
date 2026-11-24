@@ -359,6 +359,7 @@ pub struct Engine {
     wireless: Arc<wireless::Listener>,
     apple_books_root: Option<PathBuf>,
     sync: sync::Slot,
+    covers: images::CoverClient,
 }
 
 async fn reroot_covers(storage: &Storage, images_dir: &Path) {
@@ -495,6 +496,7 @@ impl Engine {
             wireless: Arc::new(wireless::Listener::new()),
             apple_books_root: apple_books::default_root(),
             sync: sync::Slot::default(),
+            covers: images::CoverClient::new()?,
         })
     }
 
@@ -1066,8 +1068,10 @@ impl Engine {
         Ok(Some(cover.path))
     }
 
+    /// Every cover download goes through here and so through [`images::CoverClient`]'s policy:
+    /// https only, public hosts only, a size cap and an image check.
     async fn download_cover_file(&self, url: &str) -> Result<images::CoverFile> {
-        images::image_from_url(&self.client, url, &self.config.images_dir).await
+        self.covers.fetch(url, &self.config.images_dir).await
     }
 
     /// Back-fills measurements of covers already on disk; returns `(measured, unreadable)`.
