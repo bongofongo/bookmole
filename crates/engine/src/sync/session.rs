@@ -3,8 +3,8 @@
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fongo_sync_client::{Error as ClientError, SyncReport, Transport};
-use fongo_sync_sqlite::{Replica, Resume};
+use fongo_sync_client::{Error as ClientError, SyncReport, Transport, merge_applied};
+use fongo_sync_sqlite::{Applied, Conflict, Replica, Resume};
 use sqlx::sqlite::SqliteConnection;
 use sqlx::{ConnectOptions, Connection};
 use zeroize::Zeroizing;
@@ -431,6 +431,7 @@ impl Engine {
     ) -> Result<SyncOutcome> {
         let replica = replica()?;
         let mut outcome = SyncOutcome::default();
+        let mut conflicts = Vec::new();
         let mut busy = 0;
         loop {
             let mut conn = SyncConnection::open(self, held).await?;
@@ -449,8 +450,9 @@ impl Engine {
             .await;
             conn.close().await;
             match round {
-                Ok(report) => {
+                Ok(mut report) => {
                     let more = report.more;
+                    conflicts.push(std::mem::take(&mut report.applied.conflicts));
                     add(&mut outcome, report);
                     busy = 0;
                     if !more {
@@ -471,6 +473,7 @@ impl Engine {
                 Err(e) => return Err(engine_error(e)),
             }
         }
+        outcome.conflicts = self.conflicts_of(&replica, conflicts).await?;
         let after = super::after_sync(
             &self.storage,
             &self.config.images_dir,
@@ -480,6 +483,51 @@ impl Engine {
         outcome.covers_to_fetch = after.covers_to_fetch;
         outcome.refused_notes = after.refused_notes;
         Ok(outcome)
+    }
+}
+
+impl Engine {
+    /// The conflicts of every round of one [`Engine::sync_now`], merged as one sync merges those
+    /// of its applies: each looked up as the last round left it, and a local edit reported again
+    /// by a later round counted once, with the later remote change.
+    async fn conflicts_of(
+        &self,
+        replica: &Replica,
+        rounds: Vec<Vec<Conflict>>,
+    ) -> Result<Vec<SyncConflict>> {
+        let mut merged = Applied::default();
+        let last = rounds.len().saturating_sub(1);
+        for (at, mut conflicts) in rounds.into_iter().enumerate() {
+            if at < last && !conflicts.is_empty() {
+                let mut conn = self.storage.pool().acquire().await?;
+                for c in &mut conflicts {
+                    if let Ok((gid, key)) = replica.group_of(&mut conn, &c.collection, c.gid).await
+                    {
+                        c.gid = gid;
+                        c.key = key;
+                    }
+                }
+            }
+            merge_applied(
+                &mut merged,
+                Applied {
+                    conflicts,
+                    ..Applied::default()
+                },
+            );
+        }
+        Ok(merged
+            .conflicts
+            .into_iter()
+            .map(|c| SyncConflict {
+                row: SyncRow {
+                    collection: c.collection,
+                    key: c.key,
+                },
+                field: c.field,
+                remote_won: c.remote_won,
+            })
+            .collect())
     }
 }
 
@@ -511,13 +559,6 @@ fn add(outcome: &mut SyncOutcome, report: SyncReport) {
         .into_iter()
         .map(|h| row(h.collection, h.key))
         .collect();
-    outcome
-        .conflicts
-        .extend(report.applied.conflicts.into_iter().map(|c| SyncConflict {
-            row: row(c.collection, c.key),
-            field: c.field,
-            remote_won: c.remote_won,
-        }));
     if report.refused_total > 0 {
         tracing::warn!(
             refused = report.refused_total,
