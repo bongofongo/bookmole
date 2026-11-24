@@ -113,6 +113,7 @@ fn code_for(e: &EngineError) -> ErrorCode {
         },
         EngineError::Json(_) => ErrorCode::Decode,
         EngineError::Url(_) | EngineError::Format(_) | EngineError::Other(_) => ErrorCode::Internal,
+        EngineError::Sync(_) => ErrorCode::Internal,
     }
 }
 

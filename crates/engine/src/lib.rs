@@ -152,6 +152,9 @@ pub use storage::{
     ResurfaceReason, Resurfaced, ResurfacedPassage, SearchHit, SearchSource, Setting, Source,
     StatusFilter, Storage, parse_local_date,
 };
+pub use sync::{
+    RecoveryCode, SyncConflict, SyncError, SyncOutcome, SyncRow, SyncState, SyncStatus,
+};
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
     VaultWatcher, watch_mounts,
@@ -355,6 +358,7 @@ pub struct Engine {
     calibre: Calibre,
     wireless: Arc<wireless::Listener>,
     apple_books_root: Option<PathBuf>,
+    sync: sync::Slot,
 }
 
 async fn reroot_covers(storage: &Storage, images_dir: &Path) {
@@ -490,6 +494,7 @@ impl Engine {
             calibre,
             wireless: Arc::new(wireless::Listener::new()),
             apple_books_root: apple_books::default_root(),
+            sync: sync::Slot::default(),
         })
     }
 

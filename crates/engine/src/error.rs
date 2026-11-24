@@ -63,6 +63,8 @@ pub enum EngineError {
     PluginRefused(#[from] crate::plugin::PluginRefusal),
     #[error(transparent)]
     WirelessRefused(#[from] crate::wireless::WirelessRefusal),
+    #[error(transparent)]
+    Sync(#[from] crate::sync::SyncError),
     #[error("{0}")]
     Other(String),
 }
