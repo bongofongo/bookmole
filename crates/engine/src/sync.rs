@@ -10,12 +10,15 @@
 
 use std::path::Path;
 
+use fongo_sync_client::{Apply, Error as ClientError, merge_applied};
 use fongo_sync_sqlite::core::{Change, Strategy};
 use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
-use crate::storage::{Storage, clashes, synced};
+#[cfg(test)]
+use crate::storage::Storage;
+use crate::storage::{clashes, synced};
 
 #[expect(clippy::too_many_lines)]
 pub(crate) fn registry() -> Result<Registry> {
@@ -218,74 +221,245 @@ pub(crate) async fn installed(conn: &mut SqliteConnection) -> Result<bool> {
     Ok(found.is_some())
 }
 
-/// What arrived from another device that is still to be done outside the database.
+/// How many times one settle gives up rows that keep held rows out and tries those again. What
+/// still waits after that is reported held and tried by the next settle.
+const SETTLE_ROUNDS: usize = 4;
+
+/// Applies what a sync receives and, once a pull has read the whole log, settles clashes: the
+/// engine's side of the kernel client's [`Apply`].
+///
+/// Everything it does in the database happens in the transaction the client hands it. What has
+/// to wait for that transaction to commit (deleting cover files) or happen outside it (fetching
+/// covers) is written to a temporary table on the same connection inside that transaction, so it
+/// is kept exactly when the transaction commits; [`take_after`] reads it once the sync is over.
+/// The receiver itself keeps nothing between calls, so an apply the client repeats after a
+/// rollback starts from what the database holds.
+#[derive(Default)]
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
+pub(crate) struct Receiver {
+    #[cfg(test)]
+    pub(crate) faults: Faults,
+}
+
+/// Failures a test makes the receiver suffer.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Faults {
+    /// Fail this many applies that were given changes, after doing their work.
+    pub(crate) fail_applies: usize,
+    /// End the client's transaction inside a savepoint of the receiver's own, once.
+    pub(crate) end_transaction: bool,
+}
+
+impl Apply for Receiver {
+    async fn apply(
+        &mut self,
+        conn: &mut SqliteConnection,
+        replica: &Replica,
+        changes: &[Change],
+    ) -> std::result::Result<Applied, ClientError> {
+        let applied = apply_and_repair(conn, replica, changes, false).await?;
+        #[cfg(test)]
+        self.suffer(conn, !changes.is_empty()).await?;
+        Ok(applied)
+    }
+
+    async fn caught_up(
+        &mut self,
+        conn: &mut SqliteConnection,
+        replica: &Replica,
+    ) -> std::result::Result<Option<Applied>, ClientError> {
+        apply_and_repair(conn, replica, &[], true).await.map(Some)
+    }
+}
+
+#[cfg(test)]
+impl Receiver {
+    async fn suffer(
+        &mut self,
+        conn: &mut SqliteConnection,
+        received: bool,
+    ) -> std::result::Result<(), ClientError> {
+        use sqlx::Connection;
+
+        if std::mem::take(&mut self.faults.end_transaction) {
+            let mut own = conn.begin().await?;
+            sqlx::query("ROLLBACK").execute(&mut *own).await?;
+            std::mem::forget(own);
+        }
+        if received && self.faults.fail_applies > 0 {
+            self.faults.fail_applies -= 1;
+            return Err(application(EngineError::Other("injected failure".into())));
+        }
+        Ok(())
+    }
+}
+
+/// Applies `changes` (none, to retry held rows and collect local writes) and brings up to date
+/// what this device derives from the rows that wrote, so no read sees a remote row without it.
+/// With `give_way`, rows here that lose a clash with a held row are given up
+/// ([`clashes::give_way`]) and the held rows tried again; that must happen only once a pull has
+/// read the whole log, never between pages, because a clash decided on part of what another
+/// device sent may be one its later changes already ended.
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
+async fn apply_and_repair(
+    conn: &mut SqliteConnection,
+    replica: &Replica,
+    changes: &[Change],
+    give_way: bool,
+) -> std::result::Result<Applied, ClientError> {
+    let covers = synced::covers(conn).await.map_err(application)?;
+    let mut applied = replica.apply(conn, changes).await?;
+    let mut touched = applied.touched.clone();
+    for _ in 0..SETTLE_ROUNDS {
+        if !give_way
+            || applied.held.is_empty()
+            || !clashes::give_way(conn, replica, &applied.held)
+                .await
+                .map_err(application)?
+        {
+            break;
+        }
+        let again = replica.apply(conn, &[]).await?;
+        touched.extend(again.touched.iter().cloned());
+        merge_applied(&mut applied, again);
+    }
+    let repaired = synced::repair(conn, &touched, &covers)
+        .await
+        .map_err(application)?;
+    keep_for_after(conn, &repaired).await.map_err(application)?;
+    Ok(applied)
+}
+
+const AFTER_TABLE: &str = "CREATE TEMP TABLE IF NOT EXISTS bookmole_sync_after (
+    cover_file TEXT,
+    cover_fetch INTEGER)";
+
+async fn keep_for_after(conn: &mut SqliteConnection, repaired: &synced::Repaired) -> Result<()> {
+    if repaired.orphaned_covers.is_empty() && repaired.covers_to_fetch.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
+    for file in &repaired.orphaned_covers {
+        sqlx::query("INSERT INTO temp.bookmole_sync_after (cover_file) VALUES (?)")
+            .bind(file)
+            .execute(&mut *conn)
+            .await?;
+    }
+    for book in &repaired.covers_to_fetch {
+        sqlx::query("INSERT INTO temp.bookmole_sync_after (cover_fetch) VALUES (?)")
+            .bind(book)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// What committed applies on a connection left to do outside the database: cover files deleted
+/// here, and the books whose covers to fetch returned. Reads and clears the record in one
+/// transaction; `conn` must have none open. A file is deleted only if no book uses it now.
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
+pub(crate) async fn take_after(conn: &mut SqliteConnection) -> Result<Vec<i64>> {
+    use sqlx::Connection;
+
+    sqlx::query(AFTER_TABLE).execute(&mut *conn).await?;
+    let mut tx = conn.begin().await?;
+    let files: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT cover_file FROM temp.bookmole_sync_after
+          WHERE cover_file IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM books WHERE cover_path = cover_file)",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let fetch: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT cover_fetch FROM temp.bookmole_sync_after
+          WHERE cover_fetch IN (SELECT id FROM books WHERE cover_url IS NOT NULL)
+          ORDER BY cover_fetch",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM temp.bookmole_sync_after")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    for cover in &files {
+        let cover = Path::new(cover);
+        std::fs::remove_file(crate::images::thumb_path_of(cover)).ok();
+        std::fs::remove_file(cover).ok();
+    }
+    Ok(fetch)
+}
+
+fn application(e: EngineError) -> ClientError {
+    ClientError::Application(Box::new(e))
+}
+
+/// The engine's error inside a client error a step returned, or the client error as it is.
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing syncs yet"))]
+pub(crate) fn unwrap_application(e: ClientError) -> std::result::Result<EngineError, ClientError> {
+    match e {
+        ClientError::Application(inner) => match inner.downcast::<EngineError>() {
+            Ok(engine) => Ok(*engine),
+            Err(other) => Ok(EngineError::Other(format!("sync: {other}"))),
+        },
+        other => Err(other),
+    }
+}
+
+/// What arrived from another device, received outside a sync as a test delivers it.
+#[cfg(test)]
 #[derive(Debug)]
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
 pub(crate) struct Received {
     pub applied: Applied,
     /// Books whose cover URL changed; their covers are fetched after the apply, never during it.
     pub covers_to_fetch: Vec<i64>,
 }
 
-/// How many times one settle gives up rows that keep held rows out and tries those again. What
-/// still waits after that is reported held and tried by the next settle.
-const SETTLE_ROUNDS: usize = 4;
-
-/// Applies changes from another device, and in the same transaction brings up to date what this
-/// device derives from the rows they wrote, so no read sees a remote row without it. A row held
-/// back by a clash with a row here stays held until [`settle_clashes`]. Cover files that only
-/// removed books used are deleted once that is committed.
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
+/// One page of changes from another device, applied as a sync's pull applies it, in a
+/// transaction of its own.
+#[cfg(test)]
 pub(crate) async fn receive(
     storage: &Storage,
     replica: &Replica,
     changes: &[Change],
 ) -> Result<Received> {
-    apply_and_repair(storage, replica, changes, false).await
+    let mut receiver = Receiver::default();
+    in_transaction(storage, async |conn| {
+        receiver.apply(conn, replica, changes).await
+    })
+    .await
 }
 
-/// Lets in rows held back by a clash with a row here that loses ([`clashes::give_way`]), and
-/// what that changes as [`receive`] does. Must run only after the last page of a pull, never
-/// between pages: a clash decided on part of what another device sent may be one its later
-/// changes already ended.
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing receives changes yet"))]
+/// What a sync does once its pull has read the whole log.
+#[cfg(test)]
 pub(crate) async fn settle_clashes(storage: &Storage, replica: &Replica) -> Result<Received> {
-    apply_and_repair(storage, replica, &[], true).await
+    let mut receiver = Receiver::default();
+    in_transaction(storage, async |conn| {
+        Ok(receiver.caught_up(conn, replica).await?.unwrap_or_default())
+    })
+    .await
 }
 
-async fn apply_and_repair(
+#[cfg(test)]
+async fn in_transaction(
     storage: &Storage,
-    replica: &Replica,
-    changes: &[Change],
-    give_way: bool,
+    step: impl AsyncFnOnce(&mut SqliteConnection) -> std::result::Result<Applied, ClientError>,
 ) -> Result<Received> {
-    let mut tx = storage.pool().begin().await?;
-    let covers = synced::covers(&mut tx).await?;
-    let mut applied = replica.apply(&mut tx, changes).await.map_err(kernel)?;
-    for _ in 0..SETTLE_ROUNDS {
-        if !give_way
-            || applied.held.is_empty()
-            || !clashes::give_way(&mut tx, replica, &applied.held).await?
-        {
-            break;
+    use sqlx::Connection;
+
+    let mut conn = storage.pool().acquire().await?;
+    let mut tx = conn.begin().await?;
+    let applied = match step(&mut tx).await {
+        Ok(applied) => applied,
+        Err(e) => {
+            return Err(unwrap_application(e).unwrap_or_else(|e| EngineError::Other(e.to_string())));
         }
-        let again = replica.apply(&mut tx, &[]).await.map_err(kernel)?;
-        applied.accepted += again.accepted;
-        applied.touched.extend(again.touched);
-        applied.conflicts.extend(again.conflicts);
-        applied.waiting = again.waiting;
-        applied.held = again.held;
-    }
-    let repaired = synced::repair(&mut tx, &applied.touched, &covers).await?;
+    };
     tx.commit().await?;
-    for cover in &repaired.orphaned_covers {
-        let cover = Path::new(cover);
-        std::fs::remove_file(crate::images::thumb_path_of(cover)).ok();
-        std::fs::remove_file(cover).ok();
-    }
+    let covers_to_fetch = take_after(&mut conn).await?;
     Ok(Received {
         applied,
-        covers_to_fetch: repaired.covers_to_fetch,
+        covers_to_fetch,
     })
 }
 
@@ -1160,6 +1334,37 @@ mod tests {
             }
         }
         panic!("no apply gave up both covered rows");
+    }
+
+    #[tokio::test]
+    async fn a_cover_file_goes_only_with_an_apply_that_commits() {
+        use sqlx::Connection;
+
+        let ((ra, a), (rb, b)) = installed_pair().await;
+        let on_a = a.upsert_book(&middlemarch(), None).await.unwrap();
+        exchange((&ra, &a), (&rb, &b)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cover = dir.path().join("0f3c.jpg");
+        std::fs::write(&cover, b"cover").unwrap();
+        set_cover_path(&b, id_of(&b, "Middlemarch").await, &cover).await;
+        a.delete_book(on_a).await.unwrap();
+        let changes = take((&ra, &a)).await;
+
+        let mut conn = b.pool().acquire().await.unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        Receiver::default()
+            .apply(&mut tx, &rb, &changes)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(take_after(&mut conn).await.unwrap(), Vec::<i64>::new());
+        drop(conn);
+        assert!(cover.exists());
+        assert_eq!(count(&b, "SELECT count(*) FROM books").await, 1);
+
+        receive(&b, &rb, &changes).await.unwrap();
+        assert_eq!(count(&b, "SELECT count(*) FROM books").await, 0);
+        assert!(!cover.exists());
     }
 
     #[tokio::test]
