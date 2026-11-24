@@ -2014,20 +2014,45 @@ impl Engine {
         notes::note_file(&self.config.vault_dir, &note.file_path)
     }
 
-    /// The note's file, for writing or for reading into the index: [`Engine::note_path`], and
-    /// refused too when the file is another note's, one whose path differs only in case or
-    /// Unicode normalisation and sorts first (see `storage::notes::path_key`).
+    /// The note's file, for writing, deleting or reading into the index: [`Engine::note_path`],
+    /// refused when the file is another note's. Another note owns it when their paths differ only
+    /// in case or Unicode normalisation and its path sorts first (`storage::notes::path_key`);
+    /// and, since no key can match every file system, when the file exists and is the same file
+    /// as another note's, by identity on disk, and that note's path sorts first.
     pub(crate) async fn owned_note_file(&self, note: &NoteRecord) -> Result<PathBuf> {
+        let refuse = || {
+            EngineError::InvalidInput(
+                "a note's file belongs to another note whose path names the same file".into(),
+            )
+        };
         let file = self.note_path(note)?;
         if self
             .storage
             .note_shares_a_file(note.id, &note.file_path)
             .await?
         {
-            return Err(EngineError::InvalidInput(
-                "a note's file belongs to another note whose path differs only in case or accents"
-                    .into(),
-            ));
+            return Err(refuse());
+        }
+        let Some(identity) = notes::file_identity(&file) else {
+            return Ok(file);
+        };
+        let vault = self.config.vault_dir.clone();
+        let others = self.storage.note_files().await?;
+        let (id, path) = (note.id, note.file_path.clone());
+        let shared = tokio::task::spawn_blocking(move || {
+            others.iter().any(|other| {
+                other.id != id
+                    && other.file_path < path
+                    && notes::note_file(&vault, &other.file_path)
+                        .ok()
+                        .and_then(|f| notes::file_identity(&f))
+                        .is_some_and(|other| other == identity)
+            })
+        })
+        .await
+        .map_err(|e| EngineError::Other(format!("comparing note files: {e}")))?;
+        if shared {
+            return Err(refuse());
         }
         Ok(file)
     }
