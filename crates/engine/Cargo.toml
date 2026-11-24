@@ -93,13 +93,13 @@ tempfile = "3"
 # over the connection sqlx already holds. MIT OR Apache-2.0. It links the same
 # `libsqlite3-sys` 0.30.1 that sqlx does, so the workspace patch below vendors
 # one SQLite for both. Pinned by commit: the kernel is not on crates.io.
-fongo-sync-sqlite = { git = "https://github.com/bongofongo/fongo-sync", rev = "03737f28f158abc8ca7a9f1279e1cd3a7c2a1aef" }
+fongo-sync-sqlite = { git = "https://github.com/bongofongo/fongo-sync", rev = "429c54213ea849afc19cb85bd5fa5e66f9c0ae4c" }
 # The kernel's client: creating and joining a library, and a sync round with the server over a
 # transport the engine supplies. Same repository and commit as the adapter above; MIT OR
 # Apache-2.0. What it brings is MIT or Apache-2.0 (RustCrypto's AEAD crates), BSD-3-Clause
 # (ed25519-dalek, curve25519-dalek) and MIT OR Apache-2.0 OR BSD-1-Clause (fiat-crypto), all
 # in deny.toml's allow list.
-fongo-sync-client = { git = "https://github.com/bongofongo/fongo-sync", rev = "03737f28f158abc8ca7a9f1279e1cd3a7c2a1aef" }
+fongo-sync-client = { git = "https://github.com/bongofongo/fongo-sync", rev = "429c54213ea849afc19cb85bd5fa5e66f9c0ae4c" }
 # Clears the sync identity's bytes from memory once read or written. Already in the graph
 # through the client; MIT OR Apache-2.0.
 zeroize = "1"
