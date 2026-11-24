@@ -2015,17 +2015,18 @@ impl Engine {
     }
 
     /// The note's file, for writing or for reading into the index: [`Engine::note_path`], and
-    /// refused too when another note has the same path but for ASCII case and sorts first, since
-    /// on a case-insensitive file system that file is the other note's.
+    /// refused too when the file is another note's, one whose path differs only in case or
+    /// Unicode normalisation and sorts first (see `storage::notes::path_key`).
     pub(crate) async fn owned_note_file(&self, note: &NoteRecord) -> Result<PathBuf> {
         let file = self.note_path(note)?;
         if self
             .storage
-            .note_is_case_twin(note.id, &note.file_path)
+            .note_shares_a_file(note.id, &note.file_path)
             .await?
         {
             return Err(EngineError::InvalidInput(
-                "a note's file belongs to another note whose path differs only in case".into(),
+                "a note's file belongs to another note whose path differs only in case or accents"
+                    .into(),
             ));
         }
         Ok(file)

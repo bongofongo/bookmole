@@ -943,13 +943,13 @@ pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
 /// `stat` first, then compare; `last_modified` is in seconds, so a same-second edit is missed.
 pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<VaultReconcile> {
     let mut report = VaultReconcile::default();
-    let mut notes = storage.note_files().await?;
-    notes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-    let mut seen = std::collections::HashSet::new();
+    let notes = storage.note_files().await?;
+    let owners = crate::storage::file_owners(notes.iter().map(|n| (n.id, n.file_path.as_str())));
     for note in notes {
         report.checked += 1;
-        let twin = !seen.insert(note.file_path.to_ascii_lowercase());
-        let path = note_file(vault, &note.file_path).ok().filter(|_| !twin);
+        let path = note_file(vault, &note.file_path)
+            .ok()
+            .filter(|_| owners.contains(&note.id));
         let Some(path) = path else {
             report.absent += 1;
             continue;

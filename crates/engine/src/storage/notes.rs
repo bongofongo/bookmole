@@ -241,23 +241,94 @@ pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64
     write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
 }
 
-/// Whether another note has the same path but for ASCII case and a path that sorts first by
-/// its bytes: on a case-insensitive file system the two are one file, and every device gives it
-/// to the same note. Unicode case and normalisation variants are not caught.
-pub(crate) async fn has_case_twin(
+/// The name a file system that ignores case and Unicode normalisation, as macOS's does by
+/// default, gives `path`: canonically decomposed, each character lowercased by Unicode's default
+/// mapping, decomposed again. Paths with one key are one file there. Full case folding is not
+/// applied, so `ß` and `ss`, or the two lowercase sigmas, keep different keys.
+pub(crate) fn path_key(path: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    path.nfd().flat_map(char::to_lowercase).nfd().collect()
+}
+
+/// Of the notes in `members`, which all share one key, the one whose file it is: the first by
+/// the bytes of its path among those whose path is plain. Every device holding the same rows
+/// picks the same one.
+pub(crate) fn owner_of<'a>(members: impl IntoIterator<Item = (i64, &'a str)>) -> Option<i64> {
+    members
+        .into_iter()
+        .filter(|(_, path)| crate::notes::note_path_is_plain(path))
+        .min_by(|a, b| a.1.cmp(b.1))
+        .map(|(id, _)| id)
+}
+
+/// Every note, grouped by [`path_key`], for the keys in `keys` only. One read of every note's
+/// path: about 10,000 short strings on a large vault.
+pub(crate) async fn groups(
+    conn: &mut sqlx::SqliteConnection,
+    keys: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeMap<String, Vec<(i64, String)>>> {
+    let mut out: std::collections::BTreeMap<String, Vec<(i64, String)>> =
+        keys.iter().map(|k| (k.clone(), Vec::new())).collect();
+    if keys.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, file_path FROM notes")
+        .fetch_all(&mut *conn)
+        .await?;
+    for (id, path) in rows {
+        if let Some(group) = out.get_mut(&path_key(&path)) {
+            group.push((id, path));
+        }
+    }
+    Ok(out)
+}
+
+/// Of every note given, the ones that own their file.
+pub(crate) fn file_owners<'a>(
+    notes: impl IntoIterator<Item = (i64, &'a str)>,
+) -> std::collections::HashSet<i64> {
+    let mut by_key: std::collections::HashMap<String, Vec<(i64, &str)>> =
+        std::collections::HashMap::new();
+    for (id, path) in notes {
+        by_key.entry(path_key(path)).or_default().push((id, path));
+    }
+    by_key.into_values().filter_map(owner_of).collect()
+}
+
+/// Whether note `note_id`, at `file_path`, is the one whose file that path names.
+pub(crate) async fn owns_its_file(
     conn: &mut sqlx::SqliteConnection,
     note_id: i64,
     file_path: &str,
 ) -> Result<bool> {
-    let twin: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM notes
-          WHERE id != ?1 AND lower(file_path) = lower(?2) AND file_path < ?2 LIMIT 1",
-    )
-    .bind(note_id)
-    .bind(file_path)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(twin.is_some())
+    let key = path_key(file_path);
+    let found = groups(conn, &[key.clone()].into()).await?;
+    let members = found.get(&key).map(Vec::as_slice).unwrap_or_default();
+    Ok(owner_of(members.iter().map(|(id, p)| (*id, p.as_str()))) == Some(note_id))
+}
+
+/// Brings the index of every note sharing a key in `keys` in line with who owns the file: the
+/// owner is indexed from its stored body, the others are taken out. Returns the notes that do
+/// not own their file. `acceptable` says whether an owner's path may be resolved at all.
+pub(crate) async fn settle_groups(
+    conn: &mut sqlx::SqliteConnection,
+    keys: &std::collections::BTreeSet<String>,
+    acceptable: impl Fn(&str) -> bool,
+) -> Result<Vec<i64>> {
+    let mut refused = Vec::new();
+    for members in groups(conn, keys).await?.into_values() {
+        let owner = owner_of(members.iter().map(|(id, p)| (*id, p.as_str())));
+        for (id, path) in &members {
+            if Some(*id) == owner && acceptable(path) {
+                reindex_stored(conn, *id).await?;
+            } else {
+                unindex_stored(conn, *id).await?;
+                refused.push(*id);
+            }
+        }
+    }
+    Ok(refused)
 }
 
 /// Takes a note out of the index: what [`reindex_stored`] does for a note that is gone, for one
@@ -339,6 +410,16 @@ impl Storage {
             ));
         }
         let mut tx = self.pool().begin().await?;
+        let key = path_key(file_path);
+        if groups(&mut tx, &[key.clone()].into())
+            .await?
+            .get(&key)
+            .is_some_and(|members| !members.is_empty())
+        {
+            return Err(EngineError::InvalidInput(
+                "another note's file has this name but for case or accents".into(),
+            ));
+        }
         let now = now_unix();
         let note_id: i64 = sqlx::query_scalar(
             r#"INSERT INTO notes (book_id, reading_id, highlight_id, page, location, file_path, title, kind, created_at, last_modified)
@@ -423,10 +504,11 @@ impl Storage {
 
     /// A file under the vault that no row claims is not a note; files bookmole did not write are not
     /// adopted.
-    /// Whether another note has this note's path but for ASCII case, and the file is that note's.
-    pub(crate) async fn note_is_case_twin(&self, note_id: i64, file_path: &str) -> Result<bool> {
+    /// Whether this note's path names a file another note owns: one whose path differs only in
+    /// case or Unicode normalisation and sorts first.
+    pub(crate) async fn note_shares_a_file(&self, note_id: i64, file_path: &str) -> Result<bool> {
         let mut conn = self.pool().acquire().await?;
-        has_case_twin(&mut conn, note_id, file_path).await
+        Ok(!owns_its_file(&mut conn, note_id, file_path).await?)
     }
 
     pub async fn note_by_path(&self, file_path: &str) -> Result<Option<NoteRecord>> {
@@ -459,8 +541,14 @@ impl Storage {
     }
 
     /// The FTS table is virtual, so it is cleared explicitly; a foreign key cannot cascade into it.
+    /// Deletes a note and its index entry; a note that shared its file with this one and now
+    /// owns it is indexed.
     pub async fn delete_note(&self, note_id: i64) -> Result<()> {
         let mut tx = self.pool().begin().await?;
+        let path: Option<String> = sqlx::query_scalar("SELECT file_path FROM notes WHERE id = ?")
+            .bind(note_id)
+            .fetch_optional(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
             .bind(note_id)
             .execute(&mut *tx)
@@ -469,6 +557,10 @@ impl Storage {
             .bind(note_id)
             .execute(&mut *tx)
             .await?;
+        if let Some(path) = path {
+            let keys = [path_key(&path)].into();
+            settle_groups(&mut tx, &keys, crate::notes::note_path_is_plain).await?;
+        }
         tx.commit().await?;
         Ok(())
     }

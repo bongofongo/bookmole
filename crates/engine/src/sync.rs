@@ -418,21 +418,19 @@ pub(crate) async fn after_sync(
     })
 }
 
-/// Notes whose path is never resolved to a file: not plain, outside the vault, or the same as
-/// another note's but for ASCII case and sorting after it.
-fn refused_notes(vault: &Path, mut notes: Vec<crate::storage::NoteFile>) -> Vec<i64> {
-    notes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-    let mut seen = std::collections::HashSet::new();
-    notes
-        .into_iter()
+/// Notes whose path is never resolved to a file: outside the vault, or naming a file another
+/// note owns.
+fn refused_notes(vault: &Path, notes: Vec<crate::storage::NoteFile>) -> Vec<i64> {
+    let owners = crate::storage::file_owners(notes.iter().map(|n| (n.id, n.file_path.as_str())));
+    let mut refused: Vec<i64> = notes
+        .iter()
         .filter(|n| {
-            let twin = !seen.insert(n.file_path.to_ascii_lowercase());
-            twin || crate::notes::note_file(vault, &n.file_path).is_err()
+            !owners.contains(&n.id) || crate::notes::note_file(vault, &n.file_path).is_err()
         })
         .map(|n| n.id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
+        .collect();
+    refused.sort_unstable();
+    refused
 }
 
 fn application(e: EngineError) -> ClientError {
@@ -1163,7 +1161,9 @@ mod tests {
         exchange((&ra, &a), (&rb, &b)).await;
 
         let dir = tempfile::tempdir().unwrap();
-        let cover = dir.path().join(cover_name(1));
+        let cover = dir
+            .path()
+            .join(format!("{}{}", crate::images::DOWNLOADED, cover_name(1)));
         let thumb = crate::images::thumb_path_of(&cover);
         std::fs::write(&cover, b"cover").unwrap();
         std::fs::write(&thumb, b"thumb").unwrap();

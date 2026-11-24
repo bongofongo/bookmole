@@ -958,7 +958,7 @@ fn copy_cover(src: &Path, images_dir: &Path, cb: &CalibreBook) -> Result<PathBuf
         .unwrap_or_else(|| format!("id-{}", cb.calibre_id));
     std::fs::create_dir_all(images_dir)?;
     let dst = images_dir.join(format!("calibre-{stem}.{ext}"));
-    std::fs::copy(src, &dst)?;
+    crate::images::copy_in(src, &dst)?;
     Ok(dst)
 }
 
