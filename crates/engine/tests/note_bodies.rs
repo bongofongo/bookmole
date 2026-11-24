@@ -107,7 +107,7 @@ async fn an_edit_through_the_engine_rewrites_the_row() {
 async fn an_outside_edit_reaches_the_row_through_the_sweep() {
     let (_tmp, engine, pool) = engine().await;
     let n = note(&engine, "Dorothea's dignity under pressure.").await;
-    let file = engine.note_path(&n);
+    let file = engine.note_path(&n).unwrap();
     let raw = std::fs::read_to_string(&file).unwrap();
     std::fs::write(
         &file,
@@ -134,7 +134,7 @@ async fn an_unchanged_body_writes_nothing() {
         .await
         .unwrap();
     engine.refresh_note_from_disk(&n).await.unwrap();
-    push_mtime_ahead(&engine.note_path(&n));
+    push_mtime_ahead(&engine.note_path(&n).unwrap());
     engine.reconcile_vault().await.unwrap();
     assert_eq!(writes(&pool).await, 0, "the same body was written again");
 

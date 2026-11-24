@@ -3,6 +3,7 @@
 //! after the apply would be sent with a newer clock than the changes still on their way.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 
 use fongo_sync_sqlite::Touched;
 use sqlx::{Row, SqliteConnection};
@@ -71,6 +72,16 @@ pub(crate) struct Repaired {
     pub covers_to_fetch: Vec<i64>,
     /// Cover files of removed books that no book here uses any more.
     pub orphaned_covers: Vec<String>,
+    /// Notes whose file path is not a markdown file inside the vault: kept as rows, never
+    /// resolved to a file, and left out of the index.
+    pub refused_notes: Vec<i64>,
+}
+
+/// Whether a note's stored path may be resolved to a file: plain, and inside `vault` when one is
+/// given.
+fn acceptable(vault: Option<&Path>, file_path: &str) -> bool {
+    crate::notes::note_path_is_plain(file_path)
+        && vault.is_none_or(|v| crate::notes::note_file(v, file_path).is_ok())
 }
 
 /// The local ids in a key as the change-capture triggers write it: `[7]`, or `[3,7]`.
@@ -92,11 +103,13 @@ fn keys_of<'t>(
         .map(|t| ids(&t.key))
 }
 
-/// `before` is [`covers`] read ahead of the apply that wrote `touched`.
+/// `before` is [`covers`] read ahead of the apply that wrote `touched`; `vault` is where notes'
+/// files live, to check their paths against.
 pub(crate) async fn repair(
     conn: &mut SqliteConnection,
     touched: &[Touched],
     before: &Covers,
+    vault: Option<&Path>,
 ) -> Result<Repaired> {
     let books: BTreeSet<i64> = keys_of(touched, &["books"])
         .filter_map(|k| k.first().copied())
@@ -150,7 +163,17 @@ pub(crate) async fn repair(
         }
     }
     for &note in &notes {
-        super::notes::reindex_stored(conn, note).await?;
+        let path: Option<String> = sqlx::query_scalar("SELECT file_path FROM notes WHERE id = ?")
+            .bind(note)
+            .fetch_optional(&mut *conn)
+            .await?;
+        match path {
+            Some(path) if !acceptable(vault, &path) => {
+                super::notes::unindex_stored(conn, note).await?;
+                repaired.refused_notes.push(note);
+            }
+            _ => super::notes::reindex_stored(conn, note).await?,
+        }
     }
     Ok(repaired)
 }

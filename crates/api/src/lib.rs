@@ -633,7 +633,7 @@ impl Api {
 
     pub async fn note_path(&self, note_id: i64) -> ApiResult<String> {
         let note = self.note(note_id).await?;
-        Ok(self.engine.note_path(&note).display().to_string())
+        Ok(self.engine.note_path(&note)?.display().to_string())
     }
 
     pub async fn note_body(&self, note_id: i64) -> ApiResult<String> {

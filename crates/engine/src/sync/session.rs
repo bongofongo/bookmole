@@ -120,6 +120,9 @@ pub struct SyncOutcome {
     /// The pull stopped at a change from a device the server does not yet list; later syncs
     /// try it again.
     pub blocked: bool,
+    /// Notes from another device whose file path is not a markdown file inside the vault. They
+    /// are kept as rows but never read from or written to disk, and are not searchable.
+    pub refused_notes: Vec<i64>,
     /// Books whose cover changed on another device. A sync downloads nothing; the caller fetches
     /// these as it fetches any cover.
     pub covers_to_fetch: Vec<i64>,
@@ -357,6 +360,7 @@ impl Engine {
         transport: impl FnOnce(Origin) -> Result<T>,
         mut receiver: Receiver,
     ) -> Result<SyncOutcome> {
+        receiver.vault = Some(self.config.vault_dir.clone());
         let mut held = self.sync.held.lock().await;
         if !self.sync_installed().await? {
             return Err(SyncError::Off.into());
@@ -433,7 +437,9 @@ impl Engine {
             }
         }
         let conn = self.sync_connection(held).await?;
-        outcome.covers_to_fetch = take_after(conn).await?;
+        let after = take_after(conn).await?;
+        outcome.covers_to_fetch = after.covers_to_fetch;
+        outcome.refused_notes = after.refused_notes;
         Ok(outcome)
     }
 

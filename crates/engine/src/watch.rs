@@ -373,6 +373,9 @@ impl VaultWatcher {
         let Some(rel) = notes::vault_relative(&self.vault, path) else {
             return Ok(Decision::Settled(None));
         };
+        if notes::note_file(&self.vault, &rel).is_err() {
+            return Ok(Decision::Settled(None));
+        }
         let Some(note) = self.storage.note_by_path(&rel).await? else {
             return Ok(Decision::Settled(None));
         };
