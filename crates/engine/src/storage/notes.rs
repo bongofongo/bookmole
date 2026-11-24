@@ -241,16 +241,17 @@ pub(super) async fn reindex_stored(tx: &mut sqlx::SqliteConnection, note_id: i64
     write_links(tx, note_id, &title, &crate::notes::extract_wikilinks(&body)).await
 }
 
-/// Whether another note with a smaller id has the same path but for ASCII case: on a
-/// case-insensitive file system the two are one file, so only the older note may use it.
-/// Unicode case and normalisation variants are not caught.
+/// Whether another note has the same path but for ASCII case and a path that sorts first by
+/// its bytes: on a case-insensitive file system the two are one file, and every device gives it
+/// to the same note. Unicode case and normalisation variants are not caught.
 pub(crate) async fn has_case_twin(
     conn: &mut sqlx::SqliteConnection,
     note_id: i64,
     file_path: &str,
 ) -> Result<bool> {
     let twin: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM notes WHERE id < ?1 AND lower(file_path) = lower(?2) LIMIT 1",
+        "SELECT 1 FROM notes
+          WHERE id != ?1 AND lower(file_path) = lower(?2) AND file_path < ?2 LIMIT 1",
     )
     .bind(note_id)
     .bind(file_path)
@@ -422,7 +423,7 @@ impl Storage {
 
     /// A file under the vault that no row claims is not a note; files bookmole did not write are not
     /// adopted.
-    /// Whether an older note has this note's path but for ASCII case, so the file is that note's.
+    /// Whether another note has this note's path but for ASCII case, and the file is that note's.
     pub(crate) async fn note_is_case_twin(&self, note_id: i64, file_path: &str) -> Result<bool> {
         let mut conn = self.pool().acquire().await?;
         has_case_twin(&mut conn, note_id, file_path).await

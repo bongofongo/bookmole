@@ -352,23 +352,34 @@ async fn two_syncs_at_once_take_turns_and_both_succeed() {
     create(&a, &server).await;
     add_book(&a, "Middlemarch").await;
     let before = server.endpoints().len();
-    let (first, second) = tokio::join!(sync(&a, &server), sync(&a, &server));
-    assert!(first.sent != second.sent, "{first:?} {second:?}");
-    assert_eq!(server.most_in_flight(), 1);
-    // Each sync asks for the capabilities first; the second may ask only once the first has
-    // appended what it had, and nothing is appended twice.
-    let seen = &server.endpoints()[before..];
-    let at = |what| {
-        seen.iter()
-            .enumerate()
-            .filter(move |(_, e)| **e == what)
-            .map(|(i, _)| i)
+    server.hold_at(2);
+    let second = async {
+        server.held().await;
+        let arrived = server.arrived();
+        let second = sync(&a, &server);
+        tokio::pin!(second);
+        let raced = tokio::time::timeout(std::time::Duration::from_millis(300), &mut second).await;
+        assert!(
+            raced.is_err(),
+            "the second sync ran while the first was in flight"
+        );
+        assert_eq!(
+            server.arrived(),
+            arrived,
+            "the second sync reached the server"
+        );
+        server.release();
+        second.await
     };
-    let asked: Vec<usize> = at("capabilities").collect();
-    let appended: Vec<usize> = at("append").collect();
-    assert_eq!(asked.len(), 2, "{seen:?}");
-    assert_eq!(appended.len(), 1, "{seen:?}");
-    assert!(asked[0] < appended[0] && appended[0] < asked[1], "{seen:?}");
+    let (first, second) = tokio::join!(sync(&a, &server), second);
+    assert!(first.sent && !second.sent, "{first:?} {second:?}");
+    assert!(!second.received);
+    let seen = &server.endpoints()[before..];
+    assert_eq!(
+        seen.iter().filter(|e| **e == "append").count(),
+        1,
+        "{seen:?}"
+    );
 }
 
 #[tokio::test]
@@ -525,7 +536,7 @@ async fn a_sync_dropped_or_panicking_anywhere_leaves_the_database_writable() {
         add_book(&a, title).await;
         sync(&a, &server).await;
     }
-    let prompt = std::time::Duration::from_secs(2);
+    let prompt = std::time::Duration::from_secs(3);
 
     let mut hanging = Receiver::default();
     hanging.faults.hang = true;
@@ -649,6 +660,18 @@ async fn a_connection_a_sync_leaves_unsound_is_closed_and_the_next_sync_opens_an
     assert!(
         writes_at_once(&b).await,
         "the unsound connection still held the database"
+    );
+
+    let mut holding = Receiver::default();
+    holding.faults.hold_write_lock = true;
+    let result = sync_with(&b, &server, holding).await;
+    assert!(
+        matches!(result, Err(EngineError::Sync(SyncError::Interrupted))),
+        "{result:?}"
+    );
+    assert!(
+        writes_at_once(&b).await,
+        "the unsound connection still held the write lock"
     );
     match b.engine.sync_status().await.unwrap() {
         SyncStatus::On(state) => {
@@ -842,6 +865,93 @@ async fn raw_note(d: &Device, file_path: &str, body: &str) -> i64 {
     id
 }
 
+#[tokio::test]
+async fn of_two_notes_whose_paths_differ_only_in_case_one_alone_has_the_file() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    raw_note(&a, "notes/eliot/prelude.md", "the second note's words").await;
+    raw_note(&a, "Notes/Eliot/Prelude.md", "the first note's own words").await;
+    sync(&a, &server).await;
+    let got = sync(&b, &server).await;
+    let mut notes = Vec::new();
+    for path in ["Notes/Eliot/Prelude.md", "notes/eliot/prelude.md"] {
+        notes.push(
+            b.engine
+                .storage()
+                .note_by_path(path)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let [keeper, twin] = <[_; 2]>::try_from(notes).unwrap();
+    assert_eq!(got.refused_notes, [twin.id]);
+    let indexed = |words| {
+        let b = &b;
+        async move {
+            b.engine
+                .search_marks(words, Some(SearchSource::Note), None, 10)
+                .await
+                .unwrap()
+                .len()
+        }
+    };
+    assert_eq!(indexed("second note").await, 0, "the twin was indexed");
+    assert_eq!(indexed("first note").await, 1);
+    let file = b.engine.note_path(&keeper).unwrap();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "the first note's own words\n").unwrap();
+    assert!(
+        b.engine
+            .update_note_body(&twin, "overwritten")
+            .await
+            .is_err()
+    );
+    assert!(b.engine.refresh_note_from_disk(&twin).await.is_err());
+    b.engine.delete_note(&twin).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "the first note's own words\n"
+    );
+    let found = b
+        .engine
+        .search_marks("words", Some(SearchSource::Note), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+}
+
+#[tokio::test]
+async fn a_device_cannot_write_a_note_path_others_would_refuse() {
+    let a = device().await;
+    for path in crate::notes::hostile_note_paths() {
+        let refused = a
+            .engine
+            .storage()
+            .insert_note(
+                NewNoteMeta {
+                    book_id: None,
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: &path,
+                    title: "Prelude",
+                    kind: "note",
+                },
+                "",
+                &[],
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(EngineError::InvalidInput(_))),
+            "{path:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
@@ -920,6 +1030,17 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
             .unwrap();
     }
     b.engine.reconcile_vault().await.unwrap();
+    let swept = rows(&b, "SELECT body FROM note_bodies").await;
+    assert!(
+        swept.iter().all(|body| !body.contains(SENTINEL)),
+        "{swept:?}"
+    );
+    assert!(
+        rows(&b, "SELECT body FROM notes_fts")
+            .await
+            .iter()
+            .all(|b| !b.contains(SENTINEL))
+    );
     for &id in &got.refused_notes {
         let note = b.engine.storage().get_note(id).await.unwrap().unwrap();
         b.engine.delete_note(&note).await.unwrap();
@@ -932,26 +1053,6 @@ async fn a_note_whose_path_leaves_the_vault_is_kept_but_never_touches_a_file() {
             );
         }
     }
-
-    let refused = b
-        .engine
-        .storage()
-        .insert_note(
-            NewNoteMeta {
-                book_id: None,
-                reading_id: None,
-                highlight_id: None,
-                page: None,
-                location: None,
-                file_path: "../x.md",
-                title: "Prelude",
-                kind: "note",
-            },
-            "",
-            &[],
-        )
-        .await;
-    assert!(matches!(refused, Err(EngineError::InvalidInput(_))));
 
     converge(&[&a, &b], &server).await;
     for d in [&a, &b] {

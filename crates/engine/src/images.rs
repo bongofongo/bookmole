@@ -564,6 +564,41 @@ mod tests {
     }
 
     #[test]
+    fn a_sweep_takes_only_old_unused_files_the_engine_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = |n: u8, ext: &str| format!("{}.{ext}", format!("{n:02x}").repeat(32));
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let write = |name: &str, aged: bool| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            if aged {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+            }
+            path
+        };
+        let unused_old = write(&named(1, "jpg"), true);
+        let unused_old_thumb = write(&named(1, "thumb.jpg"), true);
+        let unused_fresh = write(&named(2, "png"), false);
+        let used_old = write(&named(3, "jpg"), true);
+        let calibre_old = write("calibre-0f3c.jpg", true);
+        let not_ours = write("notes.txt", true);
+        let used: std::collections::HashSet<String> = [named(3, "jpg")].into();
+        let settled = std::time::Duration::from_secs(3600);
+        assert_eq!(sweep_unused(dir.path(), &used, settled).unwrap(), 3);
+        for gone in [&unused_old, &unused_old_thumb, &calibre_old] {
+            assert!(!gone.exists(), "{}", gone.display());
+        }
+        for kept in [&unused_fresh, &used_old, &not_ours] {
+            assert!(kept.exists(), "{}", kept.display());
+        }
+    }
+
+    #[test]
     fn each_bound_refuses_what_the_other_lets_through() {
         // Sides within, 16 megapixels: the decoder would need 48 MB, which its limits allow.
         assert_eq!(

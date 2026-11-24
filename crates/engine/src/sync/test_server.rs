@@ -29,15 +29,24 @@ struct State {
     horizon: Option<usize>,
     /// The request with this number, counted from 1, never gets an answer.
     hang_at: Option<usize>,
+    /// The request with this number to arrive waits for a release before it is answered.
+    hold_at: Option<usize>,
+    /// Requests that have arrived, answered or not.
+    arrived: usize,
     /// Every request's endpoint, in the order they arrived.
     endpoints: Vec<&'static str>,
-    in_flight: usize,
-    most_in_flight: usize,
 }
 
 /// Cheap to clone; every clone is the same server.
 #[derive(Clone, Default)]
-pub(crate) struct TestServer(Arc<Mutex<State>>);
+pub(crate) struct TestServer(Arc<Mutex<State>>, Arc<Hold>);
+
+/// A request held before it is answered, until [`TestServer::release`].
+#[derive(Default)]
+struct Hold {
+    reached: tokio::sync::Notify,
+    released: tokio::sync::Notify,
+}
 
 const PAGE_BATCHES: u32 = 2;
 const SKEW: u64 = 300;
@@ -62,6 +71,30 @@ impl TestServer {
         self.with(|s| s.hang_at = n.map(|n| s.requests + n));
     }
 
+    /// The `n`-th request to arrive from now on waits until [`TestServer::release`].
+    pub(crate) fn hold_at(&self, n: usize) {
+        self.with(|s| s.hold_at = Some(s.arrived + n));
+    }
+
+    /// Returns once the held request has arrived.
+    pub(crate) async fn held(&self) {
+        let reached = self.1.reached.notified();
+        if self.with(|s| s.hold_at.is_some_and(|at| s.arrived >= at)) {
+            return;
+        }
+        reached.await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.with(|s| s.hold_at = None);
+        self.1.released.notify_waiters();
+    }
+
+    /// Requests that have arrived, answered or not.
+    pub(crate) fn arrived(&self) -> usize {
+        self.with(|s| s.arrived)
+    }
+
     /// The endpoint of every request so far, in order.
     pub(crate) fn endpoints(&self) -> Vec<&'static str> {
         self.with(|s| s.endpoints.clone())
@@ -71,22 +104,21 @@ impl TestServer {
     pub(crate) fn lag_reads(&self, horizon: Option<usize>) {
         self.with(|s| s.horizon = horizon);
     }
-
-    /// The most requests that were ever in flight at once.
-    pub(crate) fn most_in_flight(&self) -> usize {
-        self.with(|s| s.most_in_flight)
-    }
 }
 
 impl Transport for TestServer {
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
-        self.with(|s| {
-            s.in_flight += 1;
-            s.most_in_flight = s.most_in_flight.max(s.in_flight);
+        let released = self.1.released.notified();
+        let hold = self.with(|s| {
+            s.arrived += 1;
+            s.hold_at == Some(s.arrived)
         });
+        if hold {
+            self.1.reached.notify_waiters();
+            released.await;
+        }
         tokio::task::yield_now().await;
         let response = self.with(|s| {
-            s.in_flight -= 1;
             s.requests += 1;
             s.endpoints.push(endpoint(&request));
             (s.hang_at != Some(s.requests)).then(|| s.handle(&request).unwrap_or_else(refusal))
