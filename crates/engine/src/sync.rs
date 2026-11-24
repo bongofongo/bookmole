@@ -259,6 +259,16 @@ pub(crate) struct Faults {
     pub(crate) panic: bool,
     /// Fail once a pull has read the whole log, after its applies committed.
     pub(crate) fail_caught_up: bool,
+    /// Where to record, for each apply, the time in the kernel's apply and in the repair.
+    pub(crate) timings: Option<std::sync::Arc<std::sync::Mutex<Vec<Timing>>>>,
+}
+
+/// The time one apply spent in the kernel (with any give-way rounds) and in the repair.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Timing {
+    pub(crate) kernel: std::time::Duration,
+    pub(crate) repair: std::time::Duration,
+    pub(crate) touched: usize,
 }
 
 impl Apply for Receiver {
@@ -269,7 +279,17 @@ impl Apply for Receiver {
         changes: &[Change],
     ) -> std::result::Result<Applied, ClientError> {
         let vault = self.vault.as_deref();
-        let applied = apply_and_repair(conn, replica, changes, false, vault).await?;
+        let (applied, timing) = apply_and_repair(conn, replica, changes, false, vault).await?;
+        tracing::debug!(
+            kernel_ms = timing.kernel.as_millis() as u64,
+            repair_ms = timing.repair.as_millis() as u64,
+            touched = timing.touched,
+            "applied what a sync received"
+        );
+        #[cfg(test)]
+        if let Some(timings) = &self.faults.timings {
+            timings.lock().unwrap().push(timing);
+        }
         #[cfg(test)]
         self.suffer(conn, !changes.is_empty()).await?;
         Ok(applied)
@@ -286,7 +306,7 @@ impl Apply for Receiver {
         }
         apply_and_repair(conn, replica, &[], true, self.vault.as_deref())
             .await
-            .map(Some)
+            .map(|(applied, _)| Some(applied))
     }
 }
 
@@ -332,7 +352,8 @@ async fn apply_and_repair(
     changes: &[Change],
     give_way: bool,
     vault: Option<&Path>,
-) -> std::result::Result<Applied, ClientError> {
+) -> std::result::Result<(Applied, Timing), ClientError> {
+    let started = std::time::Instant::now();
     synced::watch_covers(conn).await.map_err(application)?;
     let mut applied = replica.apply(conn, changes).await?;
     let mut touched = applied.touched.clone();
@@ -349,10 +370,16 @@ async fn apply_and_repair(
         touched.extend(again.touched.iter().cloned());
         merge_applied(&mut applied, again);
     }
+    let kernel = started.elapsed();
     synced::repair(conn, &touched, vault)
         .await
         .map_err(application)?;
-    Ok(applied)
+    let timing = Timing {
+        kernel,
+        repair: started.elapsed() - kernel,
+        touched: touched.len(),
+    };
+    Ok((applied, timing))
 }
 
 /// How many books a sync hands back to fetch covers for at most.
