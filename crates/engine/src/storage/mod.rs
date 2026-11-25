@@ -78,6 +78,7 @@ pub use sidecar_seen::SidecarFacts;
 use std::str::FromStr;
 
 use fongo_sync_sqlite::Resume;
+use sqlx::Connection;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
 
@@ -372,13 +373,24 @@ async fn suspend(conn: &mut SqliteConnection) -> Result<()> {
 }
 
 async fn resume(conn: &mut SqliteConnection, how: Resume) {
-    let done = match crate::sync::replica() {
-        Ok(replica) => replica.resume(conn, how).await.map_err(crate::sync::kernel),
-        Err(e) => Err(e),
-    };
-    if let Err(error) = done {
+    if let Err(error) = resume_installed(conn, how).await {
         tracing::warn!(%error, "could not resume sync; the next open tries again");
     }
+}
+
+/// Resuming installs, so it is done only while the kernel's tables are there: another engine on
+/// this database may have left sync since this open looked.
+pub(crate) async fn resume_installed(conn: &mut SqliteConnection, how: Resume) -> Result<()> {
+    let replica = crate::sync::replica()?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+    if crate::sync::installed(&mut tx).await? {
+        replica
+            .resume(&mut tx, how)
+            .await
+            .map_err(crate::sync::kernel)?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 pub(crate) async fn capture_installed(conn: &mut SqliteConnection) -> Result<bool> {
@@ -832,5 +844,23 @@ mod tests {
 
         release_write_lock(&mut holder).await.unwrap();
         sqlx::query(write).execute(&mut other).await.unwrap();
+    }
+
+    /// An open that found sync on resumes only while it still is: another engine on the database
+    /// may have left since, and resuming would install change capture again.
+    #[tokio::test]
+    async fn resuming_after_sync_was_left_installs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        resume_installed(&mut conn, Resume::Send).await.unwrap();
+        let kernel: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE 'fongo!_%' ESCAPE '!'",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(kernel, 0);
     }
 }

@@ -184,6 +184,9 @@ pub(crate) struct Held {
     /// How installing paces its steps, in place of the engine's pace.
     #[cfg(test)]
     pub(crate) pace: Option<fongo_sync_client::Pace>,
+    /// Leaving fails where it would remove change capture, as a process that stops there would.
+    #[cfg(test)]
+    pub(crate) fail_uninstall: bool,
 }
 
 impl Held {
@@ -228,6 +231,12 @@ impl SyncConnection {
             conn.close().await.ok();
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leftovers {
+    Only,
+    AndCapture,
 }
 
 /// Attempts after the first when another writer holds the database, and the first wait.
@@ -447,6 +456,43 @@ impl Engine {
         }
     }
 
+    /// Stops syncing on this device. Every row here stays as it is; this device's identity, with
+    /// its secret, and change capture are removed, so a later create or join makes it a new
+    /// device that adopts the rows here as a join does. It waits for a sync, create or join
+    /// running in this engine. It needs no server and tells none: the protocol has no request
+    /// that removes a device, so the server goes on listing this one. Leaving a library that does
+    /// not sync removes any identity left in the data directory and is otherwise nothing.
+    pub async fn leave_sync_library(&self) -> Result<()> {
+        let mut held = self.sync.held.lock().await;
+        held.last = None;
+        // Identity first: a stop between the two leaves `NeedsCredentials`, which syncs nothing
+        // and which leaving again finishes, never a secret on disk under a status of off.
+        identity::remove(&self.config.sync_identity)?;
+        #[cfg(test)]
+        if held.fail_uninstall {
+            return Err(SyncError::Interrupted.into());
+        }
+        self.uninstall(Leftovers::AndCapture).await?;
+        *self
+            .sync
+            .problem
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(())
+    }
+
+    /// Drops the kernel's tables and triggers, every one, including those its client makes again
+    /// when a sync in another engine runs on after a leave. With [`Leftovers::Only`], nothing is
+    /// dropped while sync is on.
+    async fn uninstall(&self, what: Leftovers) -> Result<()> {
+        let mut conn = self.storage.pool().acquire().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(db_error)?;
+        if what == Leftovers::AndCapture || !super::installed(&mut tx).await? {
+            replica()?.uninstall(&mut tx).await.map_err(kernel_error)?;
+        }
+        tx.commit().await.map_err(db_error)
+    }
+
     /// Sends what was written here since the last sync and applies what other devices sent,
     /// until the server's log is read to its end. One runs at a time; a second waits for the
     /// first. A failure leaves whatever was committed, and the next sync carries on from it.
@@ -471,9 +517,18 @@ impl Engine {
         let transport = transport(identity.origin.clone())?;
         receiver.held = held.carried(&receiver.pace());
         held.last = None;
-        let result = self
+        let result = match self
             .sync_rounds(&mut held, &identity, &transport, &mut receiver)
-            .await;
+            .await
+        {
+            Err(_) if !self.sync_installed().await.unwrap_or(true) => {
+                if let Err(error) = self.uninstall(Leftovers::Only).await {
+                    tracing::warn!(%error, "sync was left during a sync, and its tables stay");
+                }
+                Err(SyncError::Off.into())
+            }
+            result => result,
+        };
         if result.is_ok() {
             held.last = Some((receiver.held, std::time::Instant::now()));
         }
@@ -626,21 +681,27 @@ impl Engine {
 /// Adopts registry changes, and puts change capture back if an open could not: a sync with
 /// capture off would miss what was written meanwhile. Installing is a bounded step, so rows a
 /// first install recorded and has not adopted yet are adopted in steps, by this and the sync's
-/// own steps of collecting, never whole.
-async fn prepare(
+/// own steps of collecting, never whole. Sync left meanwhile, by another engine on this
+/// database, is [`SyncError::Off`]: installing would turn it back on.
+pub(super) async fn prepare(
     conn: &mut SqliteConnection,
     replica: &Replica,
     receiver: &Receiver,
 ) -> std::result::Result<Collected, ClientError> {
-    let capture_on = crate::storage::capture_installed(conn)
-        .await
-        .map_err(|e| ClientError::Application(Box::new(e)))?;
-    if !capture_on {
-        replica.resume(conn, Resume::Send).await?;
-        return Ok(Collected::default());
-    }
+    let app = |e: EngineError| ClientError::Application(Box::new(e));
     let rows = receiver.collect_rows();
     let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+    if !super::installed(&mut tx).await.map_err(app)? {
+        return Err(app(SyncError::Off.into()));
+    }
+    if !crate::storage::capture_installed(&mut tx)
+        .await
+        .map_err(app)?
+    {
+        replica.resume(&mut tx, Resume::Send).await?;
+        tx.commit().await?;
+        return Ok(Collected::default());
+    }
     let (collected, timing) = step_and_repair(
         &mut tx,
         replica,
@@ -774,6 +835,14 @@ fn is_busy(e: &ClientError) -> bool {
             .downcast_ref::<EngineError>()
             .is_some_and(|e| matches!(e, EngineError::Db(e) if sqlx_busy(e))),
         _ => false,
+    }
+}
+
+fn db_error(e: sqlx::Error) -> EngineError {
+    if sqlx_busy(&e) {
+        SyncError::Interrupted.into()
+    } else {
+        e.into()
     }
 }
 
