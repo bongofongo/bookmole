@@ -1441,6 +1441,43 @@ async fn a_long_pull_takes_turns_with_the_readers_writes() {
     assert!(paces[1] > std::time::Duration::ZERO, "{paces:?}");
 }
 
+/// Calls `op` every 20 ms until `stop`; the longest call, the failures and the calls made.
+fn party<F, Fut>(
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    mut op: F,
+) -> tokio::task::JoinHandle<Party>
+where
+    F: FnMut(usize) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = crate::Result<()>> + Send,
+{
+    tokio::spawn(async move {
+        let mut party = Party::default();
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let started = std::time::Instant::now();
+            if let Err(e) = op(party.calls).await {
+                party.failed += 1;
+                party.error.get_or_insert(e.to_string());
+            }
+            if started.elapsed() > party.worst {
+                party.worst = started.elapsed();
+                party.worst_began = Some(started);
+            }
+            party.calls += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        party
+    })
+}
+
+#[derive(Debug, Default)]
+struct Party {
+    worst: std::time::Duration,
+    worst_began: Option<std::time::Instant>,
+    failed: usize,
+    calls: usize,
+    error: Option<String>,
+}
+
 /// How a large first sync shares the database with everything else that uses it: a device joins
 /// a library of `n` books, each with a highlight and a note, and syncs while the reader's engine
 /// writes and reads through its API every 20 ms and a second engine on the same data directory
@@ -1461,35 +1498,6 @@ async fn a_large_first_sync_while_the_reader_works() {
     use std::time::{Duration, Instant};
 
     use crate::{BookQuery, BookSort};
-
-    /// Calls `op` every 20 ms until `stop`; the longest call, the failures and the calls made.
-    fn party<F, Fut>(stop: Arc<AtomicBool>, mut op: F) -> tokio::task::JoinHandle<Party>
-    where
-        F: FnMut(usize) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = crate::Result<()>> + Send,
-    {
-        tokio::spawn(async move {
-            let mut party = Party::default();
-            while !stop.load(Ordering::Relaxed) {
-                let started = Instant::now();
-                if let Err(e) = op(party.calls).await {
-                    party.failed += 1;
-                    party.error.get_or_insert(e.to_string());
-                }
-                party.worst = party.worst.max(started.elapsed());
-                party.calls += 1;
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            party
-        })
-    }
-    #[derive(Debug, Default)]
-    struct Party {
-        worst: Duration,
-        failed: usize,
-        calls: usize,
-        error: Option<String>,
-    }
 
     let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
     let sizes: Vec<i64> = env("BOOKMOLE_SYNC_BENCH_BOOKS", "10000")
@@ -1652,4 +1660,685 @@ async fn a_large_first_sync_while_the_reader_works() {
             println!("{line}");
         }
     }
+}
+
+/// Which books [`fill`] gives an ISBN-13.
+#[derive(Clone, Copy)]
+enum Isbns {
+    None,
+    /// Book `n` of the fill gets the ISBN numbered `n`.
+    All,
+    /// As `All` for odd `n`; even `n` get ISBNs no other fill gives.
+    Odd,
+}
+
+/// `books` books, each with a highlight and a note with a body, written as the reader's imports
+/// write: a hundred rows to a statement. `name` tells this fill's titles, highlights and note
+/// paths from another device's.
+async fn fill(engine: &Engine, books: i64, name: &str, isbns: Isbns) {
+    let pool = engine.storage().pool();
+    let isbn = match isbns {
+        Isbns::None => "NULL",
+        Isbns::All => "'978' || printf('%010d', n)",
+        Isbns::Odd => {
+            "'978' || printf('%010d', CASE WHEN n % 2 = 1 THEN n ELSE 1000000000 + n END)"
+        }
+    };
+    for from in (1..=books).step_by(100) {
+        let to = (from + 99).min(books);
+        let last: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM books")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let statements = [
+            format!(
+                "WITH RECURSIVE i(n) AS (SELECT ?1 UNION ALL SELECT n + 1 FROM i WHERE n < ?2)
+                 INSERT INTO books (title, authors, cover_url, isbn_13, created_at, last_modified)
+                 SELECT ?3 || ' ' || n, '[\"George Eliot\"]',
+                        'https://covers.example.test/' || ?3 || n || '.jpg', {isbn}, 1, 1
+                   FROM i"
+            ),
+            "INSERT INTO highlights (book_id, text, chapter, page, source, identity_hash,
+                                     created_at)
+             SELECT id, 'Who can quit young lives after being long in company with them? '
+                        || id, 'Finale', 838, 'koreader', 'v2:' || ?3 || '-' || id, 1
+               FROM books WHERE id > ?4"
+                .to_string(),
+            // One path in ten is not ASCII, as accented titles make them.
+            "INSERT INTO notes (book_id, file_path, title, kind, created_at, last_modified)
+             SELECT id, 'notes/' || CASE WHEN id % 10 = 0 THEN 'Études ' ELSE '' END
+                        || ?3 || ' ' || id || '.md', ?3 || ' ' || id, 'note', 1, 1
+               FROM books WHERE id > ?4"
+                .to_string(),
+            "INSERT INTO note_bodies (note_id, body)
+             SELECT n.id, 'Miss Brooke had that kind of beauty which seems to be thrown into
+                           relief by poor dress. See [[' || ?3 || ' ' || (n.book_id + 1) || ']].'
+               FROM notes n WHERE n.book_id > ?4"
+                .to_string(),
+        ];
+        for sql in &statements {
+            sqlx::query(sql)
+                .bind(from)
+                .bind(to)
+                .bind(name)
+                .bind(last)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+/// The longest time no connection could take SQLite's write lock, as a connection of its own
+/// sees it trying every millisecond without waiting, until `stop`: the longest a writer waiting
+/// in the busy handler could have had to wait for its turn.
+fn probe_write_lock(
+    engine: &Engine,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<std::time::Duration> {
+    use std::time::{Duration, Instant};
+
+    let options = (*engine.storage().pool().connect_options())
+        .clone()
+        .busy_timeout(Duration::ZERO);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut conn = options.connect().await.unwrap();
+            let mut free = Instant::now();
+            let mut longest = Duration::ZERO;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if sqlx::query("BEGIN IMMEDIATE")
+                    .execute(&mut conn)
+                    .await
+                    .is_ok()
+                {
+                    sqlx::query("ROLLBACK").execute(&mut conn).await.unwrap();
+                    let now = Instant::now();
+                    longest = longest.max(now - free);
+                    free = now;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            longest.max(free.elapsed())
+        })
+    })
+}
+
+/// How sending a large library shares the database with everything else that uses it, in three
+/// cases of `n` books, each with a highlight and a note: `create`, a device that holds them makes
+/// a synced library and syncs; `join`, a device that holds them joins a library of `n / 10`
+/// books, half of which have the ISBN of one of its own, and syncs; `backlog`, a device of a
+/// synced library writes them offline and syncs. Meanwhile the reader's engine writes and reads
+/// through its API every 20 ms and a second engine on the same data directory writes every 20 ms.
+/// A measurement, not a check. In a release build: `BOOKMOLE_SYNC_BENCH_BOOKS=10000,50000
+/// BOOKMOLE_SYNC_BENCH_CASES=create,join,backlog cargo test -p bookmole --release --lib --
+/// --ignored --nocapture a_large_first_sync`.
+///
+/// Each run prints how long each part took, the longest time no other connection could take the
+/// write lock, for each party its worst wait and its failures, and how long the work of each
+/// kind of transaction took. `BOOKMOLE_SYNC_BENCH_COLLECT` sets the rows a step takes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement; run in a release build"]
+#[expect(clippy::too_many_lines, reason = "one measurement, read top to bottom")]
+async fn a_large_first_sync_sends_while_the_reader_works() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use crate::{BookQuery, BookSort};
+
+    let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+    let sizes: Vec<i64> = env("BOOKMOLE_SYNC_BENCH_BOOKS", "10000")
+        .split(',')
+        .filter_map(|n| n.trim().parse().ok())
+        .collect();
+    let cases = env("BOOKMOLE_SYNC_BENCH_CASES", "create,join,backlog");
+    let collect: Option<usize> = std::env::var("BOOKMOLE_SYNC_BENCH_COLLECT")
+        .ok()
+        .and_then(|n| n.parse().ok());
+    for n in sizes {
+        for case in cases.split(',').map(str::trim) {
+            let server = TestServer::default();
+            let dir = tempfile::tempdir().unwrap();
+            let engine = Arc::new(
+                Engine::open(EngineConfig::rooted_at(dir.path()))
+                    .await
+                    .unwrap(),
+            );
+            let library = tempfile::tempdir().unwrap();
+            let code = match case {
+                "create" => None,
+                "join" => {
+                    let other = Engine::open(EngineConfig::rooted_at(library.path()))
+                        .await
+                        .unwrap();
+                    let code = other
+                        .create_sync_library_via(origin(), "Study", &server)
+                        .await
+                        .unwrap();
+                    fill(&other, n / 10, "Library", Isbns::Odd).await;
+                    other
+                        .sync_now_with(|_| Ok(server.clone()), Receiver::default())
+                        .await
+                        .unwrap();
+                    Some(code)
+                }
+                "backlog" => {
+                    engine
+                        .create_sync_library_via(origin(), "Study", &server)
+                        .await
+                        .unwrap();
+                    engine
+                        .sync_now_with(|_| Ok(server.clone()), Receiver::default())
+                        .await
+                        .unwrap();
+                    None
+                }
+                other => panic!("no case {other}"),
+            };
+            let started = Instant::now();
+            let isbns = if case == "join" {
+                Isbns::All
+            } else {
+                Isbns::None
+            };
+            fill(&engine, n, "Book", isbns).await;
+            let filled = started.elapsed();
+            let beside = Arc::new(
+                Engine::open(EngineConfig::rooted_at(dir.path()))
+                    .await
+                    .unwrap(),
+            );
+            let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(engine.storage().pool())
+                .await
+                .unwrap();
+            engine.sync.held.lock().await.step_rows = collect;
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let probe = probe_write_lock(&engine, stop.clone());
+            let writer = party(stop.clone(), {
+                let engine = engine.clone();
+                move |i| {
+                    let engine = engine.clone();
+                    async move {
+                        let name = format!("Written while syncing {i}");
+                        engine.create_list(&name, None).await.map(|_| ())
+                    }
+                }
+            });
+            let reader = party(stop.clone(), {
+                let engine = engine.clone();
+                move |_| {
+                    let engine = engine.clone();
+                    async move {
+                        let page = BookQuery::new(50, BookSort::Title);
+                        engine.list_books(&page).await.map(|_| ())
+                    }
+                }
+            });
+            let other = party(stop.clone(), {
+                let beside = beside.clone();
+                move |i| {
+                    let beside = beside.clone();
+                    async move {
+                        let name = format!("Written beside {i}");
+                        beside.create_list(&name, None).await.map(|_| ())
+                    }
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let started = Instant::now();
+            match case {
+                "create" => {
+                    engine
+                        .create_sync_library_via(origin(), "Study", &server)
+                        .await
+                        .unwrap();
+                }
+                "join" => {
+                    engine
+                        .join_sync_library_via(
+                            origin(),
+                            code.as_ref().unwrap().as_str(),
+                            "Reading chair",
+                            &server,
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let turned_on = started.elapsed();
+            let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let timings = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut receiver = Receiver::default();
+            receiver.faults.steps = Some(steps.clone());
+            receiver.faults.timings = Some(timings.clone());
+            receiver.faults.collect = collect;
+            let outcome = engine.sync_now_with(|_| Ok(server.clone()), receiver).await;
+            let total = started.elapsed();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stop.store(true, Ordering::Relaxed);
+            let longest = probe.join().unwrap();
+            let parties = [
+                ("writer", writer.await.unwrap()),
+                ("reader", reader.await.unwrap()),
+                ("other engine", other.await.unwrap()),
+            ];
+            let mut line = format!(
+                "{case} {n} books, {journal}: filled in {:.1}s; turned on in {:.1}s, synced in \
+                 {:.1}s, {:.1}s in all ({}); write lock never free for {} ms",
+                filled.as_secs_f64(),
+                turned_on.as_secs_f64(),
+                (total - turned_on).as_secs_f64(),
+                total.as_secs_f64(),
+                match &outcome {
+                    Ok(o) => format!("sent {}, received {}", o.sent, o.received),
+                    Err(e) => format!("failed: {e}"),
+                },
+                longest.as_millis(),
+            );
+            for (name, p) in &parties {
+                line += &format!(
+                    "; {name} worst {} ms at {:.1}s, {} of {} failed",
+                    p.worst.as_millis(),
+                    p.worst_began
+                        .map_or(0.0, |w| w.saturating_duration_since(started).as_secs_f64()),
+                    p.failed,
+                    p.calls
+                );
+                if let Some(e) = &p.error {
+                    line += &format!(" ({e})");
+                }
+            }
+            // Each transaction's work, its commit left out.
+            let held = engine.sync.held.lock().await;
+            let installs: Vec<Duration> =
+                held.install_steps.iter().map(|(took, _)| *took).collect();
+            if let Some((_, ended)) = held.install_steps.first() {
+                line += &format!(
+                    "; first install step ended at {:.1}s",
+                    ended.saturating_duration_since(started).as_secs_f64()
+                );
+            }
+            drop(held);
+            let steps: Vec<Duration> = steps
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| t.kernel + t.repair)
+                .collect();
+            let applies: Vec<Duration> = timings
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|t| t.kernel + t.repair)
+                .collect();
+            for (name, took) in [
+                ("install steps", &installs),
+                ("collect steps", &steps),
+                ("applies", &applies),
+            ] {
+                let longest = took.iter().max().copied().unwrap_or_default();
+                let first = took.first().copied().unwrap_or_default();
+                line += &format!(
+                    "; {} {name}, longest {} ms, first {} ms",
+                    took.len(),
+                    longest.as_millis(),
+                    first.as_millis()
+                );
+            }
+            println!("{line}");
+        }
+    }
+}
+
+/// What `d` sent through `server`, with what differs between two runs renamed: gids in order of
+/// first appearance and clocks by rank.
+fn sent(d: &Device, server: &TestServer) -> Vec<String> {
+    use std::collections::BTreeMap;
+
+    use fongo_sync_sqlite::core::{Gid, Value};
+
+    let super::identity::Stored::Found(identity) =
+        super::identity::read(&d.root.join(super::identity::FILE_NAME)).unwrap()
+    else {
+        panic!("no identity");
+    };
+    let key = identity.credentials.device().verifying_key();
+    let changes: Vec<_> = server
+        .envelopes()
+        .iter()
+        .flat_map(|e| {
+            fongo_sync_client::protocol::open(e, identity.credentials.library(), |_| Some(key))
+                .unwrap()
+                .changes
+        })
+        .collect();
+    let mut clocks: Vec<_> = changes.iter().map(|c| c.clock).collect();
+    clocks.sort();
+    clocks.dedup();
+    let mut gids: BTreeMap<Gid, usize> = BTreeMap::new();
+    let mut name = |gid: Gid| {
+        let next = gids.len();
+        *gids.entry(gid).or_insert(next)
+    };
+    changes
+        .iter()
+        .map(|c| {
+            let gid = name(c.gid);
+            let value = match &c.value {
+                Value::Ref(g) => format!("ref {}", name(*g)),
+                other => format!("{other:?}"),
+            };
+            let rank = clocks.binary_search(&c.clock).unwrap();
+            format!("{} {gid} {} {value} at {rank}", c.collection, c.field)
+        })
+        .collect()
+}
+
+async fn uncollected(d: &Device) -> usize {
+    let mut conn = d.engine.storage().pool().acquire().await.unwrap();
+    super::replica()
+        .unwrap()
+        .uncollected_rows(&mut conn, usize::MAX)
+        .await
+        .unwrap()
+}
+
+/// Turning sync on over a library adopts its rows in several transactions, and a write the
+/// reader makes between two of them, while rows still wait to be adopted, goes through and is
+/// sent with them.
+#[tokio::test]
+async fn sync_turned_on_over_a_library_adopts_it_in_steps_and_lets_writes_through() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    fill(&a.engine, 60, "Book", Isbns::None).await;
+    let (gaps, mut gap) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let mut held = a.engine.sync.held.lock().await;
+        held.step_rows = Some(40);
+        held.gaps = Some(gaps);
+    }
+    let creating = async {
+        let code = create(&a, &server).await;
+        a.engine.sync.held.lock().await.gaps = None;
+        code
+    };
+    let answering = async {
+        let mut waiting = Vec::new();
+        while let Some(done) = gap.recv().await {
+            if waiting.is_empty() {
+                waiting.push(uncollected(&a).await);
+                a.engine
+                    .create_list("Written while turning sync on", None)
+                    .await
+                    .unwrap();
+            }
+            done.send(()).unwrap();
+        }
+        waiting
+    };
+    let (code, waiting) = tokio::join!(creating, answering);
+    assert!(waiting[0] > 0, "{waiting:?}");
+    let steps = a.engine.sync.held.lock().await.install_steps.len();
+    assert!(steps >= 3, "{steps} steps");
+    assert_eq!(uncollected(&a).await, 1);
+
+    join(&b, &server, &code).await;
+    converge(&[&a, &b], &server).await;
+    assert_eq!(scalar::<i64>(&b, "SELECT count(*) FROM books").await, 60);
+    assert_eq!(
+        scalar::<i64>(&b, "SELECT count(*) FROM note_bodies").await,
+        60
+    );
+    assert_eq!(
+        rows(&b, "SELECT name FROM book_lists").await,
+        ["Written while turning sync on"]
+    );
+}
+
+/// A device whose process stopped between two steps of turning sync on carries on in steps
+/// once it opens again, and sends what one that never stopped sends.
+#[tokio::test]
+async fn sync_turned_on_and_stopped_part_way_carries_on_in_steps_after_a_restart() {
+    use std::sync::{Arc, Mutex};
+
+    async fn run(stop: Option<usize>) -> (Vec<String>, usize, Vec<usize>) {
+        let server = TestServer::default();
+        let a = device().await;
+        fill(&a.engine, 60, "Book", Isbns::None).await;
+        // Made at the first open; the two runs' would differ only by when they ran.
+        sqlx::query("UPDATE rating_scales SET created_at = 1")
+            .execute(a.engine.storage().pool())
+            .await
+            .unwrap();
+        {
+            let mut held = a.engine.sync.held.lock().await;
+            held.step_rows = Some(40);
+            held.stop_after_steps = stop;
+        }
+        create(&a, &server).await;
+        let installed = a.engine.sync.held.lock().await.install_steps.len();
+        let a = reopen(a).await;
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut receiver = Receiver::default();
+        receiver.faults.collect = Some(40);
+        receiver.faults.steps = Some(steps.clone());
+        sync_with(&a, &server, receiver).await.unwrap();
+        assert_eq!(uncollected(&a).await, 0);
+        let steps = steps.lock().unwrap().iter().map(|(_, c)| c.rows).collect();
+        (sent(&a, &server), installed, steps)
+    }
+
+    let (whole, installed, _) = run(None).await;
+    assert!(installed >= 3, "{installed}");
+    let (stopped, installed, steps) = run(Some(2)).await;
+    assert_eq!(installed, 2);
+    assert!(steps.len() >= 2, "{steps:?}");
+    assert!(steps.iter().all(|&rows| rows < 100), "{steps:?}");
+    assert_eq!(stopped.len(), whole.len());
+    assert_eq!(stopped, whole);
+}
+
+async fn reflection_note(d: &Device, path: &str, kind: &str, made: i64) -> i64 {
+    let reading: i64 = scalar(d, "SELECT id FROM readings").await;
+    let book: i64 = scalar(d, "SELECT id FROM books").await;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO notes (book_id, reading_id, file_path, title, kind, created_at,
+                            last_modified)
+         VALUES (?, ?, ?, 'Prelude', ?, ?, ?) RETURNING id",
+    )
+    .bind(book)
+    .bind(reading)
+    .bind(path)
+    .bind(kind)
+    .bind(made)
+    .bind(made)
+    .fetch_one(d.engine.storage().pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO note_bodies (note_id, body) VALUES (?, 'Dorothea')")
+        .bind(id)
+        .execute(d.engine.storage().pool())
+        .await
+        .unwrap();
+    id
+}
+
+async fn unhistoric(d: &Device) -> usize {
+    d.engine
+        .search_marks("unhistoric", Some(SearchSource::Note), None, 10)
+        .await
+        .unwrap()
+        .len()
+}
+
+async fn run_on(d: &Device, sql: &str, id: i64) {
+    sqlx::query(sql)
+        .bind(id)
+        .execute(d.engine.storage().pool())
+        .await
+        .unwrap();
+}
+
+/// Another device makes a note into a reflection, which waits on `a` behind `a`'s own
+/// reflection on the same reading, until the reader on `a` makes theirs a plain note and edits
+/// the waiting one. Returns the waiting note's id on `a`; nothing on `a` is collected since.
+async fn a_reflection_freed_here(server: &TestServer) -> (Device, i64) {
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, server).await;
+    join(&b, server, &code).await;
+    let book = add_book(&a, "Middlemarch").await;
+    a.engine
+        .storage()
+        .open_reading(book, Some(100), "manual")
+        .await
+        .unwrap();
+    converge(&[&a, &b], server).await;
+    reflection_note(&a, "Middlemarch/finale.md", "note", 2000).await;
+    converge(&[&a, &b], server).await;
+
+    let on_b: i64 = scalar(&b, "SELECT id FROM notes").await;
+    run_on(
+        &b,
+        "UPDATE notes SET kind = 'reflection', title = 'Unhistoric acts' WHERE id = ?",
+        on_b,
+    )
+    .await;
+    let ours = reflection_note(&a, "Middlemarch/reflection.md", "reflection", 1000).await;
+    sync(&b, server).await;
+    let got = sync(&a, server).await;
+    assert!(got.held.iter().any(|h| h.collection == "notes"), "{got:?}");
+    assert_eq!(unhistoric(&a).await, 0);
+
+    let waiting: i64 = scalar(&a, "SELECT id FROM notes WHERE kind = 'note'").await;
+    run_on(&a, "UPDATE notes SET kind = 'note' WHERE id = ?", ours).await;
+    run_on(&a, "UPDATE notes SET page = 838 WHERE id = ?", waiting).await;
+    (a, waiting)
+}
+
+fn writes(collected: &fongo_sync_sqlite::Collected, note: i64) -> bool {
+    collected
+        .touched
+        .iter()
+        .any(|t| t.collection == "notes" && t.key == format!("[{note}]") && !t.deleted)
+}
+
+/// A step of collecting that writes a row held back before brings what this device derives
+/// from it up to date in the step's own transaction: the freed reflection is found by its new
+/// title once the step commits.
+#[tokio::test]
+async fn a_row_a_step_of_collecting_writes_is_repaired_with_it() {
+    use fongo_sync_client::Apply;
+
+    let server = TestServer::default();
+    let (a, waiting) = a_reflection_freed_here(&server).await;
+    let replica = super::replica().unwrap();
+    let mut conn = a.engine.storage().pool().acquire().await.unwrap();
+    let mut tx = conn.begin().await.unwrap();
+    let collected = Receiver::default()
+        .collect(&mut tx, &replica, 1)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(conn);
+    assert!(writes(&collected, waiting), "{collected:?}");
+    assert_eq!(unhistoric(&a).await, 1);
+}
+
+/// The same, with much written offline after the edits that free the reflection: the sync's
+/// first step writes it, the rest follow in steps, and the sync reports something received.
+#[tokio::test]
+async fn a_row_the_first_step_of_a_sync_writes_is_repaired_and_reported() {
+    use std::sync::{Arc, Mutex};
+
+    let server = TestServer::default();
+    let (a, waiting) = a_reflection_freed_here(&server).await;
+    for i in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        add_book(&a, &format!("Written offline {i}")).await;
+    }
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let mut receiver = Receiver::default();
+    receiver.faults.collect = Some(5);
+    receiver.faults.steps = Some(steps.clone());
+    let got = sync_with(&a, &server, receiver).await.unwrap();
+    assert!(got.held.is_empty(), "{got:?}");
+    assert!(got.received, "{got:?}");
+    let steps = steps.lock().unwrap().clone();
+    assert!(steps.len() >= 3, "{} steps", steps.len());
+    let wrote = steps.iter().position(|(_, c)| writes(c, waiting));
+    assert_eq!(wrote, Some(0), "{steps:?}");
+    assert_eq!(unhistoric(&a).await, 1);
+}
+
+/// A database whose sync tables are of the layout the kernel used before installing in steps
+/// opens, is upgraded in place by its next sync, and sends what waited: changes already in its
+/// outbox and a write not yet collected.
+#[tokio::test]
+async fn a_library_of_the_earlier_sync_layout_is_upgraded_and_keeps_its_outbox() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    converge(&[&a, &b], &server).await;
+
+    add_book(&a, "Middlemarch").await;
+    {
+        let mut conn = a.engine.storage().pool().acquire().await.unwrap();
+        let replica = super::replica().unwrap();
+        replica.collect(&mut conn).await.unwrap();
+        assert!(
+            !replica
+                .outbox(&mut conn, 10)
+                .await
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+    }
+    add_book(&a, "Romola").await;
+    // As the kernel's layout 3 laid its tables down: without the found rows' table, its index,
+    // or the index of marks in collecting order.
+    for sql in [
+        "DROP TABLE fongo_found",
+        "DROP INDEX fongo_dirty_order",
+        "UPDATE fongo_meta SET value = 3 WHERE key = 'layout'",
+    ] {
+        sqlx::query(sql)
+            .execute(a.engine.storage().pool())
+            .await
+            .unwrap();
+    }
+    let a = reopen(a).await;
+    assert_eq!(
+        scalar::<i64>(&a, "SELECT value FROM fongo_meta WHERE key = 'layout'").await,
+        3
+    );
+    let got = sync(&a, &server).await;
+    assert!(got.sent, "{got:?}");
+    assert_eq!(
+        scalar::<i64>(&a, "SELECT value FROM fongo_meta WHERE key = 'layout'").await,
+        4
+    );
+    assert_eq!(
+        scalar::<i64>(
+            &a,
+            "SELECT count(*) FROM sqlite_master
+              WHERE name IN ('fongo_found', 'fongo_found_batch', 'fongo_dirty_order')"
+        )
+        .await,
+        3
+    );
+    converge(&[&a, &b], &server).await;
+    assert_eq!(
+        rows(&b, "SELECT title FROM books ORDER BY title").await,
+        ["Middlemarch", "Romola"]
+    );
 }

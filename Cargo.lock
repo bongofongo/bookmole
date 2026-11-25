@@ -1102,7 +1102,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "fongo-sync-client"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=9eda53e03f1b6f9d412cdfc36c39524cf58ad35d#9eda53e03f1b6f9d412cdfc36c39524cf58ad35d"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=351a1ebd876ced9785003257f4c94a5403188f92#351a1ebd876ced9785003257f4c94a5403188f92"
 dependencies = [
  "fongo-sync-protocol",
  "fongo-sync-sqlite",
@@ -1116,7 +1116,7 @@ dependencies = [
 [[package]]
 name = "fongo-sync-core"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=9eda53e03f1b6f9d412cdfc36c39524cf58ad35d#9eda53e03f1b6f9d412cdfc36c39524cf58ad35d"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=351a1ebd876ced9785003257f4c94a5403188f92#351a1ebd876ced9785003257f4c94a5403188f92"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -1124,7 +1124,7 @@ dependencies = [
 [[package]]
 name = "fongo-sync-protocol"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=9eda53e03f1b6f9d412cdfc36c39524cf58ad35d#9eda53e03f1b6f9d412cdfc36c39524cf58ad35d"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=351a1ebd876ced9785003257f4c94a5403188f92#351a1ebd876ced9785003257f4c94a5403188f92"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1140,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "fongo-sync-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/bongofongo/fongo-sync?rev=9eda53e03f1b6f9d412cdfc36c39524cf58ad35d#9eda53e03f1b6f9d412cdfc36c39524cf58ad35d"
+source = "git+https://github.com/bongofongo/fongo-sync?rev=351a1ebd876ced9785003257f4c94a5403188f92#351a1ebd876ced9785003257f4c94a5403188f92"
 dependencies = [
  "fongo-sync-core",
  "libsqlite3-sys",
