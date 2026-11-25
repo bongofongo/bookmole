@@ -20,6 +20,9 @@ use fongo_sync_client::protocol::{
 };
 use fongo_sync_client::{Method, Request, Response, Transport, TransportError};
 
+/// Every refusal a sync server may send, for tests that decide what each means to a reader.
+pub use fongo_sync_client::protocol::api::ErrorCode as RefusalCode;
+
 #[derive(Default)]
 struct Library {
     devices: Vec<DeviceRecord>,
