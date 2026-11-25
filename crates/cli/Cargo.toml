@@ -27,5 +27,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # the engine, so no new crate enters the tree.
 tempfile = "3"
 
+[dev-dependencies]
+# `internals` brings the engine's in-memory sync server, which the sync tests serve on loopback for
+# two processes of the binary to sync through. A dev-dependency, so nothing that ships has it.
+bookmole = { path = "../engine", features = ["internals"] }
+
 [lints]
 workspace = true
