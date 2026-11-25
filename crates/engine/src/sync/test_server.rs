@@ -67,6 +67,11 @@ impl TestServer {
     }
 
     /// The `n`-th request from now on, counted from 1, is never answered.
+    /// Every envelope appended, in the order the log holds them.
+    pub(crate) fn envelopes(&self) -> Vec<Vec<u8>> {
+        self.with(|s| s.libraries.values().flat_map(|l| l.log.clone()).collect())
+    }
+
     pub(crate) fn hang_at(&self, n: Option<usize>) {
         self.with(|s| s.hang_at = n.map(|n| s.requests + n));
     }

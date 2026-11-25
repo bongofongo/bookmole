@@ -12,7 +12,7 @@ use std::path::Path;
 
 use fongo_sync_client::{Apply, Error as ClientError, Pace, merge_applied};
 use fongo_sync_sqlite::core::{Change, Strategy};
-use fongo_sync_sqlite::{Applied, Collection, LocalDefault, Registry, Replica};
+use fongo_sync_sqlite::{Applied, Collected, Collection, LocalDefault, Registry, Replica};
 use sqlx::SqliteConnection;
 
 use crate::error::{EngineError, Result};
@@ -223,6 +223,13 @@ pub(crate) async fn installed(conn: &mut SqliteConnection) -> Result<bool> {
 /// of note bodies held the write lock for about a second in a library of 50,000 books.
 const PACE_APPLY: usize = 2_000;
 
+/// Rows one step of collecting local writes takes, which bounds each transaction of turning sync
+/// on over a library and of a sync after much was written offline. Half the kernel's default:
+/// over 10,000 books each with a highlight and a note, a step of 1,000 rows held the write lock
+/// for up to 0.57 s, of 500 up to 0.40 s and of 250 up to 0.33 s, while the whole took 10% and
+/// then 25% longer; the other writers' worst waits, 1 to 4 s, did not clearly shorten below 500.
+pub(crate) const PACE_COLLECT: usize = 500;
+
 /// How many times one settle gives up rows that keep held rows out and tries those again. What
 /// still waits after that is reported held and tried by the next settle.
 const SETTLE_ROUNDS: usize = 4;
@@ -267,13 +274,23 @@ pub(crate) struct Faults {
     pub(crate) fail_caught_up: bool,
     /// Where to record, for each apply, the time in the kernel's apply and in the repair.
     pub(crate) timings: Option<std::sync::Arc<std::sync::Mutex<Vec<Timing>>>>,
+    /// Where to record, for the step of installing before each round and each step of
+    /// collecting the client asks for, the same, and what the step did.
+    pub(crate) steps: Option<std::sync::Arc<std::sync::Mutex<Vec<Steps>>>>,
+    /// Rows a step of collecting takes, in place of [`PACE_COLLECT`].
+    pub(crate) collect: Option<usize>,
     /// Where to record each time the client calls [`Apply::between`].
     pub(crate) gaps: Option<std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>>,
-    /// Where to record the [`Pace::held`] each sync starts from.
+    /// Where to record, for each round of one [`crate::Engine::sync_now`], how long the round
+    /// before it held the write lock since it last paused.
     pub(crate) paces: Option<std::sync::Arc<std::sync::Mutex<Vec<std::time::Duration>>>>,
     /// Called inside the first apply that is given changes, with its transaction open.
     pub(crate) in_first_apply: Option<Box<dyn FnOnce() + Send>>,
 }
+
+/// One step of collecting: how long it took, and what it did.
+#[cfg(test)]
+pub(crate) type Steps = (Timing, Collected);
 
 /// One apply: when it ran, what it was given, and the time it spent in the kernel (with any
 /// give-way rounds) and in the repair.
@@ -320,6 +337,28 @@ impl Apply for Receiver {
         Ok(applied)
     }
 
+    async fn collect(
+        &mut self,
+        conn: &mut SqliteConnection,
+        replica: &Replica,
+        rows: usize,
+    ) -> std::result::Result<Collected, ClientError> {
+        let (collected, timing) =
+            step_and_repair(conn, replica, Step::Collect, rows, self.vault.as_deref()).await?;
+        tracing::debug!(
+            kernel_ms = timing.kernel.as_millis() as u64,
+            repair_ms = timing.repair.as_millis() as u64,
+            rows = collected.rows,
+            touched = timing.touched,
+            "collected a step of local writes"
+        );
+        #[cfg(test)]
+        if let Some(steps) = &self.faults.steps {
+            steps.lock().unwrap().push((timing, collected.clone()));
+        }
+        Ok(collected)
+    }
+
     async fn caught_up(
         &mut self,
         conn: &mut SqliteConnection,
@@ -346,15 +385,23 @@ impl Apply for Receiver {
     }
 
     fn pace(&self) -> Pace {
-        #[cfg(test)]
-        if let Some(paces) = &self.faults.paces {
-            paces.lock().unwrap().push(self.held);
-        }
         Pace {
             apply: PACE_APPLY,
+            collect: self.collect_rows(),
             held: self.held,
             ..Pace::default()
         }
+    }
+}
+
+impl Receiver {
+    /// [`Pace::collect`].
+    pub(crate) fn collect_rows(&self) -> usize {
+        #[cfg(test)]
+        if let Some(rows) = self.faults.collect {
+            return rows;
+        }
+        PACE_COLLECT
     }
 }
 
@@ -435,6 +482,50 @@ async fn apply_and_repair(
         touched: touched.len(),
     };
     Ok((applied, timing))
+}
+
+/// Which of the kernel's bounded steps [`step_and_repair`] takes.
+#[derive(Clone, Copy)]
+pub(crate) enum Step {
+    /// [`Replica::install_step`]: installs, or adopts what changed in the registry, then collects.
+    Install,
+    Collect,
+}
+
+/// Takes one bounded step of collecting local writes, in the caller's transaction, and repairs
+/// what this device derives from the rows the step wrote, as [`apply_and_repair`] does for an
+/// apply: a step can write rows besides collecting them, a merge of entities found to be one
+/// or a row held back before that it can write at last.
+pub(crate) async fn step_and_repair(
+    conn: &mut SqliteConnection,
+    replica: &Replica,
+    step: Step,
+    rows: usize,
+    vault: Option<&Path>,
+) -> std::result::Result<(Collected, Timing), ClientError> {
+    let started = std::time::Instant::now();
+    synced::watch_covers(conn).await.map_err(application)?;
+    let collected = match step {
+        Step::Install => replica.install_step(conn, rows).await?,
+        Step::Collect => replica.collect_step(conn, rows).await?,
+    };
+    let kernel = started.elapsed();
+    synced::repair(conn, &collected.touched, vault)
+        .await
+        .map_err(application)?;
+    let ended = std::time::Instant::now();
+    let timing = Timing {
+        #[cfg(test)]
+        started,
+        #[cfg(test)]
+        ended,
+        #[cfg(test)]
+        changes: collected.produced,
+        kernel,
+        repair: ended - started - kernel,
+        touched: collected.touched.len(),
+    };
+    Ok((collected, timing))
 }
 
 /// How many books a sync hands back to fetch covers for at most.

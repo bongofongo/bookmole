@@ -314,8 +314,9 @@ async fn rehash(conn: &mut SqliteConnection) {
 /// are kept as this device's own rather than sent; for that, change capture is suspended around
 /// them while this connection holds the write lock, so no other process writes uncaptured.
 /// Capture an earlier open left suspended resumes sending differences, since anything may have
-/// been written meanwhile. A sync failure is logged, not returned: the library still opens, and
-/// the next open finds capture suspended and tries again.
+/// been written meanwhile. A failure to resume is logged, not returned: the library still opens,
+/// and the next open finds capture suspended and tries again. A failure to suspend is returned,
+/// and nothing is migrated.
 async fn open_synced(conn: &mut SqliteConnection) -> Result<()> {
     let capture_on = capture_installed(conn).await?;
     if !migrations_pending(conn).await? {
@@ -334,30 +335,34 @@ async fn open_synced(conn: &mut SqliteConnection) -> Result<()> {
             return Err(error);
         }
     };
-    let suspended = capture_on && suspend(conn).await;
+    // Migrating with capture on would send every row rewritten, and could leave sync refused.
+    if capture_on && let Err(error) = suspend(conn).await {
+        release_write_lock(conn).await?;
+        return Err(crate::sync::SyncError::CannotPause(error.to_string()).into());
+    }
     let migrated = migrate(conn).await;
     if migrated.is_ok() {
         rehash(conn).await;
     }
-    if suspended {
-        resume(conn, Resume::Baseline).await;
-    } else if !capture_on {
-        resume(conn, Resume::Send).await;
-    }
+    resume(
+        conn,
+        if capture_on {
+            Resume::Baseline
+        } else {
+            Resume::Send
+        },
+    )
+    .await;
     let released = release_write_lock(conn).await;
     migrated?;
     released
 }
 
-async fn suspend(conn: &mut SqliteConnection) -> bool {
-    let done = match crate::sync::replica() {
-        Ok(replica) => replica.suspend(conn).await.map_err(crate::sync::kernel),
-        Err(e) => Err(e),
-    };
-    if let Err(error) = &done {
-        tracing::warn!(%error, "could not suspend sync before migrating; the migration's rewrites will be sent");
-    }
-    done.is_ok()
+async fn suspend(conn: &mut SqliteConnection) -> Result<()> {
+    crate::sync::replica()?
+        .suspend(conn)
+        .await
+        .map_err(crate::sync::kernel)
 }
 
 async fn resume(conn: &mut SqliteConnection, how: Resume) {
@@ -633,6 +638,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replica.collect(&mut conn).await.unwrap(), 1);
+    }
+
+    /// An open that cannot suspend sync before migrating refuses to open and migrates nothing:
+    /// here a first install in steps still waits to adopt rows, and a column it reads is gone.
+    /// Once the column is back, the open suspends, migrates and resumes.
+    #[tokio::test]
+    async fn an_open_that_cannot_suspend_sync_migrates_nothing() {
+        use sqlx::Connection;
+        use sqlx::migrate::Migrate;
+
+        const FIRST_LATER: i64 = 35;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let opts = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let mut conn = SqliteConnection::connect_with(&opts).await.unwrap();
+        conn.ensure_migrations_table().await.unwrap();
+        for m in MIGRATOR.iter().filter(|m| m.version < FIRST_LATER) {
+            conn.apply(m).await.unwrap();
+        }
+        for title in ["Middlemarch", "Romola", "Adam Bede", "Silas Marner"] {
+            sqlx::query(
+                "INSERT INTO books (title, publisher, created_at, last_modified)
+                 VALUES (?, 'Blackwood', 0, 0)",
+            )
+            .bind(title)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        }
+        let replica = crate::sync::replica().unwrap();
+        assert!(replica.install_step(&mut conn, 1).await.unwrap().more);
+        let rename =
+            |from: &str, to: &str| format!("ALTER TABLE books RENAME COLUMN {from} TO {to}");
+        sqlx::query(&rename("publisher", "imprint"))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        conn.close().await.unwrap();
+
+        let refused = Storage::connect(&url).await.unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                crate::EngineError::Sync(crate::sync::SyncError::CannotPause(_))
+            ),
+            "{refused}"
+        );
+        let mut conn = SqliteConnection::connect_with(&opts).await.unwrap();
+        let latest: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert!(latest < FIRST_LATER, "{latest}");
+        assert!(capture_installed(&mut conn).await.unwrap());
+        assert!(replica.uncollected_rows(&mut conn, 10).await.unwrap() > 0);
+        sqlx::query(&rename("imprint", "publisher"))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        conn.close().await.unwrap();
+
+        let s = Storage::connect(&url).await.unwrap();
+        let mut conn = s.pool().acquire().await.unwrap();
+        assert!(!migrations_pending(&mut conn).await.unwrap());
+        assert!(capture_installed(&mut conn).await.unwrap());
+        assert_eq!(replica.uncollected_rows(&mut conn, 10).await.unwrap(), 0);
     }
 
     /// A library whose capture another open suspended: what was written meanwhile is sent.

@@ -4,14 +4,14 @@ use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fongo_sync_client::{Apply, Error as ClientError, SyncReport, Transport, merge_applied};
-use fongo_sync_sqlite::{Applied, Conflict, Replica, Resume};
+use fongo_sync_sqlite::{Applied, Collected, Conflict, Replica, Resume};
 use sqlx::sqlite::SqliteConnection;
 use sqlx::{ConnectOptions, Connection};
 use zeroize::Zeroizing;
 
 use super::http::{HttpTransport, Origin};
 use super::identity::{self, Identity, Stored};
-use super::{Receiver, kernel, replica, unwrap_application};
+use super::{PACE_COLLECT, Receiver, Step, kernel, replica, step_and_repair, unwrap_application};
 use crate::Engine;
 use crate::error::{EngineError, Result};
 
@@ -50,6 +50,10 @@ pub enum SyncError {
     /// committed stays; trying again carries on.
     #[error("sync stopped before it finished; try again")]
     Interrupted,
+    /// The library needs a schema update, and change capture could not be paused for it, so
+    /// the update was not made and the library did not open. `0` says why.
+    #[error("this library needs an update, and sync could not be paused for it: {0}")]
+    CannotPause(String),
 }
 
 impl SyncError {
@@ -160,6 +164,18 @@ pub(crate) struct Held {
     pub(crate) opened: usize,
     #[cfg(test)]
     pub(crate) busy_retries: usize,
+    /// Each step of installing a create or a join took, and when it ended.
+    #[cfg(test)]
+    pub(crate) install_steps: Vec<(Duration, std::time::Instant)>,
+    /// Stop installing after this many steps, as a process that stops part-way would.
+    #[cfg(test)]
+    pub(crate) stop_after_steps: Option<usize>,
+    /// Rows each step of installing takes, in place of [`PACE_COLLECT`].
+    #[cfg(test)]
+    pub(crate) step_rows: Option<usize>,
+    /// Told in each gap between steps of installing, which waits until the test answers.
+    #[cfg(test)]
+    pub(crate) gaps: Option<tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>>,
 }
 
 /// A connection of a sync's own, opened from the pool's options and never one of the pool's,
@@ -355,20 +371,45 @@ impl Engine {
     }
 
     /// Stores the identity, then installs change capture; an install that fails takes the
-    /// identity back out, so the library is left as it was.
+    /// identity back out, so the library is left as it was. The install is a first step that
+    /// records the rows already here, then steps that adopt them, each a transaction of its own
+    /// paced as a sync paces its own, so the rest of the app keeps using the database meanwhile.
+    /// Once the first step has committed the library syncs: a later step that fails leaves the
+    /// rest to the next sync, which carries on from there.
     async fn install_identity(&self, held: &mut Held, identity: &Identity) -> Result<()> {
         identity::write(&self.config.sync_identity, identity)?;
-        let installed = async {
-            let mut conn = SyncConnection::open(self, held).await?;
-            let installed = replica()?.install(conn.get()).await.map_err(kernel_error);
-            conn.close().await;
-            installed
+        let replica = replica()?;
+        let mut receiver = Receiver {
+            vault: Some(self.config.vault_dir.clone()),
+            ..Receiver::default()
+        };
+        let mut conn = match SyncConnection::open(self, held).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                identity::remove(&self.config.sync_identity).ok();
+                return Err(e);
+            }
+        };
+        let began = std::time::Instant::now();
+        let first = match install_step(conn.get(), &replica, Step::Install, held, &receiver).await {
+            Ok(first) => first,
+            Err(e) => {
+                conn.close().await;
+                identity::remove(&self.config.sync_identity).ok();
+                return Err(engine_error(e));
+            }
+        };
+        receiver.held = began.elapsed();
+        if first.more
+            && let Err(error) = adopt_found(conn.get(), &replica, held, &mut receiver).await
+        {
+            tracing::warn!(
+                error = %engine_error(error),
+                "sync is on, but adopting this library's rows stopped part-way; the next sync carries on"
+            );
         }
-        .await;
-        if installed.is_err() {
-            identity::remove(&self.config.sync_identity).ok();
-        }
-        installed
+        conn.close().await;
+        Ok(())
     }
 
     /// The recovery code of the library this one syncs with.
@@ -433,10 +474,18 @@ impl Engine {
         let mut outcome = SyncOutcome::default();
         let mut conflicts = Vec::new();
         let mut busy = 0;
+        let mut prepared_wrote = false;
         loop {
             let mut conn = SyncConnection::open(self, held).await?;
+            #[cfg(test)]
+            if let Some(paces) = &receiver.faults.paces {
+                paces.lock().unwrap().push(receiver.held);
+            }
             let round = async {
-                prepare(conn.get(), &replica).await?;
+                let began = std::time::Instant::now();
+                let prepared = prepare(conn.get(), &replica, receiver).await?;
+                receiver.held += began.elapsed();
+                prepared_wrote |= !prepared.touched.is_empty();
                 fongo_sync_client::sync_with(
                     conn.get(),
                     &replica,
@@ -483,6 +532,7 @@ impl Engine {
                 Err(e) => return Err(engine_error(e)),
             }
         }
+        outcome.received |= prepared_wrote;
         outcome.conflicts = self.conflicts_of(&replica, conflicts).await?;
         let after = super::after_sync(
             &self.storage,
@@ -542,25 +592,113 @@ impl Engine {
 }
 
 /// Adopts registry changes, and puts change capture back if an open could not: a sync with
-/// capture off would miss what was written meanwhile.
+/// capture off would miss what was written meanwhile. Installing is a bounded step, so rows a
+/// first install recorded and has not adopted yet are adopted in steps, by this and the sync's
+/// own steps of collecting, never whole.
 async fn prepare(
     conn: &mut SqliteConnection,
     replica: &Replica,
-) -> std::result::Result<(), ClientError> {
+    receiver: &Receiver,
+) -> std::result::Result<Collected, ClientError> {
     let capture_on = crate::storage::capture_installed(conn)
         .await
         .map_err(|e| ClientError::Application(Box::new(e)))?;
-    if capture_on {
-        replica.install(conn).await?;
-    } else {
+    if !capture_on {
         replica.resume(conn, Resume::Send).await?;
+        return Ok(Collected::default());
+    }
+    let rows = receiver.collect_rows();
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+    let (collected, timing) = step_and_repair(
+        &mut tx,
+        replica,
+        Step::Install,
+        rows,
+        receiver.vault.as_deref(),
+    )
+    .await?;
+    tx.commit().await?;
+    #[cfg(test)]
+    if let Some(steps) = &receiver.faults.steps {
+        steps.lock().unwrap().push((timing, collected.clone()));
+    }
+    #[cfg(not(test))]
+    let _ = timing;
+    Ok(collected)
+}
+
+/// One step of installing or collecting in a transaction of its own, which takes the write lock
+/// with its first statement.
+async fn install_step(
+    conn: &mut SqliteConnection,
+    replica: &Replica,
+    step: Step,
+    held: &mut Held,
+    receiver: &Receiver,
+) -> std::result::Result<Collected, ClientError> {
+    #[cfg(test)]
+    let rows = held.step_rows.unwrap_or(PACE_COLLECT);
+    #[cfg(not(test))]
+    let rows = PACE_COLLECT;
+    let began = std::time::Instant::now();
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+    let (collected, _) =
+        step_and_repair(&mut tx, replica, step, rows, receiver.vault.as_deref()).await?;
+    tx.commit().await?;
+    #[cfg(test)]
+    held.install_steps
+        .push((began.elapsed(), std::time::Instant::now()));
+    #[cfg(not(test))]
+    let _ = (began, held);
+    Ok(collected)
+}
+
+/// Adopts what a first install step recorded, in steps paced as a sync paces its transactions:
+/// once they have held the write lock for the pace's `hold`, the lock is left free for its
+/// `pause`. Takes no more rows than waited when it began, so writes made meanwhile cannot keep
+/// it going; the next sync collects those.
+async fn adopt_found(
+    conn: &mut SqliteConnection,
+    replica: &Replica,
+    held: &mut Held,
+    receiver: &mut Receiver,
+) -> std::result::Result<(), ClientError> {
+    let pace = receiver.pace();
+    let mut left = replica.uncollected_rows(conn, usize::MAX).await?;
+    while left > 0 {
+        #[cfg(test)]
+        if held
+            .stop_after_steps
+            .is_some_and(|stop| held.install_steps.len() >= stop)
+        {
+            return Ok(());
+        }
+        if !pace.pause.is_zero() && receiver.held >= pace.hold {
+            tokio::time::sleep(pace.pause).await;
+            receiver.held = Duration::ZERO;
+        }
+        receiver.between(conn).await?;
+        #[cfg(test)]
+        if let Some(gaps) = &held.gaps {
+            let (done, wait) = tokio::sync::oneshot::channel();
+            if gaps.send(done).is_ok() {
+                wait.await.ok();
+            }
+        }
+        let began = std::time::Instant::now();
+        let step = install_step(conn, replica, Step::Collect, held, receiver).await?;
+        receiver.held += began.elapsed();
+        left = left.saturating_sub(step.rows.max(1));
+        if !step.more {
+            break;
+        }
     }
     Ok(())
 }
 
 fn add(outcome: &mut SyncOutcome, report: SyncReport) {
     let row = |collection: String, key: Option<String>| SyncRow { collection, key };
-    outcome.received |= report.applied.accepted > 0;
+    outcome.received |= report.applied.accepted > 0 || !report.applied.touched.is_empty();
     outcome.sent |= report.sent > 0;
     outcome.blocked = report.blocked.is_some();
     outcome.held = report
