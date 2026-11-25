@@ -193,6 +193,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "set",
         "show",
         "sort-keys",
+        "sync",
         "toc",
     ];
     assert_eq!(

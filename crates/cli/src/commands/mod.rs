@@ -13,6 +13,7 @@ pub mod rating;
 pub mod reflect;
 pub mod search;
 pub mod sort_keys;
+pub mod sync;
 
 use anyhow::{Result, bail};
 use bookmole::{Book, Engine, NoteRecord, NoteScope};

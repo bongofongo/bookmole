@@ -222,6 +222,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: CardsCmd,
     },
+    /// Sync this library with your other devices, through a sync server
+    Sync {
+        #[command(subcommand)]
+        cmd: commands::sync::SyncCmd,
+    },
     /// Interactive mode
     Repl,
     /// Manage stored configuration (API keys)
@@ -669,6 +674,7 @@ async fn main() -> Result<()> {
                 commands::cards::export(&engine, out.as_deref(), all, book.as_deref()).await?
             }
         },
+        Cmd::Sync { cmd } => commands::sync::run(&engine, cmd, cli.quiet).await?,
         Cmd::Repl => repl::run(&engine).await?,
         Cmd::Config { .. } => unreachable!("handled before engine startup"),
     }
