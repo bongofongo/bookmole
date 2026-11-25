@@ -263,12 +263,15 @@ fn two_processes_sync_a_library_and_one_leaves_and_joins_again() {
 
     let asked = b.run(&["sync", "leave"]);
     assert!(asked.stdout.contains("still syncing"), "{}", asked.text());
+    assert!(asked.stdout.contains("duplicates"), "{}", asked.text());
     assert!(b.run(&["sync", "status"]).stdout.contains("syncs with"));
 
     let requests = server.requests();
     let left = b.run(&["sync", "leave", "--yes"]);
     assert!(left.stdout.contains("no longer syncs"), "{}", left.text());
     assert!(left.stdout.contains("stays"), "{}", left.text());
+    assert!(left.stderr.contains("duplicates"), "{}", left.text());
+    assert!(!left.stdout.contains("join"), "{}", left.text());
     assert_eq!(server.requests(), requests);
     assert!(b.run(&["sync", "status"]).stdout.contains("sync is off"));
     let refused = b.try_run(&["sync", "now"]);
@@ -344,4 +347,54 @@ fn the_recovery_code_never_goes_where_it_could_be_kept() {
     hides(&wrong, &mistyped);
     assert!(wrong.stderr.contains("check the code"), "{}", wrong.text());
     assert!(b.run(&["sync", "status"]).stdout.contains("sync is off"));
+}
+
+/// A sync holds the data directory's lock for as long as its process runs: a second process gives
+/// way at once and changes nothing, and killing the first frees the lock.
+#[test]
+fn a_sync_in_another_process_holds_the_lock_until_that_process_ends() {
+    let server = TestServer::default();
+    let http = server.serve().unwrap();
+    let url = http.url();
+    let a = Device::new();
+    a.add("Middlemarch", "9780141439549");
+    a.run(&["sync", "create", &url]);
+
+    let arrived = server.arrived();
+    server.hang_at(Some(1));
+    let mut first = a
+        .command(&["sync", "now"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let began = std::time::Instant::now();
+    while server.arrived() == arrived {
+        assert!(
+            began.elapsed().as_secs() < 60,
+            "the first sync never reached the server"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    for args in [&["sync", "now"][..], &["sync", "leave", "--yes"]] {
+        let refused = a.try_run(args);
+        assert!(!refused.ok, "{}", refused.text());
+        assert!(
+            refused.stderr.contains("another Bookmole is syncing"),
+            "{}",
+            refused.text()
+        );
+    }
+    assert!(a.run(&["sync", "status"]).stdout.contains("syncs with"));
+
+    first.kill().unwrap();
+    first.wait().unwrap();
+    server.hang_at(None);
+    let after = a.run(&["sync", "now"]);
+    assert!(
+        after.stdout.contains("sent what changed here"),
+        "{}",
+        after.text()
+    );
 }
