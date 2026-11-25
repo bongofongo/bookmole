@@ -83,6 +83,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoo
 
 use crate::error::Result;
 
+/// How long a statement waits for another connection's write lock before it fails. A sync, an
+/// install or another process can hold the lock between its steps for a second or more, and
+/// several writers waiting for the same gap can each miss a few.
+pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Debug, Clone)]
 pub struct Storage {
     pool: SqlitePool,
@@ -99,7 +104,8 @@ impl Storage {
     pub(crate) async fn open(db_url: &str) -> Result<Storage> {
         let opts = SqliteConnectOptions::from_str(db_url)?
             .create_if_missing(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .busy_timeout(BUSY_TIMEOUT);
         // In-memory databases are per-connection: a >1 pool would migrate one
         // connection and query a fresh empty one.
         let max = if db_url.contains(":memory:") { 1 } else { 5 };
@@ -789,6 +795,20 @@ mod tests {
 
         let s = Storage::connect(&url).await.unwrap();
         sends_the_new_title(&s, &replica).await;
+    }
+
+    #[tokio::test]
+    async fn every_connection_of_the_pool_waits_fifteen_seconds_for_the_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("app.db").display());
+        let s = Storage::connect(&url).await.unwrap();
+        for _ in 0..3 {
+            let waits: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+            assert_eq!(waits, 15_000);
+        }
     }
 
     #[tokio::test]
