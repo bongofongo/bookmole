@@ -41,7 +41,7 @@ pub enum SyncCmd {
     Now {
         /// Leave covers that changed on other devices for a later sync to fetch
         #[arg(long)]
-        no_covers: bool,
+        no_cover: bool,
     },
     /// Print the recovery code of the library this one syncs with
     RecoveryCode,
@@ -58,9 +58,9 @@ pub async fn run(engine: &Engine, cmd: SyncCmd, quiet: bool) -> Result<()> {
         SyncCmd::Status => status(engine).await,
         SyncCmd::Create { server, label } => create(engine, &server, &label, quiet).await,
         SyncCmd::Join { server, label } => join(engine, &server, &label).await,
-        SyncCmd::Now { no_covers } => now(engine, no_covers, quiet).await,
+        SyncCmd::Now { no_cover } => now(engine, no_cover, quiet).await,
         SyncCmd::RecoveryCode => recovery_code(engine, quiet).await,
-        SyncCmd::Leave { yes } => leave(engine, yes).await,
+        SyncCmd::Leave { yes } => leave(engine, yes, quiet).await,
     }
 }
 
@@ -166,15 +166,15 @@ fn read_code() -> Result<String> {
     Ok(code.to_owned())
 }
 
-async fn now(engine: &Engine, no_covers: bool, quiet: bool) -> Result<()> {
+async fn now(engine: &Engine, no_cover: bool, quiet: bool) -> Result<()> {
     let outcome = engine.sync_now().await.map_err(explain)?;
     for line in summary(&outcome) {
         println!("{line}");
     }
     if !outcome.covers_to_fetch.is_empty() {
-        if no_covers {
+        if no_cover {
             println!(
-                "covers changed on other devices; `bookmole sync now` without --no-covers \
+                "covers changed on other devices; `bookmole sync now` without --no-cover \
                  fetches them."
             );
         } else {
@@ -276,23 +276,29 @@ async fn recovery_code(engine: &Engine, quiet: bool) -> Result<()> {
     Ok(())
 }
 
-async fn leave(engine: &Engine, yes: bool) -> Result<()> {
+/// What joining the same library again does, said before anyone leaves.
+const REJOIN: &str = "joining this library again later makes duplicates on every device: of books \
+     without an ISBN and their highlights, of every copy and reading, and of lists and their \
+     entries.";
+
+async fn leave(engine: &Engine, yes: bool, quiet: bool) -> Result<()> {
     if engine.sync_status().await? == SyncStatus::Off {
         engine.leave_sync_library().await.map_err(explain)?;
         println!("this library does not sync; there is nothing to leave.");
         return Ok(());
     }
-    let question = "stop syncing on this device? every book, note and highlight here stays, \
-                    and other devices keep theirs";
-    if !yes && !prompt::confirm(question)? {
+    if yes {
+        if !quiet {
+            eprintln!("{REJOIN}");
+        }
+    } else if !prompt::confirm(&format!(
+        "{REJOIN}\nstop syncing on this device? everything here stays"
+    ))? {
         println!("still syncing.");
         return Ok(());
     }
     engine.leave_sync_library().await.map_err(explain)?;
-    println!(
-        "this device no longer syncs. every book, note and highlight here stays.\n\
-         `bookmole sync join <server>` with the recovery code joins again, as a new device."
-    );
+    println!("this device no longer syncs. every book, note and highlight here stays.");
     Ok(())
 }
 
