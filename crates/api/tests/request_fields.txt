@@ -198,3 +198,9 @@ ResolveLibraryBooks selector
 CopyFiles book_id
 CopyHighlightSources book_id
 RelocateCopyFile copy_id path
+SyncStatus
+CreateSyncLibrary server device_label
+JoinSyncLibrary server recovery_code device_label
+SyncNow
+SyncRecoveryCode
+LeaveSyncLibrary
