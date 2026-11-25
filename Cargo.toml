@@ -20,9 +20,10 @@ exclude = ["fuzz"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# Edition 2024 needs 1.85; the let-chains in `lib.rs` need 1.88. Declaring it
-# buys a clear cargo error instead of a syntax error on an older toolchain.
-rust-version = "1.88"
+# Edition 2024 needs 1.85; the let-chains in `lib.rs` need 1.88; the sync lock's
+# `File::try_lock` needs 1.89. Declaring it buys a clear cargo error instead of a
+# syntax error on an older toolchain.
+rust-version = "1.89"
 # Not going to crates.io. Also what lets cargo-deny's `private.ignore` skip the
 # "unlicensed crate" check on the workspace's own crates.
 publish = false

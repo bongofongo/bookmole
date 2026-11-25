@@ -50,6 +50,10 @@ pub enum SyncError {
     /// committed stays; trying again carries on.
     #[error("sync stopped before it finished; try again")]
     Interrupted,
+    /// Another engine on this data directory, in this process or another, is syncing, turning
+    /// sync on or leaving. Nothing was done.
+    #[error("another Bookmole is syncing this library; try again when it has finished")]
+    Busy,
     /// The library needs a schema update, and change capture could not be paused for it, so
     /// the update was not made and the library did not open. `0` says why.
     #[error("this library needs an update, and sync could not be paused for it: {0}")]
@@ -187,6 +191,9 @@ pub(crate) struct Held {
     /// Leaving fails where it would remove change capture, as a process that stops there would.
     #[cfg(test)]
     pub(crate) fail_uninstall: bool,
+    /// How long leaving waits for the sync lock, in place of [`LEAVE_WAIT`].
+    #[cfg(test)]
+    pub(crate) leave_wait: Option<Duration>,
 }
 
 impl Held {
@@ -233,11 +240,37 @@ impl SyncConnection {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Leftovers {
-    Only,
-    AndCapture,
+/// The data directory's sync lock: one sync, create, join or leave at a time across every engine
+/// on it, in this process or another. An OS advisory lock on an empty file that is never removed,
+/// since removing it would let two holders lock two different files; it is released when this is
+/// dropped, and by the OS when the process ends. Taken only after [`Slot::held`], so the engine's
+/// own operations queue there and never meet their own lock here.
+pub(crate) struct SyncLock {
+    _file: std::fs::File,
 }
+
+impl SyncLock {
+    pub(crate) const FILE_NAME: &str = "sync.lock";
+
+    /// The lock, or [`SyncError::Busy`] at once if another holds it.
+    pub(crate) fn take(dir: &std::path::Path) -> Result<SyncLock> {
+        std::fs::create_dir_all(dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(Self::FILE_NAME))?;
+        match file.try_lock() {
+            Ok(()) => Ok(SyncLock { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(SyncError::Busy.into()),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+
+/// How long leaving waits for another engine's sync to finish before it gives up.
+const LEAVE_WAIT: Duration = Duration::from_secs(5);
+const LEAVE_POLL: Duration = Duration::from_millis(100);
 
 /// Attempts after the first when another writer holds the database, and the first wait.
 const BUSY_RETRIES: u32 = 4;
@@ -273,6 +306,17 @@ impl Engine {
     async fn sync_installed(&self) -> Result<bool> {
         let mut conn = self.storage.pool().acquire().await?;
         super::installed(&mut conn).await
+    }
+
+    fn sync_lock(&self) -> Result<SyncLock> {
+        SyncLock::take(self.data_dir())
+    }
+
+    fn data_dir(&self) -> &std::path::Path {
+        self.config
+            .sync_identity
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
     }
 
     fn refuse_in_memory(&self) -> Result<()> {
@@ -335,6 +379,7 @@ impl Engine {
         self.refuse_in_memory()?;
         let device_label = label(device_label)?;
         let mut held = self.sync.held.lock().await;
+        let _lock = self.sync_lock()?;
         if self.sync_installed().await? {
             return Err(SyncError::AlreadyOn.into());
         }
@@ -379,6 +424,7 @@ impl Engine {
         self.refuse_in_memory()?;
         let device_label = label(device_label)?;
         let mut held = self.sync.held.lock().await;
+        let _lock = self.sync_lock()?;
         if self.sync_installed().await? {
             return Err(SyncError::AlreadyOn.into());
         }
@@ -458,12 +504,25 @@ impl Engine {
 
     /// Stops syncing on this device. Every row here stays as it is; this device's identity, with
     /// its secret, and change capture are removed, so a later create or join makes it a new
-    /// device that adopts the rows here as a join does. It waits for a sync, create or join
-    /// running in this engine. It needs no server and tells none: the protocol has no request
-    /// that removes a device, so the server goes on listing this one. Leaving a library that does
+    /// device that adopts the rows here as a join does.
+    ///
+    /// Joining the same library again therefore duplicates, on every device, each row that has
+    /// no natural identity: books without an ISBN with their highlights, every copy and every
+    /// reading, and lists with their entries. Books with an ISBN, their highlights, notes and
+    /// rating scales match up.
+    ///
+    /// It waits for a sync, create or join running in this engine, and a few seconds for one in
+    /// another engine on the data directory, then gives up with [`SyncError::Busy`], having
+    /// changed nothing. It needs no server and tells none: the protocol has no request that
+    /// removes a device, so the server goes on listing this one. Leaving a library that does
     /// not sync removes any identity left in the data directory and is otherwise nothing.
     pub async fn leave_sync_library(&self) -> Result<()> {
         let mut held = self.sync.held.lock().await;
+        #[cfg(test)]
+        let wait = held.leave_wait.unwrap_or(LEAVE_WAIT);
+        #[cfg(not(test))]
+        let wait = LEAVE_WAIT;
+        let _lock = self.sync_lock_within(wait).await?;
         held.last = None;
         // Identity first: a stop between the two leaves `NeedsCredentials`, which syncs nothing
         // and which leaving again finishes, never a secret on disk under a status of off.
@@ -472,7 +531,7 @@ impl Engine {
         if held.fail_uninstall {
             return Err(SyncError::Interrupted.into());
         }
-        self.uninstall(Leftovers::AndCapture).await?;
+        self.uninstall().await?;
         *self
             .sync
             .problem
@@ -481,15 +540,23 @@ impl Engine {
         Ok(())
     }
 
-    /// Drops the kernel's tables and triggers, every one, including those its client makes again
-    /// when a sync in another engine runs on after a leave. With [`Leftovers::Only`], nothing is
-    /// dropped while sync is on.
-    async fn uninstall(&self, what: Leftovers) -> Result<()> {
+    async fn sync_lock_within(&self, wait: Duration) -> Result<SyncLock> {
+        let began = std::time::Instant::now();
+        loop {
+            match self.sync_lock() {
+                Err(EngineError::Sync(SyncError::Busy)) if began.elapsed() < wait => {
+                    tokio::time::sleep(LEAVE_POLL).await;
+                }
+                taken => return taken,
+            }
+        }
+    }
+
+    /// Drops the kernel's tables and triggers, every one, the client's state among them.
+    async fn uninstall(&self) -> Result<()> {
         let mut conn = self.storage.pool().acquire().await?;
         let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(db_error)?;
-        if what == Leftovers::AndCapture || !super::installed(&mut tx).await? {
-            replica()?.uninstall(&mut tx).await.map_err(kernel_error)?;
-        }
+        replica()?.uninstall(&mut tx).await.map_err(kernel_error)?;
         tx.commit().await.map_err(db_error)
     }
 
@@ -508,6 +575,7 @@ impl Engine {
     ) -> Result<SyncOutcome> {
         receiver.vault = Some(self.config.vault_dir.clone());
         let mut held = self.sync.held.lock().await;
+        let _lock = self.sync_lock()?;
         if !self.sync_installed().await? {
             return Err(SyncError::Off.into());
         }
@@ -517,18 +585,9 @@ impl Engine {
         let transport = transport(identity.origin.clone())?;
         receiver.held = held.carried(&receiver.pace());
         held.last = None;
-        let result = match self
+        let result = self
             .sync_rounds(&mut held, &identity, &transport, &mut receiver)
-            .await
-        {
-            Err(_) if !self.sync_installed().await.unwrap_or(true) => {
-                if let Err(error) = self.uninstall(Leftovers::Only).await {
-                    tracing::warn!(%error, "sync was left during a sync, and its tables stay");
-                }
-                Err(SyncError::Off.into())
-            }
-            result => result,
-        };
+            .await;
         if result.is_ok() {
             held.last = Some((receiver.held, std::time::Instant::now()));
         }

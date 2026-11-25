@@ -2580,17 +2580,32 @@ async fn a_leave_before_adopting_finished_keeps_every_row() {
     assert_eq!(scalar::<i64>(&b, "SELECT count(*) FROM books").await, 60);
 }
 
-/// Another engine on the same data directory that is part-way through a sync when this one
-/// leaves stops with sync off, and nothing it does turns change capture back on.
+fn is_busy<T: std::fmt::Debug>(result: &crate::Result<T>) -> bool {
+    matches!(result, Err(EngineError::Sync(SyncError::Busy)))
+}
+
+async fn short_leave_wait(engine: &Engine) {
+    engine.sync.held.lock().await.leave_wait = Some(std::time::Duration::from_millis(300));
+}
+
+/// While another engine on the data directory syncs, leaving gives up busy and changes nothing,
+/// so that engine never sends with one library's keys what another library's replica wrote. Once
+/// it is done, leaving and turning sync on with a new library work, and the other engine's next
+/// sync is the new library's.
 #[tokio::test]
-async fn a_sync_in_another_engine_on_the_database_ends_off_when_this_one_leaves() {
+async fn a_leave_while_another_engine_syncs_is_busy_and_changes_nothing() {
     let server = TestServer::default();
-    let a = device().await;
-    create(&a, &server).await;
-    add_book(&a, "Middlemarch").await;
+    let (a, b, c) = (device().await, device().await, device().await);
+    add_edition(&a, "Middlemarch", "9780141439549").await;
+    let code_x = create(&a, &server).await;
+    join(&b, &server, &code_x).await;
+    converge(&[&a, &b], &server).await;
     let other = Engine::open(EngineConfig::rooted_at(&a.root))
         .await
         .unwrap();
+    short_leave_wait(&a.engine).await;
+    add_edition(&a, "Felix Holt", "9780140434354").await;
+    let identity = std::fs::read(&a.engine.config.sync_identity).unwrap();
     server.hold_at(1);
     let leaving = async {
         server.held().await;
@@ -2602,16 +2617,134 @@ async fn a_sync_in_another_engine_on_the_database_ends_off_when_this_one_leaves(
         other.sync_now_with(|_| Ok(server.clone()), Receiver::default()),
         leaving
     );
-    left.unwrap();
-    assert!(is_off(&synced), "{synced:?}");
-    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
-    assert!(is_off(
-        &other
-            .sync_now_with(|_| Ok(server.clone()), Receiver::default())
+    assert!(is_busy(&left), "{left:?}");
+    synced.unwrap();
+    assert_eq!(
+        std::fs::read(&a.engine.config.sync_identity).unwrap(),
+        identity
+    );
+    assert!(matches!(
+        a.engine.sync_status().await.unwrap(),
+        SyncStatus::On(_)
+    ));
+
+    a.engine.leave_sync_library().await.unwrap();
+    let code_y = create(&a, &server).await;
+    add_edition(&a, "Romola", "9780140434705").await;
+    other
+        .sync_now_with(|_| Ok(server.clone()), Receiver::default())
+        .await
+        .unwrap();
+    join(&c, &server, &code_y).await;
+    converge(&[&a, &c], &server).await;
+    sync(&b, &server).await;
+    assert_eq!(titles(&b).await, ["Felix Holt", "Middlemarch"]);
+    assert_eq!(titles(&c).await, ["Felix Holt", "Middlemarch", "Romola"]);
+}
+
+/// Another engine that leaves while this one is turning sync on gives up busy, so the create
+/// that reported success has its identity and change capture.
+#[tokio::test]
+async fn a_leave_while_another_engine_adopts_is_busy() {
+    let server = TestServer::default();
+    let a = device().await;
+    fill(&a.engine, 60, "Book", Isbns::None).await;
+    let other = Engine::open(EngineConfig::rooted_at(&a.root))
+        .await
+        .unwrap();
+    short_leave_wait(&other).await;
+    let (gaps, mut gap) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let mut held = a.engine.sync.held.lock().await;
+        held.step_rows = Some(40);
+        held.gaps = Some(gaps);
+    }
+    let creating = async {
+        let created = a
+            .engine
+            .create_sync_library_via(origin(), "Study", &server)
+            .await;
+        a.engine.sync.held.lock().await.gaps = None;
+        created
+    };
+    let answering = async {
+        let mut left = None;
+        while let Some(done) = gap.recv().await {
+            if left.is_none() {
+                left = Some(other.leave_sync_library().await);
+            }
+            done.send(()).unwrap();
+        }
+        left.expect("adopting took more than one step")
+    };
+    let (created, left) = tokio::join!(creating, answering);
+    created.unwrap();
+    assert!(is_busy(&left), "{left:?}");
+    assert!(matches!(
+        a.engine.sync_status().await.unwrap(),
+        SyncStatus::On(_)
+    ));
+    assert!(!kernel_tables(&a).await.is_empty());
+    sync(&a, &server).await;
+    assert_eq!(uncollected(&a).await, 0);
+}
+
+/// The lock held from outside this engine, as another process holds it: syncing, creating,
+/// joining and leaving each give up busy at once, reach no server and change nothing. The lock is
+/// an empty file that leaving does not remove, and it is free again once its holder lets go.
+#[tokio::test]
+async fn every_operation_gives_way_to_another_holder_of_the_sync_lock() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    let code = create(&a, &server).await;
+    short_leave_wait(&a.engine).await;
+    let identity = std::fs::read(&a.engine.config.sync_identity).unwrap();
+    let requests = server.requests();
+
+    let holder = super::session::SyncLock::take(&a.root).unwrap();
+    assert!(is_busy(&sync_with(&a, &server, Receiver::default()).await));
+    assert!(is_busy(&a.engine.leave_sync_library().await));
+    let held_b = super::session::SyncLock::take(&b.root).unwrap();
+    assert!(is_busy(
+        &b.engine
+            .create_sync_library_via(origin(), "Study", &server)
             .await
     ));
-    assert_eq!(other.sync_status().await.unwrap(), SyncStatus::Off);
-    assert_eq!(titles(&a).await, ["Middlemarch"]);
+    assert!(is_busy(
+        &b.engine
+            .join_sync_library_via(origin(), code.as_str(), "Study", &server)
+            .await
+    ));
+    assert_eq!(server.requests(), requests);
+    assert_eq!(
+        std::fs::read(&a.engine.config.sync_identity).unwrap(),
+        identity
+    );
+    assert_eq!(b.engine.sync_status().await.unwrap(), SyncStatus::Off);
+
+    drop((holder, held_b));
+    sync(&a, &server).await;
+    a.engine.leave_sync_library().await.unwrap();
+    join(&b, &server, &code).await;
+    let lock = a.root.join(super::session::SyncLock::FILE_NAME);
+    assert_eq!(std::fs::read(&lock).unwrap(), Vec::<u8>::new());
+}
+
+/// Leaving waits a little for another holder of the sync lock, and goes ahead once it lets go.
+#[tokio::test]
+async fn a_leave_goes_ahead_once_another_holder_lets_go_within_its_wait() {
+    let server = TestServer::default();
+    let a = device().await;
+    create(&a, &server).await;
+    a.engine.sync.held.lock().await.leave_wait = Some(std::time::Duration::from_secs(5));
+    let holder = super::session::SyncLock::take(&a.root).unwrap();
+    let letting_go = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drop(holder);
+    };
+    let (left, ()) = tokio::join!(a.engine.leave_sync_library(), letting_go);
+    left.unwrap();
+    assert_eq!(a.engine.sync_status().await.unwrap(), SyncStatus::Off);
 }
 
 /// A round of a sync that finds sync was left by another engine refuses, rather than install

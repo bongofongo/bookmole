@@ -23,6 +23,7 @@ pub(crate) const FILE_NAME: &str = "sync-identity";
 const MAGIC: &[u8; 4] = b"BMSI";
 const FORMAT: u8 = 1;
 const CREDENTIALS_LEN: usize = 85;
+const TEMPORARY: &str = ".sync-identity-";
 
 pub(crate) struct Identity {
     pub(crate) origin: Origin,
@@ -106,7 +107,7 @@ pub(crate) fn write(path: &Path, identity: &Identity) -> Result<()> {
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let mut file = tempfile::Builder::new()
-        .prefix(".sync-identity-")
+        .prefix(TEMPORARY)
         .tempfile_in(dir)?;
     #[cfg(unix)]
     {
@@ -119,14 +120,34 @@ pub(crate) fn write(path: &Path, identity: &Identity) -> Result<()> {
     file.persist(path).map_err(|e| e.error)?;
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
-    Ok(())
+    remove_temporaries(dir)
 }
 
+/// Removes the file at `path`, and any temporary a write that stopped part-way left beside it.
 pub(crate) fn remove(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    match path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        Some(dir) if dir.exists() => remove_temporaries(dir),
         _ => Ok(()),
     }
+}
+
+/// A process that stops between writing a temporary and renaming it leaves the secret in it.
+/// Called only under the data directory's sync lock, so no other write is part-way.
+fn remove_temporaries(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(TEMPORARY) {
+            match std::fs::remove_file(entry.path()) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -184,6 +205,30 @@ mod tests {
         remove(&path).unwrap();
         remove(&path).unwrap();
         assert!(matches!(read(&path).unwrap(), Stored::Missing));
+    }
+
+    /// A write that stopped after filling its temporary leaves the secret on disk until the next
+    /// write or removal, which take it away.
+    #[test]
+    fn a_temporary_left_by_a_stopped_write_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let left = || {
+            let stray = dir.path().join(format!("{TEMPORARY}stopped"));
+            std::fs::write(&stray, encode(&identity()).unwrap()).unwrap();
+            stray
+        };
+        let stray = left();
+        write(&path, &identity()).unwrap();
+        assert!(!stray.exists());
+        assert!(path.exists());
+        let stray = left();
+        remove(&path).unwrap();
+        assert!(!stray.exists());
+        assert!(!path.exists());
+        let stray = left();
+        remove(&path).unwrap();
+        assert!(!stray.exists());
     }
 
     #[test]
