@@ -1016,6 +1016,32 @@ pub enum Request {
         copy_id: i64,
         path: String,
     },
+
+    /// Whether this library syncs, and with what. Never waits for a sync in progress.
+    SyncStatus,
+    /// Make a new synced library on the server at `server` (`https://host[:port]`, or `http://`,
+    /// with nothing after the host) from this one, with this device, named `device_label` here,
+    /// as its first member. Answers the recovery code, the only way to join another device: show
+    /// it to the reader. `sync_already_on` when this library syncs.
+    CreateSyncLibrary {
+        server: String,
+        device_label: String,
+    },
+    /// Join this library to the synced library `recovery_code` names, on the server at `server`.
+    /// Rows here are kept, and the first `SyncNow` sends them and brings in the library's.
+    JoinSyncLibrary {
+        server: String,
+        recovery_code: RecoveryCodeDto,
+        device_label: String,
+    },
+    /// Send what was written here and apply what other devices sent. One runs at a time.
+    SyncNow,
+    /// The recovery code of the library this one syncs with. `sync_off` when it does not.
+    SyncRecoveryCode,
+    /// Stop syncing on this device. Every row here stays; this device's identity and change
+    /// capture go, so a later create or join makes it a new device. Needs no server and tells it
+    /// nothing. Leaving a library that does not sync is not an error.
+    LeaveSyncLibrary,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1177,6 +1203,11 @@ pub enum Response {
 
     CopyFiles(Vec<CopyFileDto>),
     CopyHighlightSources(Vec<CopyHighlightSourceDto>),
+
+    SyncStatus(SyncStatusDto),
+    /// A secret: show it to the reader, never log it.
+    RecoveryCode(RecoveryCodeDto),
+    SyncOutcome(SyncOutcomeDto),
 }
 
 /// A request with a client-chosen id, echoed back untouched so pipelined replies can be told apart.

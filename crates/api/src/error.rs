@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use bookmole::{EngineError, ErrorClass};
+use bookmole::{EngineError, ErrorClass, SyncError};
 
 /// What went wrong, coarsely. Codes are appended, never renamed; an unknown code reads as
 /// `Internal`.
@@ -42,6 +42,34 @@ pub enum ErrorCode {
     /// The request itself was malformed — bad JSON, or a method this build does
     /// not have. Produced by the transport, never by the engine.
     BadRequest,
+    /// Sync is off for this library: `CreateSyncLibrary` or `JoinSyncLibrary` turns it on.
+    SyncOff,
+    /// This library already syncs: `LeaveSyncLibrary` first to create or join another.
+    SyncAlreadyOn,
+    /// The library syncs, but this device's sync identity is missing from the data directory.
+    /// `LeaveSyncLibrary`, then `JoinSyncLibrary` with the recovery code, puts it right.
+    SyncNeedsCredentials,
+    /// What was given is not a recovery code; most likely mistyped.
+    SyncCodeInvalid,
+    /// The sync server could not be reached. Check the address and the connection, or try later.
+    SyncUnreachable,
+    /// The sync server does not accept this device or code for this library: it does not know
+    /// the library, or no longer lists the device.
+    SyncRefused,
+    /// The sync server's limit on devices, storage or service for this library was reached.
+    SyncLimitReached,
+    /// This device's clock is too far from the sync server's; set it right and try again.
+    SyncClockSkew,
+    /// The server or the library was synced by a newer version: this one needs an update.
+    SyncNeedsUpdate,
+    /// Another writer held the library and sync gave way, or it was stopped part-way; what was
+    /// done is kept, and trying again carries on.
+    SyncBusy,
+    /// The library needs an update and sync could not be paused for it, so it did not open.
+    /// Closing the library's other windows and trying again may let it.
+    SyncCannotPause,
+    /// The address answers, but not as a sync server should.
+    SyncServerFault,
     /// Anything else, and anything a client's build is too old to name.
     #[serde(other)]
     Internal,
@@ -113,7 +141,35 @@ fn code_for(e: &EngineError) -> ErrorCode {
         },
         EngineError::Json(_) => ErrorCode::Decode,
         EngineError::Url(_) | EngineError::Format(_) | EngineError::Other(_) => ErrorCode::Internal,
-        EngineError::Sync(_) => ErrorCode::Internal,
+        EngineError::Sync(e) => sync_code(e),
+    }
+}
+
+fn sync_code(e: &SyncError) -> ErrorCode {
+    match e {
+        SyncError::Off => ErrorCode::SyncOff,
+        SyncError::AlreadyOn => ErrorCode::SyncAlreadyOn,
+        SyncError::NeedsCredentials => ErrorCode::SyncNeedsCredentials,
+        SyncError::CodeInvalid => ErrorCode::SyncCodeInvalid,
+        SyncError::Unreachable => ErrorCode::SyncUnreachable,
+        SyncError::Refused { code, .. } => match code.as_str() {
+            "unauthenticated" | "unknown_device" | "bad_signature" | "forbidden"
+            | "library_not_found" | "invalid_proof" => ErrorCode::SyncRefused,
+            "device_limit" | "library_full" | "quota_exceeded" | "not_entitled" => {
+                ErrorCode::SyncLimitReached
+            }
+            "stale_request" => ErrorCode::SyncClockSkew,
+            "internal" | "unknown" | "not_found" | "method_not_allowed" => {
+                ErrorCode::SyncServerFault
+            }
+            _ => ErrorCode::Internal,
+        },
+        SyncError::ServerFault(_) => ErrorCode::SyncServerFault,
+        SyncError::ClockSkew => ErrorCode::SyncClockSkew,
+        SyncError::SchemaMismatch => ErrorCode::SyncNeedsUpdate,
+        SyncError::Interrupted => ErrorCode::SyncBusy,
+        SyncError::CannotPause(_) => ErrorCode::SyncCannotPause,
+        _ => ErrorCode::Internal,
     }
 }
 
@@ -180,5 +236,114 @@ mod tests {
             ),
         };
         assert!(!ApiError::from(e).message.contains("SUPERSECRET"));
+    }
+
+    #[test]
+    fn each_sync_failure_a_reader_can_act_on_has_its_own_code() {
+        let refused = |code: &str| SyncError::Refused {
+            status: 400,
+            code: code.into(),
+        };
+        let cases = [
+            (SyncError::Off, ErrorCode::SyncOff, "sync_off"),
+            (
+                SyncError::AlreadyOn,
+                ErrorCode::SyncAlreadyOn,
+                "sync_already_on",
+            ),
+            (
+                SyncError::NeedsCredentials,
+                ErrorCode::SyncNeedsCredentials,
+                "sync_needs_credentials",
+            ),
+            (
+                SyncError::CodeInvalid,
+                ErrorCode::SyncCodeInvalid,
+                "sync_code_invalid",
+            ),
+            (
+                SyncError::Unreachable,
+                ErrorCode::SyncUnreachable,
+                "sync_unreachable",
+            ),
+            (
+                refused("unknown_device"),
+                ErrorCode::SyncRefused,
+                "sync_refused",
+            ),
+            (
+                refused("library_not_found"),
+                ErrorCode::SyncRefused,
+                "sync_refused",
+            ),
+            (
+                refused("bad_signature"),
+                ErrorCode::SyncRefused,
+                "sync_refused",
+            ),
+            (
+                refused("device_limit"),
+                ErrorCode::SyncLimitReached,
+                "sync_limit_reached",
+            ),
+            (
+                refused("library_full"),
+                ErrorCode::SyncLimitReached,
+                "sync_limit_reached",
+            ),
+            (
+                refused("not_entitled"),
+                ErrorCode::SyncLimitReached,
+                "sync_limit_reached",
+            ),
+            (
+                refused("stale_request"),
+                ErrorCode::SyncClockSkew,
+                "sync_clock_skew",
+            ),
+            (
+                refused("internal"),
+                ErrorCode::SyncServerFault,
+                "sync_server_fault",
+            ),
+            (
+                refused("not_found"),
+                ErrorCode::SyncServerFault,
+                "sync_server_fault",
+            ),
+            (
+                refused("malformed_request"),
+                ErrorCode::Internal,
+                "internal",
+            ),
+            (
+                SyncError::ServerFault("the server's response is malformed".into()),
+                ErrorCode::SyncServerFault,
+                "sync_server_fault",
+            ),
+            (
+                SyncError::ClockSkew,
+                ErrorCode::SyncClockSkew,
+                "sync_clock_skew",
+            ),
+            (
+                SyncError::SchemaMismatch,
+                ErrorCode::SyncNeedsUpdate,
+                "sync_needs_update",
+            ),
+            (SyncError::Interrupted, ErrorCode::SyncBusy, "sync_busy"),
+            (
+                SyncError::CannotPause("the database is locked".into()),
+                ErrorCode::SyncCannotPause,
+                "sync_cannot_pause",
+            ),
+        ];
+        for (error, code, wire) in cases {
+            let message = error.to_string();
+            let api = ApiError::from(EngineError::Sync(error));
+            assert_eq!(api.code, code, "{message}");
+            assert_eq!(api.message, message);
+            assert_eq!(serde_json::to_value(api.code).unwrap(), wire);
+        }
     }
 }

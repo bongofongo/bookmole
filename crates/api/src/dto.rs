@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use bookmole::GoodreadsMatch;
+use crate::error::ApiError;
+
 use bookmole::koreader::UnmatchedSidecar;
 use bookmole::providers::ProviderId;
 use bookmole::{
@@ -28,6 +29,10 @@ use bookmole::{
     SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, SkippedEntries, Source,
     StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UninstallReport,
     UnmatchedRow,
+};
+use bookmole::{
+    EngineError, GoodreadsMatch, RecoveryCode, SyncConflict, SyncOutcome, SyncRow, SyncState,
+    SyncStatus,
 };
 
 fn path_str(p: &Path) -> String {
@@ -6699,6 +6704,186 @@ impl From<bookmole::CopyHighlightSource> for CopyHighlightSourceDto {
             origin: origin.into(),
             device_name,
             last_read_at,
+        }
+    }
+}
+
+/// A synced library's recovery code. Whoever holds it holds the library, so it crosses the wire
+/// only in the answers to `CreateSyncLibrary` and `SyncRecoveryCode` and in `JoinSyncLibrary`,
+/// and `Debug` never shows it.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryCodeDto(String);
+
+impl RecoveryCodeDto {
+    pub fn new(code: impl Into<String>) -> Self {
+        RecoveryCodeDto(code.into())
+    }
+
+    /// The code itself, to show the reader or hand to `JoinSyncLibrary`; never to log.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RecoveryCodeDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecoveryCodeDto(..)")
+    }
+}
+
+impl From<RecoveryCode> for RecoveryCodeDto {
+    fn from(code: RecoveryCode) -> Self {
+        RecoveryCodeDto(code.as_str().to_owned())
+    }
+}
+
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SyncStatusDto {
+    Off,
+    /// The library syncs, but this device's identity is missing from the data directory, as when
+    /// a database is copied without it. Nothing syncs. `LeaveSyncLibrary`, then
+    /// `JoinSyncLibrary`, puts it right.
+    NeedsCredentials,
+    On {
+        /// Not a secret: the server knows it.
+        library_id: String,
+        /// The server's origin, `scheme://host[:port]`.
+        server: String,
+        device_label: String,
+        /// How far into the server's log this library has read; 0 before the first sync.
+        log_position: u64,
+        /// What stopped the last sync in this process, until one succeeds.
+        last_problem: Option<ApiError>,
+    },
+}
+
+impl From<SyncStatus> for SyncStatusDto {
+    fn from(s: SyncStatus) -> Self {
+        match s {
+            SyncStatus::Off => SyncStatusDto::Off,
+            SyncStatus::NeedsCredentials => SyncStatusDto::NeedsCredentials,
+            SyncStatus::On(SyncState {
+                library_id,
+                server,
+                device_label,
+                log_position,
+                last_problem,
+            }) => SyncStatusDto::On {
+                library_id,
+                server,
+                device_label,
+                log_position,
+                last_problem: last_problem.map(|e| EngineError::Sync(e).into()),
+            },
+        }
+    }
+}
+
+/// A row named by its table and its key as the JSON array of its key columns, or no key when it
+/// has no row here yet.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRowDto {
+    pub collection: String,
+    pub key: Option<String>,
+}
+
+impl From<SyncRow> for SyncRowDto {
+    fn from(r: SyncRow) -> Self {
+        let SyncRow { collection, key } = r;
+        SyncRowDto { collection, key }
+    }
+}
+
+/// A field edited here and on another device at once; the newer edit was kept.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflictDto {
+    pub row: SyncRowDto,
+    pub field: String,
+    /// Whether the field now holds the other device's edit rather than this one's.
+    pub remote_won: bool,
+}
+
+impl From<SyncConflict> for SyncConflictDto {
+    fn from(c: SyncConflict) -> Self {
+        let SyncConflict {
+            row,
+            field,
+            remote_won,
+        } = c;
+        SyncConflictDto {
+            row: row.into(),
+            field,
+            remote_won,
+        }
+    }
+}
+
+/// What one `SyncNow` did: whether things happened, never how many.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncOutcomeDto {
+    /// Rows were written here from what other devices sent.
+    pub received: bool,
+    /// Something written here was sent.
+    pub sent: bool,
+    /// Rows from other devices that could not be written yet; every sync tries them again.
+    pub held: Vec<SyncRowDto>,
+    pub conflicts: Vec<SyncConflictDto>,
+    /// Reading stopped at a change from a device the server does not list yet; a later sync
+    /// tries again.
+    pub blocked: bool,
+    /// Notes from another device whose path is not a markdown file inside the vault: kept as
+    /// rows, never written to or read from disk.
+    pub refused_notes: Vec<i64>,
+    /// Books whose cover changed on another device. A sync downloads nothing; fetch these with
+    /// `FetchCover`.
+    pub covers_to_fetch: Vec<i64>,
+}
+
+impl From<SyncOutcome> for SyncOutcomeDto {
+    fn from(o: SyncOutcome) -> Self {
+        let SyncOutcome {
+            received,
+            sent,
+            held,
+            conflicts,
+            blocked,
+            refused_notes,
+            covers_to_fetch,
+        } = o;
+        SyncOutcomeDto {
+            received,
+            sent,
+            held: map_vec(held),
+            conflicts: map_vec(conflicts),
+            blocked,
+            refused_notes,
+            covers_to_fetch,
         }
     }
 }

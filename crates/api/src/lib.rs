@@ -1181,6 +1181,46 @@ impl Api {
             .into())
     }
 
+    pub async fn sync_status(&self) -> ApiResult<SyncStatusDto> {
+        Ok(self.engine.sync_status().await?.into())
+    }
+
+    pub async fn create_sync_library(
+        &self,
+        server: &str,
+        device_label: &str,
+    ) -> ApiResult<RecoveryCodeDto> {
+        Ok(self
+            .engine
+            .create_sync_library(server, device_label)
+            .await?
+            .into())
+    }
+
+    pub async fn join_sync_library(
+        &self,
+        server: &str,
+        recovery_code: &RecoveryCodeDto,
+        device_label: &str,
+    ) -> ApiResult<()> {
+        Ok(self
+            .engine
+            .join_sync_library(server, recovery_code.expose(), device_label)
+            .await?)
+    }
+
+    pub async fn sync_now(&self) -> ApiResult<SyncOutcomeDto> {
+        Ok(self.engine.sync_now().await?.into())
+    }
+
+    pub async fn sync_recovery_code(&self) -> ApiResult<RecoveryCodeDto> {
+        Ok(self.engine.sync_recovery_code().await?.into())
+    }
+
+    pub async fn leave_sync_library(&self) -> ApiResult<()> {
+        Ok(self.engine.leave_sync_library().await?)
+    }
+
     async fn note(&self, note_id: i64) -> ApiResult<NoteRecord> {
         self.engine
             .get_note(note_id)
@@ -1948,6 +1988,27 @@ impl Api {
             }
             R::ResolveLibraryBooks { selector } => {
                 Response::Books(self.resolve_library_books(&selector).await?)
+            }
+
+            R::SyncStatus => Response::SyncStatus(self.sync_status().await?),
+            R::CreateSyncLibrary {
+                server,
+                device_label,
+            } => Response::RecoveryCode(self.create_sync_library(&server, &device_label).await?),
+            R::JoinSyncLibrary {
+                server,
+                recovery_code,
+                device_label,
+            } => {
+                self.join_sync_library(&server, &recovery_code, &device_label)
+                    .await?;
+                Response::Unit
+            }
+            R::SyncNow => Response::SyncOutcome(self.sync_now().await?),
+            R::SyncRecoveryCode => Response::RecoveryCode(self.sync_recovery_code().await?),
+            R::LeaveSyncLibrary => {
+                self.leave_sync_library().await?;
+                Response::Unit
             }
         })
     }
