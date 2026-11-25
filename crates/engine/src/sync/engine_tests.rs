@@ -2415,3 +2415,225 @@ async fn a_create_whose_install_fails_leaves_sync_off() {
         SyncStatus::On(_)
     ));
 }
+
+async fn kernel_tables(d: &Device) -> Vec<String> {
+    rows(
+        d,
+        "SELECT name FROM sqlite_master WHERE name LIKE 'fongo!_%' ESCAPE '!'",
+    )
+    .await
+}
+
+async fn add_edition(d: &Device, title: &str, isbn_13: &str) -> i64 {
+    let book = Book {
+        title: Some(title.into()),
+        authors: vec!["George Eliot".into()],
+        isbn_13: Some(isbn_13.into()),
+        ..Default::default()
+    };
+    d.engine.storage().upsert_book(&book, None).await.unwrap()
+}
+
+async fn titles(d: &Device) -> Vec<String> {
+    rows(d, "SELECT title FROM books ORDER BY title").await
+}
+
+fn is_off<T: std::fmt::Debug>(result: &crate::Result<T>) -> bool {
+    matches!(result, Err(EngineError::Sync(SyncError::Off)))
+}
+
+/// Leaving keeps every row and needs no server; the device then syncs nothing, and a join
+/// afterwards makes it a new device of the library, which syncs as any other.
+#[tokio::test]
+async fn a_device_that_leaves_keeps_its_library_and_joins_again_as_a_new_device() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    add_edition(&a, "Middlemarch", "9780141439549").await;
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    converge(&[&a, &b], &server).await;
+    let identity = std::fs::read(&b.engine.config.sync_identity).unwrap();
+    let (requests, devices) = (server.requests(), server.devices());
+
+    b.engine.leave_sync_library().await.unwrap();
+    assert_eq!(server.requests(), requests);
+    assert_eq!(b.engine.sync_status().await.unwrap(), SyncStatus::Off);
+    assert!(!b.engine.config.sync_identity.exists());
+    assert_eq!(kernel_tables(&b).await, Vec::<String>::new());
+    assert_eq!(titles(&b).await, ["Middlemarch"]);
+    add_edition(&b, "Romola", "9780140434705").await;
+    assert!(is_off(&sync_with(&b, &server, Receiver::default()).await));
+    assert!(is_off(&b.engine.sync_recovery_code().await));
+    b.engine.leave_sync_library().await.unwrap();
+    assert_eq!(b.engine.sync_status().await.unwrap(), SyncStatus::Off);
+
+    add_edition(&a, "Silas Marner", "9780141439754").await;
+    converge(&[&a], &server).await;
+    assert_eq!(titles(&a).await, ["Middlemarch", "Silas Marner"]);
+    assert_eq!(titles(&b).await, ["Middlemarch", "Romola"]);
+
+    join(&b, &server, &code).await;
+    assert_ne!(
+        std::fs::read(&b.engine.config.sync_identity).unwrap(),
+        identity
+    );
+    assert_eq!(server.devices(), devices + 1);
+    converge(&[&a, &b], &server).await;
+    for d in [&a, &b] {
+        assert_eq!(titles(d).await, ["Middlemarch", "Romola", "Silas Marner"]);
+    }
+}
+
+/// A leave that stops after the identity is gone leaves a library that syncs nothing and says
+/// so; leaving again finishes it. An identity left behind with no change capture, as the other
+/// order would leave, is off, and leaving removes it.
+#[tokio::test]
+async fn a_leave_stopped_part_way_syncs_nothing_and_leaving_again_finishes_it() {
+    let server = TestServer::default();
+    let a = device().await;
+    add_book(&a, "Middlemarch").await;
+    create(&a, &server).await;
+    sync(&a, &server).await;
+    let identity = std::fs::read(&a.engine.config.sync_identity).unwrap();
+
+    a.engine.sync.held.lock().await.fail_uninstall = true;
+    assert!(a.engine.leave_sync_library().await.is_err());
+    assert!(!a.engine.config.sync_identity.exists());
+    assert!(!kernel_tables(&a).await.is_empty());
+
+    let a = reopen(a).await;
+    assert_eq!(
+        a.engine.sync_status().await.unwrap(),
+        SyncStatus::NeedsCredentials
+    );
+    let requests = server.requests();
+    assert!(matches!(
+        sync_with(&a, &server, Receiver::default()).await,
+        Err(EngineError::Sync(SyncError::NeedsCredentials))
+    ));
+    assert_eq!(server.requests(), requests);
+    a.engine.leave_sync_library().await.unwrap();
+    assert_eq!(a.engine.sync_status().await.unwrap(), SyncStatus::Off);
+    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
+
+    std::fs::write(&a.engine.config.sync_identity, &identity).unwrap();
+    let a = reopen(a).await;
+    assert_eq!(a.engine.sync_status().await.unwrap(), SyncStatus::Off);
+    a.engine.leave_sync_library().await.unwrap();
+    assert!(!a.engine.config.sync_identity.exists());
+    create(&a, &server).await;
+    assert!(matches!(
+        a.engine.sync_status().await.unwrap(),
+        SyncStatus::On(_)
+    ));
+    assert_eq!(titles(&a).await, ["Middlemarch"]);
+}
+
+/// A leave waits for the sync running in its engine, and then removes what that sync used.
+#[tokio::test]
+async fn a_leave_waits_for_a_running_sync() {
+    let server = TestServer::default();
+    let a = device().await;
+    create(&a, &server).await;
+    add_book(&a, "Middlemarch").await;
+    server.hold_at(1);
+    let leaving = async {
+        server.held().await;
+        let leave = a.engine.leave_sync_library();
+        tokio::pin!(leave);
+        let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut leave).await;
+        assert!(early.is_err(), "left while a sync ran");
+        assert!(a.engine.config.sync_identity.exists());
+        server.release();
+        leave.await
+    };
+    let (synced, left) = tokio::join!(sync_with(&a, &server, Receiver::default()), leaving);
+    synced.unwrap();
+    left.unwrap();
+    assert_eq!(a.engine.sync_status().await.unwrap(), SyncStatus::Off);
+    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
+    assert_eq!(titles(&a).await, ["Middlemarch"]);
+}
+
+/// Leaving while the rows sync was turned on over still wait to be adopted drops what waits and
+/// keeps the rows; turning sync on again adopts them all.
+#[tokio::test]
+async fn a_leave_before_adopting_finished_keeps_every_row() {
+    let server = TestServer::default();
+    let (a, b) = (device().await, device().await);
+    fill(&a.engine, 60, "Book", Isbns::None).await;
+    {
+        let mut held = a.engine.sync.held.lock().await;
+        held.step_rows = Some(40);
+        held.stop_after_steps = Some(2);
+    }
+    create(&a, &server).await;
+    assert!(uncollected(&a).await > 0);
+    a.engine.leave_sync_library().await.unwrap();
+    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
+    assert_eq!(scalar::<i64>(&a, "SELECT count(*) FROM books").await, 60);
+
+    a.engine.sync.held.lock().await.stop_after_steps = None;
+    let code = create(&a, &server).await;
+    join(&b, &server, &code).await;
+    converge(&[&a, &b], &server).await;
+    assert_eq!(scalar::<i64>(&b, "SELECT count(*) FROM books").await, 60);
+}
+
+/// Another engine on the same data directory that is part-way through a sync when this one
+/// leaves stops with sync off, and nothing it does turns change capture back on.
+#[tokio::test]
+async fn a_sync_in_another_engine_on_the_database_ends_off_when_this_one_leaves() {
+    let server = TestServer::default();
+    let a = device().await;
+    create(&a, &server).await;
+    add_book(&a, "Middlemarch").await;
+    let other = Engine::open(EngineConfig::rooted_at(&a.root))
+        .await
+        .unwrap();
+    server.hold_at(1);
+    let leaving = async {
+        server.held().await;
+        let left = a.engine.leave_sync_library().await;
+        server.release();
+        left
+    };
+    let (synced, left) = tokio::join!(
+        other.sync_now_with(|_| Ok(server.clone()), Receiver::default()),
+        leaving
+    );
+    left.unwrap();
+    assert!(is_off(&synced), "{synced:?}");
+    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
+    assert!(is_off(
+        &other
+            .sync_now_with(|_| Ok(server.clone()), Receiver::default())
+            .await
+    ));
+    assert_eq!(other.sync_status().await.unwrap(), SyncStatus::Off);
+    assert_eq!(titles(&a).await, ["Middlemarch"]);
+}
+
+/// A round of a sync that finds sync was left by another engine refuses, rather than install
+/// change capture again.
+#[tokio::test]
+async fn a_round_after_another_engine_left_does_not_turn_sync_back_on() {
+    let server = TestServer::default();
+    let a = device().await;
+    create(&a, &server).await;
+    let other = Engine::open(EngineConfig::rooted_at(&a.root))
+        .await
+        .unwrap();
+    other.leave_sync_library().await.unwrap();
+    let mut conn = a.engine.storage().pool().acquire().await.unwrap();
+    let refused =
+        super::session::prepare(&mut conn, &super::replica().unwrap(), &Receiver::default())
+            .await
+            .unwrap_err();
+    assert!(matches!(
+        super::unwrap_application(refused),
+        Ok(EngineError::Sync(SyncError::Off))
+    ));
+    drop(conn);
+    assert_eq!(kernel_tables(&a).await, Vec::<String>::new());
+}

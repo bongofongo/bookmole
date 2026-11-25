@@ -681,8 +681,8 @@ pub use session::{
 mod clash_tests;
 #[cfg(test)]
 mod engine_tests;
-#[cfg(test)]
-mod test_server;
+#[cfg(any(test, feature = "internals"))]
+pub mod test_server;
 
 #[cfg(test)]
 mod tests {

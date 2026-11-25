@@ -1,9 +1,14 @@
 //! A sync server in memory, enough of the protocol to carry real engines' syncs: capabilities,
 //! creating a library, adding a device, appending an envelope and reading pages of the log.
+//! [`TestServer::serve`] puts it on a loopback port, for tests that reach it over HTTP as a
+//! shipped engine does.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fongo_sync_client::protocol::api::{
     AddDevice, Appended, BatchPage, Capabilities, CreateLibrary, DeviceRecord, Devices, ErrorBody,
@@ -39,7 +44,7 @@ struct State {
 
 /// Cheap to clone; every clone is the same server.
 #[derive(Clone, Default)]
-pub(crate) struct TestServer(Arc<Mutex<State>>, Arc<Hold>);
+pub struct TestServer(Arc<Mutex<State>>, Arc<Hold>);
 
 /// A request held before it is answered, until [`TestServer::release`].
 #[derive(Default)]
@@ -57,32 +62,32 @@ impl TestServer {
     }
 
     /// Requests the server has answered.
-    pub(crate) fn requests(&self) -> usize {
+    pub fn requests(&self) -> usize {
         self.with(|s| s.requests)
     }
 
     /// Envelopes in every library's log.
-    pub(crate) fn log_len(&self) -> usize {
+    pub fn log_len(&self) -> usize {
         self.with(|s| s.libraries.values().map(|l| l.log.len()).sum())
     }
 
     /// Every envelope appended, in the order the log holds them.
-    pub(crate) fn envelopes(&self) -> Vec<Vec<u8>> {
+    pub fn envelopes(&self) -> Vec<Vec<u8>> {
         self.with(|s| s.libraries.values().flat_map(|l| l.log.clone()).collect())
     }
 
     /// The `n`-th request from now on, counted from 1, is never answered.
-    pub(crate) fn hang_at(&self, n: Option<usize>) {
+    pub fn hang_at(&self, n: Option<usize>) {
         self.with(|s| s.hang_at = n.map(|n| s.requests + n));
     }
 
     /// The `n`-th request to arrive from now on waits until [`TestServer::release`].
-    pub(crate) fn hold_at(&self, n: usize) {
+    pub fn hold_at(&self, n: usize) {
         self.with(|s| s.hold_at = Some(s.arrived + n));
     }
 
     /// Returns once the held request has arrived.
-    pub(crate) async fn held(&self) {
+    pub async fn held(&self) {
         let reached = self.1.reached.notified();
         if self.with(|s| s.hold_at.is_some_and(|at| s.arrived >= at)) {
             return;
@@ -90,24 +95,24 @@ impl TestServer {
         reached.await;
     }
 
-    pub(crate) fn release(&self) {
+    pub fn release(&self) {
         self.with(|s| s.hold_at = None);
         self.1.released.notify_waiters();
     }
 
     /// Requests that have arrived, answered or not.
-    pub(crate) fn arrived(&self) -> usize {
+    pub fn arrived(&self) -> usize {
         self.with(|s| s.arrived)
     }
 
     /// The endpoint of every request so far, in order.
-    pub(crate) fn endpoints(&self) -> Vec<&'static str> {
+    pub fn endpoints(&self) -> Vec<&'static str> {
         self.with(|s| s.endpoints.clone())
     }
 
     /// Appends `n` copies of the last envelope of every library's log, as if its device had sent
     /// the same changes again and again.
-    pub(crate) fn repeat_last(&self, n: usize) {
+    pub fn repeat_last(&self, n: usize) {
         self.with(|s| {
             for library in s.libraries.values_mut() {
                 if let Some(last) = library.log.last().cloned() {
@@ -118,9 +123,152 @@ impl TestServer {
     }
 
     /// Reads see only the first `horizon` envelopes of a log, or all of it.
-    pub(crate) fn lag_reads(&self, horizon: Option<usize>) {
+    pub fn lag_reads(&self, horizon: Option<usize>) {
         self.with(|s| s.horizon = horizon);
     }
+
+    /// Devices every library lists, recovery keys left out.
+    pub fn devices(&self) -> usize {
+        self.with(|s| {
+            s.libraries
+                .values()
+                .flat_map(|l| &l.devices)
+                .filter(|d| !d.recovery)
+                .count()
+        })
+    }
+
+    /// This server on a loopback port, over HTTP/1.1, until the returned handle is dropped.
+    pub fn serve(&self) -> std::io::Result<HttpServer> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let server = self.clone();
+        let accepting = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Ok(stream) = stream {
+                    let server = server.clone();
+                    std::thread::spawn(move || answer(&server, stream));
+                }
+            }
+        });
+        Ok(HttpServer {
+            addr,
+            stop,
+            accepting: Some(accepting),
+        })
+    }
+}
+
+/// A [`TestServer`] served on a loopback port. Each connection carries one request and is closed
+/// after its answer. Dropping it stops the server.
+pub struct HttpServer {
+    addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+    accepting: Option<std::thread::JoinHandle<()>>,
+}
+
+impl HttpServer {
+    /// The server's origin, `http://127.0.0.1:<port>`.
+    pub fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wakes the accept loop so it sees the stop.
+        let _ = TcpStream::connect(self.addr);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+    }
+}
+
+const HEAD_LIMIT: usize = 64 << 10;
+
+fn answer(server: &TestServer, mut stream: TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let response = match read_request(&mut stream) {
+        Some(request) => futures::executor::block_on(server.send(request))
+            .unwrap_or_else(|_| refusal(ErrorCode::Internal)),
+        None => refusal(ErrorCode::MalformedRequest),
+    };
+    let mut head = format!(
+        "HTTP/1.1 {} -\r\ncontent-length: {}\r\nconnection: close\r\n",
+        response.status,
+        response.body.len()
+    );
+    for (name, value) in &response.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&response.body);
+}
+
+fn read_request(stream: &mut TcpStream) -> Option<Request> {
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 8192];
+    let head_end = loop {
+        if let Some(at) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at;
+        }
+        if seen.len() > HEAD_LIMIT {
+            return None;
+        }
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => seen.extend_from_slice(&buf[..n]),
+        }
+    };
+    let head = std::str::from_utf8(&seen[..head_end]).ok()?;
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next()?.split(' ');
+    let method = match first.next()? {
+        "GET" => Method::Get,
+        "POST" => Method::Post,
+        _ => return None,
+    };
+    let target = first.next()?.to_owned();
+    let mut headers = Vec::new();
+    let mut length = 0usize;
+    for line in lines {
+        let (name, value) = line.split_once(':')?;
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("content-length") {
+            length = value.parse().ok()?;
+        }
+        let known = [
+            HEADER_DEVICE,
+            HEADER_TIMESTAMP,
+            HEADER_NONCE,
+            HEADER_SIGNATURE,
+            "content-type",
+        ];
+        if let Some(name) = known.into_iter().find(|k| name.eq_ignore_ascii_case(k)) {
+            headers.push((name, value.to_owned()));
+        }
+    }
+    let mut body = seen[head_end + 4..].to_vec();
+    while body.len() < length {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => body.extend_from_slice(&buf[..n]),
+        }
+    }
+    body.truncate(length);
+    Some(Request {
+        method,
+        target,
+        headers,
+        body,
+    })
 }
 
 impl Transport for TestServer {

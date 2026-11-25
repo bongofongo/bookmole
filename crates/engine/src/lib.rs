@@ -152,6 +152,9 @@ pub use storage::{
     ResurfaceReason, Resurfaced, ResurfacedPassage, SearchHit, SearchSource, Setting, Source,
     StatusFilter, Storage, parse_local_date,
 };
+#[cfg(feature = "internals")]
+#[doc(hidden)]
+pub use sync::test_server;
 pub use sync::{
     RecoveryCode, SyncConflict, SyncError, SyncOutcome, SyncRow, SyncState, SyncStatus,
 };
