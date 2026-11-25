@@ -3,8 +3,9 @@
 
 use bookmole::test_server::TestServer;
 use bookmole_api::{
-    Api, ApiError, BookDto, BookQueryDto, Call, CopyFormDto, ErrorCode, NewCopyDto, Outcome,
-    RecoveryCodeDto, Reply, Request, Response, SyncStatusDto, TenureDto,
+    Api, ApiError, BookDto, BookQueryDto, Call, CopyFormDto, EntryShowDto, EntrySortDto, ErrorCode,
+    NewCopyDto, NewNoteDto, Outcome, RecoveryCodeDto, Reply, Request, Response, SyncStatusDto,
+    TenureDto,
 };
 
 struct Device {
@@ -84,15 +85,21 @@ async fn page_count(d: &Device, title: &str) -> Option<i64> {
 }
 
 async fn converge(devices: &[&Device]) {
+    let held = converge_holding(devices).await;
+    assert!(held.is_empty(), "held: {held:?}");
+}
+
+/// Every device syncs in turn until a whole round moves nothing; what the last round held.
+async fn converge_holding(devices: &[&Device]) -> Vec<String> {
     for _ in 0..6 {
-        let mut moved = false;
+        let (mut moved, mut held) = (false, Vec::new());
         for d in devices {
             let outcome = d.api.sync_now().await.unwrap();
-            assert!(outcome.held.is_empty(), "{outcome:?}");
+            held.extend(outcome.held.into_iter().map(|row| row.collection));
             moved |= outcome.sent || outcome.received;
         }
         if !moved {
-            return;
+            return held;
         }
     }
     panic!("the devices kept sending changes");
@@ -379,4 +386,151 @@ async fn a_sync_failure_arrives_as_a_code_a_frontend_can_act_on() {
         panic!("not on");
     };
     assert_eq!(last_problem, None, "a problem outlived leaving");
+}
+
+/// What one library holds, by kind of row.
+#[derive(Debug, PartialEq, Eq)]
+struct Counts {
+    books: usize,
+    copies: usize,
+    readings: usize,
+    highlights: usize,
+    lists: usize,
+    entries: usize,
+    notes: usize,
+    scales: usize,
+}
+
+async fn counts(d: &Device) -> Counts {
+    let books = d.api.resolve_books("").await.unwrap();
+    let (mut copies, mut readings, mut highlights) = (0, 0, 0);
+    for book in &books {
+        let id = book.id.unwrap();
+        copies += d.api.copies_for_book(id).await.unwrap().len();
+        readings += d.api.list_readings(id).await.unwrap().len();
+        highlights += d.api.list_highlights(id).await.unwrap().len();
+    }
+    let lists = d.api.list_lists(Default::default(), 0).await.unwrap();
+    let mut entries = 0;
+    for list in &lists {
+        entries += d
+            .api
+            .list_entries(list.id, EntryShowDto::All, EntrySortDto::Yours)
+            .await
+            .unwrap()
+            .len();
+    }
+    Counts {
+        books: books.len(),
+        copies,
+        readings,
+        highlights,
+        lists: lists.len(),
+        entries,
+        notes: d.api.list_notes(None, None, None).await.unwrap().len(),
+        scales: d.api.rating_scales().await.unwrap().len(),
+    }
+}
+
+/// Recorded behaviour, not wanted behaviour: a device that leaves and joins the same library
+/// again is a new device whose rows the others have never seen, so every row with no natural
+/// identity arrives twice, on every device. Books with an ISBN, their highlights, notes and
+/// rating scales match up. A fix flips these counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn known_rejoining_the_same_library_duplicates_rows_without_identity() {
+    let server = TestServer::default();
+    let http = server.serve().unwrap();
+    let (a, b) = (device().await, device().await);
+    let middlemarch = save(&a, "Middlemarch", "9780141439549").await;
+    let felix = a
+        .api
+        .save_book(BookDto {
+            title: Some("Felix Holt".into()),
+            authors: vec!["George Eliot".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    for (book, text) in [
+        (
+            middlemarch,
+            "Who can quit young lives after being long in company?",
+        ),
+        (
+            felix,
+            "There is no private life which has not been determined.",
+        ),
+    ] {
+        a.api
+            .create_highlight(book, text, None, None)
+            .await
+            .unwrap();
+    }
+    a.api
+        .update_progress(middlemarch, Some(40), None)
+        .await
+        .unwrap();
+    let list = a.api.create_list("To read", None).await.unwrap();
+    a.api.add_to_list(list.id, middlemarch, None).await.unwrap();
+    a.api.add_to_list(list.id, felix, None).await.unwrap();
+    a.api
+        .create_note(NewNoteDto {
+            book_id: Some(middlemarch),
+            body: "Dorothea and the key to all mythologies.".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let romola = save(&b, "Romola", "9780140434705").await;
+    b.api.update_progress(romola, Some(12), None).await.unwrap();
+
+    let code = a
+        .api
+        .create_sync_library(&http.url(), "Study")
+        .await
+        .unwrap();
+    b.api
+        .join_sync_library(&http.url(), &code, "Reading chair")
+        .await
+        .unwrap();
+    converge(&[&a, &b]).await;
+    let before = counts(&a).await;
+    assert_eq!(counts(&b).await, before);
+
+    b.api.leave_sync_library().await.unwrap();
+    b.api
+        .join_sync_library(&http.url(), &code, "Reading chair")
+        .await
+        .unwrap();
+    converge(&[&a, &b]).await;
+    let after = counts(&a).await;
+    assert_eq!(counts(&b).await, after);
+    assert_eq!(
+        before,
+        Counts {
+            books: 3,
+            copies: 2,
+            readings: 2,
+            highlights: 2,
+            lists: 1,
+            entries: 2,
+            notes: 1,
+            scales: 2,
+        }
+    );
+    assert_eq!(
+        after,
+        Counts {
+            books: 4,
+            copies: 4,
+            readings: 4,
+            highlights: 3,
+            lists: 2,
+            entries: 4,
+            notes: 1,
+            scales: 2,
+        }
+    );
 }

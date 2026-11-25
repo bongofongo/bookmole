@@ -62,8 +62,9 @@ pub enum ErrorCode {
     SyncClockSkew,
     /// The server or the library was synced by a newer version: this one needs an update.
     SyncNeedsUpdate,
-    /// Another writer held the library and sync gave way, or it was stopped part-way; what was
-    /// done is kept, and trying again carries on.
+    /// Another writer held the library and sync gave way, it was stopped part-way, or another
+    /// Bookmole on this data directory is syncing; what was done is kept, and trying again
+    /// carries on.
     SyncBusy,
     /// The library needs an update and sync could not be paused for it, so it did not open.
     /// Closing the library's other windows and trying again may let it.
@@ -159,7 +160,8 @@ fn sync_code(e: &SyncError) -> ErrorCode {
                 ErrorCode::SyncLimitReached
             }
             "stale_request" => ErrorCode::SyncClockSkew,
-            "internal" | "unknown" | "not_found" | "method_not_allowed" => {
+            "replayed_request" => ErrorCode::SyncBusy,
+            "internal" | "unknown" | "not_found" | "method_not_allowed" | "too_large" => {
                 ErrorCode::SyncServerFault
             }
             _ => ErrorCode::Internal,
@@ -167,7 +169,7 @@ fn sync_code(e: &SyncError) -> ErrorCode {
         SyncError::ServerFault(_) => ErrorCode::SyncServerFault,
         SyncError::ClockSkew => ErrorCode::SyncClockSkew,
         SyncError::SchemaMismatch => ErrorCode::SyncNeedsUpdate,
-        SyncError::Interrupted => ErrorCode::SyncBusy,
+        SyncError::Interrupted | SyncError::Busy => ErrorCode::SyncBusy,
         SyncError::CannotPause(_) => ErrorCode::SyncCannotPause,
         _ => ErrorCode::Internal,
     }
@@ -317,6 +319,16 @@ mod tests {
                 "internal",
             ),
             (
+                refused("replayed_request"),
+                ErrorCode::SyncBusy,
+                "sync_busy",
+            ),
+            (
+                refused("too_large"),
+                ErrorCode::SyncServerFault,
+                "sync_server_fault",
+            ),
+            (
                 SyncError::ServerFault("the server's response is malformed".into()),
                 ErrorCode::SyncServerFault,
                 "sync_server_fault",
@@ -332,6 +344,7 @@ mod tests {
                 "sync_needs_update",
             ),
             (SyncError::Interrupted, ErrorCode::SyncBusy, "sync_busy"),
+            (SyncError::Busy, ErrorCode::SyncBusy, "sync_busy"),
             (
                 SyncError::CannotPause("the database is locked".into()),
                 ErrorCode::SyncCannotPause,
@@ -344,6 +357,48 @@ mod tests {
             assert_eq!(api.code, code, "{message}");
             assert_eq!(api.message, message);
             assert_eq!(serde_json::to_value(api.code).unwrap(), wire);
+        }
+    }
+
+    /// Every refusal the sync protocol defines is decided here; a code added to the kernel does
+    /// not compile until it is.
+    #[test]
+    fn every_refusal_a_server_may_send_has_a_decided_code() {
+        use bookmole::test_server::RefusalCode as R;
+
+        for &refusal in R::ALL.iter().chain(&[R::Unknown]) {
+            let want = match refusal {
+                R::Unauthenticated
+                | R::UnknownDevice
+                | R::BadSignature
+                | R::Forbidden
+                | R::LibraryNotFound
+                | R::InvalidProof => ErrorCode::SyncRefused,
+                R::DeviceLimit | R::LibraryFull | R::QuotaExceeded | R::NotEntitled => {
+                    ErrorCode::SyncLimitReached
+                }
+                R::StaleRequest => ErrorCode::SyncClockSkew,
+                R::ReplayedRequest => ErrorCode::SyncBusy,
+                R::Internal | R::Unknown | R::NotFound | R::MethodNotAllowed | R::TooLarge => {
+                    ErrorCode::SyncServerFault
+                }
+                R::MalformedRequest
+                | R::MalformedEnvelope
+                | R::LibraryExists
+                | R::EnvelopeWrongLibrary
+                | R::EnvelopeWrongDevice
+                | R::EnvelopeBadSignature => ErrorCode::Internal,
+            };
+            let error = SyncError::Refused {
+                status: refusal.status(),
+                code: refusal.as_str().into(),
+            };
+            assert_eq!(
+                ApiError::from(EngineError::Sync(error)).code,
+                want,
+                "{}",
+                refusal.as_str()
+            );
         }
     }
 }

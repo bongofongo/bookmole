@@ -1039,8 +1039,12 @@ pub enum Request {
     /// The recovery code of the library this one syncs with. `sync_off` when it does not.
     SyncRecoveryCode,
     /// Stop syncing on this device. Every row here stays; this device's identity and change
-    /// capture go, so a later create or join makes it a new device. Needs no server and tells it
-    /// nothing. Leaving a library that does not sync is not an error.
+    /// capture go, so a later create or join makes it a new device. Joining the same library
+    /// again then duplicates, on every device, books without an ISBN with their highlights,
+    /// every copy and reading, and lists with their entries; books with an ISBN, their
+    /// highlights, notes and rating scales match up. Needs no server and tells it nothing.
+    /// `sync_busy` when another process is syncing this data directory. Leaving a library that
+    /// does not sync is not an error.
     LeaveSyncLibrary,
 }
 
