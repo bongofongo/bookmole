@@ -1437,7 +1437,8 @@ async fn a_long_pull_takes_turns_with_the_readers_writes() {
     assert!(sizes.iter().all(|&n| n <= limit), "{sizes:?}");
     let paces = paces.lock().unwrap().clone();
     assert_eq!(paces.len(), 2, "{paces:?}");
-    assert_eq!(paces[0], std::time::Duration::ZERO);
+    // The first call starts from what joining just held, a single short step.
+    assert!(paces[0] < Receiver::default().pace().hold, "{paces:?}");
     assert!(paces[1] > std::time::Duration::ZERO, "{paces:?}");
 }
 
@@ -2341,4 +2342,76 @@ async fn a_library_of_the_earlier_sync_layout_is_upgraded_and_keeps_its_outbox()
         rows(&b, "SELECT title FROM books ORDER BY title").await,
         ["Middlemarch", "Romola"]
     );
+}
+
+/// Turning sync on leaves the write lock free for the pace's pause between its steps once it
+/// has held it for the pace's hold, and a sync begun straight after starts from what the
+/// install held, so it pauses before its first step too.
+#[tokio::test]
+async fn turning_sync_on_and_the_sync_after_it_leave_the_lock_free_for_the_pause() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let pause = Duration::from_millis(200);
+    let pace = fongo_sync_client::Pace {
+        hold: Duration::ZERO,
+        pause,
+        ..fongo_sync_client::Pace::default()
+    };
+    let server = TestServer::default();
+    let a = device().await;
+    fill(&a.engine, 30, "Book", Isbns::None).await;
+    {
+        let mut held = a.engine.sync.held.lock().await;
+        held.step_rows = Some(40);
+        held.pace = Some(pace);
+    }
+    create(&a, &server).await;
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let mut receiver = Receiver::default();
+    receiver.faults.pace = Some(pace);
+    receiver.faults.steps = Some(steps.clone());
+    sync_with(&a, &server, receiver).await.unwrap();
+
+    let installed = a.engine.sync.held.lock().await.install_steps.clone();
+    assert!(installed.len() >= 3, "{installed:?}");
+    let mut gaps: Vec<Duration> = installed
+        .windows(2)
+        .map(|w| (w[1].1 - w[1].0).saturating_duration_since(w[0].1))
+        .collect();
+    let first = steps.lock().unwrap()[0].0.started;
+    gaps.push(first.saturating_duration_since(installed.last().unwrap().1));
+    assert!(gaps.iter().all(|&gap| gap >= pause), "{gaps:?}");
+}
+
+/// A create whose first step fails leaves sync off and no identity behind, so it can be tried
+/// again.
+#[tokio::test]
+async fn a_create_whose_install_fails_leaves_sync_off() {
+    let server = TestServer::default();
+    let a = device().await;
+    let rename = |from: &str, to: &str| {
+        format!("ALTER TABLE dismissed_shelves RENAME COLUMN {from} TO {to}")
+    };
+    sqlx::query(&rename("dismissed_at", "dismissed_on"))
+        .execute(a.engine.storage().pool())
+        .await
+        .unwrap();
+    let refused = a
+        .engine
+        .create_sync_library_via(origin(), "Study", &server)
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(!a.root.join(super::identity::FILE_NAME).exists());
+    assert_eq!(a.engine.sync_status().await.unwrap(), SyncStatus::Off);
+
+    sqlx::query(&rename("dismissed_on", "dismissed_at"))
+        .execute(a.engine.storage().pool())
+        .await
+        .unwrap();
+    create(&a, &server).await;
+    assert!(matches!(
+        a.engine.sync_status().await.unwrap(),
+        SyncStatus::On(_)
+    ));
 }

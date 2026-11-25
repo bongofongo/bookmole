@@ -286,6 +286,8 @@ pub(crate) struct Faults {
     pub(crate) paces: Option<std::sync::Arc<std::sync::Mutex<Vec<std::time::Duration>>>>,
     /// Called inside the first apply that is given changes, with its transaction open.
     pub(crate) in_first_apply: Option<Box<dyn FnOnce() + Send>>,
+    /// The pace, in place of the engine's; its `held` is the receiver's own.
+    pub(crate) pace: Option<Pace>,
 }
 
 /// One step of collecting: how long it took, and what it did.
@@ -385,6 +387,13 @@ impl Apply for Receiver {
     }
 
     fn pace(&self) -> Pace {
+        #[cfg(test)]
+        if let Some(pace) = self.faults.pace {
+            return Pace {
+                held: self.held,
+                ..pace
+            };
+        }
         Pace {
             apply: PACE_APPLY,
             collect: self.collect_rows(),

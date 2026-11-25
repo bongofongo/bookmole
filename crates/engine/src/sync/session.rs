@@ -113,7 +113,9 @@ impl fmt::Debug for RecoveryCode {
 /// What one [`Engine::sync_now`] did. It says whether things happened, never how many.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncOutcome {
-    /// Something another device wrote arrived and changed this library.
+    /// The sync wrote rows here, besides collecting this device's own edits: changes another
+    /// device sent, or rows it could write only now, such as one held back until an edit here
+    /// freed it, or a merge of rows found to be one.
     pub received: bool,
     /// Something written here was sent.
     pub sent: bool,
@@ -160,6 +162,9 @@ pub(crate) struct Slot {
 /// the write lock outlives the attempt that took it.
 #[derive(Default)]
 pub(crate) struct Held {
+    /// How long the last create, join or sync held the write lock since it last paused, and
+    /// when it ended: a sync that follows within the pace's pause starts from it.
+    last: Option<(Duration, std::time::Instant)>,
     #[cfg(test)]
     pub(crate) opened: usize,
     #[cfg(test)]
@@ -176,6 +181,18 @@ pub(crate) struct Held {
     /// Told in each gap between steps of installing, which waits until the test answers.
     #[cfg(test)]
     pub(crate) gaps: Option<tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>>,
+    /// How installing paces its steps, in place of the engine's pace.
+    #[cfg(test)]
+    pub(crate) pace: Option<fongo_sync_client::Pace>,
+}
+
+impl Held {
+    /// [`Held::last`], as the [`Receiver::held`] of a sync about to begin.
+    fn carried(&self, pace: &fongo_sync_client::Pace) -> Duration {
+        self.last
+            .filter(|(_, ended)| ended.elapsed() < pace.pause)
+            .map_or(Duration::ZERO, |(held, _)| held)
+    }
 }
 
 /// A connection of a sync's own, opened from the pool's options and never one of the pool's,
@@ -383,6 +400,10 @@ impl Engine {
             vault: Some(self.config.vault_dir.clone()),
             ..Receiver::default()
         };
+        #[cfg(test)]
+        {
+            receiver.faults.pace = held.pace;
+        }
         let mut conn = match SyncConnection::open(self, held).await {
             Ok(conn) => conn,
             Err(e) => {
@@ -409,6 +430,7 @@ impl Engine {
             );
         }
         conn.close().await;
+        held.last = Some((receiver.held, std::time::Instant::now()));
         Ok(())
     }
 
@@ -447,9 +469,14 @@ impl Engine {
             return Err(SyncError::NeedsCredentials.into());
         };
         let transport = transport(identity.origin.clone())?;
+        receiver.held = held.carried(&receiver.pace());
+        held.last = None;
         let result = self
             .sync_rounds(&mut held, &identity, &transport, &mut receiver)
             .await;
+        if result.is_ok() {
+            held.last = Some((receiver.held, std::time::Instant::now()));
+        }
         let mut problem = self
             .sync
             .problem
@@ -482,6 +509,11 @@ impl Engine {
                 paces.lock().unwrap().push(receiver.held);
             }
             let round = async {
+                let pace = receiver.pace();
+                if !pace.pause.is_zero() && !receiver.held.is_zero() && receiver.held >= pace.hold {
+                    tokio::time::sleep(pace.pause).await;
+                    receiver.held = Duration::ZERO;
+                }
                 let began = std::time::Instant::now();
                 let prepared = prepare(conn.get(), &replica, receiver).await?;
                 receiver.held += began.elapsed();
@@ -783,5 +815,46 @@ fn engine_error(e: ClientError) -> EngineError {
             SyncError::Interrupted.into()
         }
         e => EngineError::Other(format!("sync: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sync whose applies or steps wrote rows here, though none of what they received was
+    /// taken in, reports something received.
+    #[test]
+    fn rows_a_sync_wrote_count_as_received() {
+        let mut outcome = SyncOutcome::default();
+        add(&mut outcome, SyncReport::default());
+        assert!(!outcome.received);
+        let mut report = SyncReport::default();
+        report.applied.touched.push(fongo_sync_sqlite::Touched {
+            collection: "notes".into(),
+            key: "[1]".into(),
+            gid: fongo_sync_sqlite::core::Gid([7; 16]),
+            deleted: false,
+        });
+        add(&mut outcome, report);
+        assert!(outcome.received);
+    }
+
+    /// A sync gives way to other writers sooner than they give way to it.
+    #[tokio::test]
+    async fn a_sync_waits_for_the_write_lock_less_than_the_rest_of_the_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(crate::config::EngineConfig::rooted_at(dir.path()))
+            .await
+            .unwrap();
+        let mut held = Held::default();
+        let mut conn = SyncConnection::open(&engine, &mut held).await.unwrap();
+        let waits: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(conn.get())
+            .await
+            .unwrap();
+        conn.close().await;
+        assert_eq!(waits, 1_000);
+        assert!(Duration::from_millis(waits.unsigned_abs()) < crate::storage::BUSY_TIMEOUT);
     }
 }
